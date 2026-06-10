@@ -258,6 +258,7 @@ func run(env environment) int {
 		Created:     created,
 		Now:         now,
 		Prompt:      cfg.ReplPrompt,
+		Skills:      discoveredSkills,
 	}
 	app.SetUsage(totals)
 

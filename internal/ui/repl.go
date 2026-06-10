@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
 	"harness/internal/agent"
 	"harness/internal/llm"
 	"harness/internal/session"
+	"harness/internal/skills"
 )
 
 // App bundles the dependencies the REPL and one-shot driver need. main builds it
@@ -43,6 +45,10 @@ type App struct {
 	// Prompt is the REPL input prompt string (default "> ").
 	Prompt string
 
+	// Skills is the discovered skills map for /skills listing and
+	// $skillName invocation (design §10). nil disables both features.
+	Skills map[string]skills.Skill
+
 	usage session.UsageTotals // cumulative across the session
 }
 
@@ -55,6 +61,8 @@ const helpText = `commands:
   /usage           cumulative session tokens and cost
   /save [file]     force save (optionally elsewhere)
   /model           print provider, model, and base URL
+  /skills          list available skills
+  $skillName       invoke a skill (reads SKILL.md and sends as prompt)
 lines starting with / are commands; // sends a literal leading slash`
 
 func (app *App) clock() func() time.Time {
@@ -143,6 +151,17 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
+			if strings.HasPrefix(line, "$$") && app.Skills != nil {
+				app.runTurn(line[1:]) // $$ escapes one literal leading $
+				fmt.Fprint(app.Errw, prompt)
+				continue
+			}
+			if strings.HasPrefix(line, "$") && app.Skills != nil {
+				if app.invokeSkill(line) {
+					fmt.Fprint(app.Errw, prompt)
+					continue
+				}
+			}
 			app.runTurn(line)
 			fmt.Fprint(app.Errw, prompt)
 		}
@@ -179,6 +198,8 @@ func (app *App) command(line string) (exit bool) {
 		}
 	case "/model":
 		fmt.Fprintf(app.Errw, "provider=%s model=%s base-url=%s\n", app.Provider, app.Model, app.BaseURL)
+	case "/skills":
+		fmt.Fprintln(app.Errw, app.skillsSummary())
 	default:
 		fmt.Fprintf(app.Errw, "unknown command %q; type /help\n", cmd)
 	}
@@ -193,6 +214,38 @@ func (app *App) clear() {
 	app.Created = app.clock()()
 	app.SessionPath = session.DefaultPath(app.StateDir, app.Created)
 	fmt.Fprintf(app.Errw, "[cleared; new session %s]\n", app.SessionPath)
+}
+
+// invokeSkill handles $skillName invocations. It reads the SKILL.md file and
+// sends it as a turn with the skill content embedded. Returns true when the
+// skill was found and invoked; false when the skill name is unknown (caller
+// falls through to a regular turn).
+func (app *App) invokeSkill(line string) bool {
+	words := strings.Fields(line)
+	if len(words) == 0 {
+		return false
+	}
+	skillName := strings.TrimPrefix(words[0], "$")
+	skill, ok := app.Skills[skillName]
+	if !ok {
+		fmt.Fprintf(app.Errw, "unknown skill %q; type /skills\n", skillName)
+		return true
+	}
+	body, err := skill.Read()
+	if err != nil {
+		fmt.Fprintf(app.Errw, "[skill %q read failed: %v]\n", skillName, err)
+		return true
+	}
+	// Build the prompt: skill content + any additional text.
+	var prompt strings.Builder
+	fmt.Fprintf(&prompt, "%s\n\n", body)
+	if len(words) > 1 {
+		fmt.Fprintf(&prompt, "User: %s", strings.Join(words[1:], " "))
+	} else {
+		fmt.Fprintf(&prompt, "User: invoke skill %q", skillName)
+	}
+	app.runTurn(prompt.String())
+	return true
 }
 
 // runTurn runs one user turn, accumulates usage, and saves the session. A turn
@@ -289,6 +342,25 @@ func (app *App) usageSummary() string {
 		fmt.Fprintf(&b, " · $%.4f", u.CostUSD)
 	}
 	b.WriteString("]")
+	return b.String()
+}
+
+// skillsSummary renders the available skills for /skills (design §10).
+func (app *App) skillsSummary() string {
+	if len(app.Skills) == 0 {
+		return "[no skills available]"
+	}
+	var b strings.Builder
+	b.WriteString("available skills:\n")
+	names := make([]string, 0, len(app.Skills))
+	for name := range app.Skills {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		s := app.Skills[name]
+		fmt.Fprintf(&b, "  $%s - %s\n", name, s.Description)
+	}
 	return b.String()
 }
 
