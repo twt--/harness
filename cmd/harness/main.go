@@ -129,8 +129,9 @@ func run(env environment) int {
 
 	registry := tools.Default()
 	ag := agent.New(provider, registry, agent.Options{
-		MaxSteps: cfg.MaxSteps,
-		Model:    cfg.Model,
+		MaxSteps:      cfg.MaxSteps,
+		Model:         cfg.Model,
+		ContextWindow: cfg.ContextWindow,
 	})
 
 	created := now()

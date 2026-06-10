@@ -40,17 +40,25 @@ type Options struct {
 	// owns Request.Model because the provider config carries no model (one
 	// provider can serve many models); main injects the resolved value here.
 	Model string
+	// ContextWindow is the resolved -context-window override (tokens). When
+	// positive it drives the compaction trigger and degradation budget instead of
+	// the model registry's window; zero means "use the registry default" (design
+	// §6, §12). Plumbing it here is what makes the override actually move the
+	// trigger for unknown/local models whose real window differs from the 128k
+	// default.
+	ContextWindow int
 }
 
 // Agent drives the turn loop against one provider and tool registry, owning the
 // running transcript.
 type Agent struct {
-	provider   llm.Provider
-	registry   *tools.Registry
-	transcript []llm.Message
-	system     string
-	model      string
-	maxSteps   int
+	provider      llm.Provider
+	registry      *tools.Registry
+	transcript    []llm.Message
+	system        string
+	model         string
+	maxSteps      int
+	contextWindow int // -context-window override; 0 = use the registry default
 }
 
 // New constructs an Agent. A non-positive Options.MaxSteps uses the default.
@@ -60,11 +68,23 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		maxSteps = defaultMaxSteps
 	}
 	return &Agent{
-		provider: provider,
-		registry: registry,
-		model:    opts.Model,
-		maxSteps: maxSteps,
+		provider:      provider,
+		registry:      registry,
+		model:         opts.Model,
+		maxSteps:      maxSteps,
+		contextWindow: opts.ContextWindow,
 	}
+}
+
+// window returns the context window the compaction trigger and degradation
+// budget should use: the resolved -context-window override when positive,
+// otherwise the model registry's window (128k for unknown models). This is what
+// honors the §6 "overridable with -context-window" promise in the §12 trigger.
+func (a *Agent) window() int {
+	if a.contextWindow > 0 {
+		return a.contextWindow
+	}
+	return llm.ContextWindow(a.model)
 }
 
 // SetSystem sets the system prompt sent on every request.

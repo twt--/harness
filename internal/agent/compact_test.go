@@ -362,6 +362,101 @@ func TestMaybeCompactBelowThresholdReturnsZeroUsage(t *testing.T) {
 	}
 }
 
+// TestContextWindowOverrideMovesTrigger is the regression test for the
+// -context-window override never reaching compaction (design §6, §12). An
+// unknown local model whose real window is far below the 128k registry default,
+// run with a small override, must compact at 78% of the OVERRIDE, not 78% of
+// 128k. Before the fix MaybeCompact read llm.ContextWindow(model) (128k) and
+// never fired here, wedging the context.
+func TestContextWindowOverrideMovesTrigger(t *testing.T) {
+	const overrideWindow = 8000
+	transcript := makeTurns(10)
+	fp := llmtest.New("fake", summaryStep("S", 50, 10))
+	a := newAgent(fp, tools.Default(), Options{
+		Model:         "local-tiny-8k", // unknown model: registry default would be 128k
+		ContextWindow: overrideWindow,
+	})
+	a.SetSystem("sys")
+	a.SetTranscript(transcript)
+
+	// 80% of the 8k override is ≥ 78% of the override but a tiny fraction of the
+	// 128k registry default, so it only triggers when the override is honored.
+	above := overrideWindow * 80 / 100
+	if above*100 >= llm.ContextWindow("local-tiny-8k")*compactThresholdPct {
+		t.Fatalf("test setup: %d should be below the 128k default trigger", above)
+	}
+
+	if _, err := a.MaybeCompact(context.Background(), above, &recordSink{}); err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("override window should have triggered compaction (1 summary call), got %d", len(fp.Requests))
+	}
+	if got := len(a.Transcript()); got != 1+8 {
+		t.Fatalf("override-triggered compaction should collapse to summary + 8, got %d", got)
+	}
+}
+
+// TestContextWindowOverrideMovesDegradeBudget pins the degradation budget to the
+// override too: the same -context-window value that sizes the trigger must size
+// the ladder. With a small override the ladder drops to the last turn and
+// hard-truncates the big tool result; with the 128k default the same transcript
+// sails under budget and is left fully intact. Comparing the two proves degrade
+// reads the override, not llm.ContextWindow (design §12 "never wedge").
+func TestContextWindowOverrideMovesDegradeBudget(t *testing.T) {
+	big := strings.Repeat("x", 20_000) // ~5000 estimated tokens in one result
+	build := func() []llm.Message {
+		var transcript []llm.Message
+		for i := 0; i < 6; i++ {
+			transcript = append(transcript,
+				userText(turnLabel(i)+" q"),
+				asstToolUse("t"+turnLabel(i), "read_file", `{}`),
+				toolResult("t"+turnLabel(i), big),
+				asstText(turnLabel(i)+" done"),
+			)
+		}
+		return transcript
+	}
+
+	// With the override the ladder must shrink past rung 1 (keep last 4 turns) all
+	// the way to a single truncated turn.
+	const overrideWindow = 4000
+	ov := newAgent(llmtest.New("fake", summaryStep("S", 50, 10)), tools.Default(), Options{
+		Model:         "local-tiny",
+		ContextWindow: overrideWindow,
+	})
+	ov.SetSystem("sys")
+	ov.SetTranscript(build())
+	if _, err := ov.Compact(context.Background(), &recordSink{}); err != nil {
+		t.Fatalf("Compact (override): %v", err)
+	}
+
+	// Same transcript, no override: the 128k default budget leaves all 4 kept
+	// turns verbatim (summary + 16 messages), no truncation.
+	def := newAgent(llmtest.New("fake", summaryStep("S", 50, 10)), tools.Default(), Options{
+		Model: "local-tiny",
+	})
+	def.SetSystem("sys")
+	def.SetTranscript(build())
+	if _, err := def.Compact(context.Background(), &recordSink{}); err != nil {
+		t.Fatalf("Compact (default): %v", err)
+	}
+
+	ovEst := estimateTokens(ov.Transcript())
+	defEst := estimateTokens(def.Transcript())
+	if ovEst >= defEst {
+		t.Fatalf("override budget should shrink further than the 128k default: override est %d, default est %d", ovEst, defEst)
+	}
+	// Sanity: the override result must be near its own budget, the default must
+	// keep all four turns verbatim (no truncation under 128k).
+	if len(def.Transcript()) != 1+16 {
+		t.Fatalf("default budget should keep last 4 turns verbatim (summary + 16), got %d", len(def.Transcript()))
+	}
+	if budget := overrideWindow * compactThresholdPct / 100; ovEst > budget+minTruncResult/bytesPerToken {
+		t.Fatalf("override degrade left estimate %d well above budget %d", ovEst, budget)
+	}
+}
+
 func dumpShort(msgs []llm.Message) string {
 	var b strings.Builder
 	for i, m := range msgs {

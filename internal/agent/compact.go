@@ -40,7 +40,7 @@ const summaryHeader = "=== Summary of earlier conversation ===\n"
 // (design §12, §8.1). It returns the summary call's usage (zero when no
 // compaction ran) so the caller can fold it into the session totals.
 func (a *Agent) MaybeCompact(ctx context.Context, lastInputTokens int, sink EventSink) (llm.Usage, error) {
-	window := llm.ContextWindow(a.model)
+	window := a.window()
 	if lastInputTokens*100 < window*compactThresholdPct {
 		return llm.Usage{}, nil
 	}
@@ -122,7 +122,7 @@ func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm
 // [summary, ...keptTurns]; starts indexes the pre-compaction transcript so the
 // last turn's start can be located.
 func (a *Agent) degrade(compacted []llm.Message, starts []int) []llm.Message {
-	budget := llm.ContextWindow(a.model) * compactThresholdPct / 100
+	budget := a.window() * compactThresholdPct / 100
 	if estimateTokens(compacted) <= budget {
 		return compacted
 	}
