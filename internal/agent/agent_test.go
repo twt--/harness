@@ -375,3 +375,23 @@ func TestUsageAccumulatedAcrossSteps(t *testing.T) {
 		t.Errorf("turn steps = %d, want 2", tu.Steps)
 	}
 }
+
+func TestRequestCarriesResolvedModel(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("hi")},
+		Stop:   llm.StopEndTurn,
+	})
+	a := newAgent(fp, tools.Default(), Options{Model: "claude-opus-4-8"})
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "hi", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	mustValid(t, a.Transcript())
+	if len(fp.Requests) != 1 {
+		t.Fatalf("provider called %d times, want 1", len(fp.Requests))
+	}
+	if got := fp.Requests[0].Model; got != "claude-opus-4-8" {
+		t.Errorf("Request.Model = %q, want %q", got, "claude-opus-4-8")
+	}
+}

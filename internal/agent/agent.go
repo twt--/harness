@@ -36,6 +36,10 @@ type TurnUsage struct {
 // the default.
 type Options struct {
 	MaxSteps int
+	// Model is the resolved model id stamped onto every request. The agent loop
+	// owns Request.Model because the provider config carries no model (one
+	// provider can serve many models); main injects the resolved value here.
+	Model string
 }
 
 // Agent drives the turn loop against one provider and tool registry, owning the
@@ -45,6 +49,7 @@ type Agent struct {
 	registry   *tools.Registry
 	transcript []llm.Message
 	system     string
+	model      string
 	maxSteps   int
 }
 
@@ -57,6 +62,7 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 	return &Agent{
 		provider: provider,
 		registry: registry,
+		model:    opts.Model,
 		maxSteps: maxSteps,
 	}
 }
@@ -94,7 +100,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 
 	for steps < a.maxSteps {
 		req := llm.Request{
-			Model:    "", // set by the provider's own config when empty
+			Model:    a.model,
 			System:   a.system,
 			Messages: a.transcript,
 			Tools:    a.registry.Specs(),
