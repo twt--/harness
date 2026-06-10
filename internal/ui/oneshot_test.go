@@ -64,6 +64,30 @@ func TestOneShotSavesSessionAndRunsOneTurn(t *testing.T) {
 	}
 }
 
+// TestOneShotSaveFailureWarned is the regression test for the one-shot save
+// error being silently swallowed: OneShot used to return ExitOK and print
+// nothing when the session save failed, losing the transcript with no signal.
+// A failed save must warn to errw (design §11/§12 — visible failure beats silent
+// data loss).
+func TestOneShotSaveFailureWarned(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("done")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	app.SessionPath = unsavablePath(t)
+
+	// The turn itself succeeds; only the save fails. Exit code is unchanged (the
+	// turn ran), but the failure must be surfaced.
+	if code := OneShot(app, "go"); code != ExitOK {
+		t.Fatalf("turn succeeded, exit code should be 0, got %d; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "save failed") {
+		t.Errorf("failed one-shot save must warn to errw, got %q", errw.String())
+	}
+}
+
 func TestOneShotProviderErrorExit1(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake", llmtest.Step{Err: errContext("upstream 500")})

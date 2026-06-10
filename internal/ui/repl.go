@@ -104,7 +104,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			// SIGINT exit request (design §8.4). Any in-flight turn has already
 			// returned (this loop runs turns synchronously), so the save here has
 			// no concurrent writer.
-			app.save(app.SessionPath)
+			app.saveOrWarn(app.SessionPath)
 			return ExitInterrupt
 		case line, ok := <-lines:
 			if !ok {
@@ -114,7 +114,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				if scanErr != nil {
 					fmt.Fprintf(app.Errw, "[input error: %v]\n", scanErr)
 				}
-				app.save(app.SessionPath)
+				app.saveOrWarn(app.SessionPath)
 				return ExitOK
 			}
 			if line == "" {
@@ -145,7 +145,7 @@ func (app *App) command(line string) (exit bool) {
 	case "/help":
 		fmt.Fprintln(app.Errw, helpText)
 	case "/exit", "/quit":
-		app.save(app.SessionPath)
+		app.saveOrWarn(app.SessionPath)
 		return true
 	case "/clear":
 		app.clear()
@@ -201,7 +201,7 @@ func (app *App) runTurn(prompt string) {
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		fmt.Fprintf(app.Errw, "[error: %v]\n", err)
 	}
-	app.save(app.SessionPath)
+	app.saveOrWarn(app.SessionPath)
 }
 
 // compact forces compaction now (/compact, design §12). The summary call's usage
@@ -216,7 +216,7 @@ func (app *App) compact() {
 		return
 	}
 	app.addUsage(agent.TurnUsage{Usage: u})
-	app.save(app.SessionPath)
+	app.saveOrWarn(app.SessionPath)
 }
 
 // SetUsage seeds the cumulative session totals, used when resuming a session so
@@ -231,6 +231,18 @@ func (app *App) addUsage(u agent.TurnUsage) {
 	app.usage.CacheWriteTokens += u.Usage.CacheWriteTokens
 	if usd, known := llm.Cost(app.Model, u.Usage); known {
 		app.usage.CostUSD += usd
+	}
+}
+
+// saveOrWarn is the automatic-save path used by every place that saves without a
+// user explicitly asking (after-turn auto-save, exit saves, /compact). A failed
+// save must never be silent: a visible warning beats silent data loss (design
+// §11, §12), since a stale or missing on-disk transcript otherwise looks saved.
+// The explicit /save command surfaces its own richer success/failure message and
+// does not route through here.
+func (app *App) saveOrWarn(path string) {
+	if err := app.save(path); err != nil {
+		fmt.Fprintf(app.Errw, "[save failed: %v]\n", err)
 	}
 }
 

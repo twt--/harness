@@ -43,7 +43,8 @@ func OneShot(app *App, prompt string) int {
 	err := app.Agent.RunTurn(ctx, prompt, sink)
 
 	// Save before deciding the exit code so a session is never lost (design §11).
-	app.save(app.SessionPath)
+	// A failed save warns rather than vanishing silently.
+	app.saveOrWarn(app.SessionPath)
 
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

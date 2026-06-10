@@ -318,6 +318,108 @@ func TestREPLInputReadErrorWarned(t *testing.T) {
 	}
 }
 
+// unsavablePath returns a SessionPath whose parent is a regular file, so
+// session.Save's os.MkdirAll fails — a deterministic stand-in for the ordinary
+// disk-full / read-only / permission faults that make an automatic save fail.
+func unsavablePath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	// blocker is a file, so MkdirAll(blocker/sub) cannot create the parent.
+	return filepath.Join(blocker, "sub", "session.json")
+}
+
+// TestREPLAutoSaveFailureWarned is the regression test for after-every-turn
+// auto-save errors being silently swallowed (design §11/§12: a visible failure
+// beats silent data loss). A failed save must warn to errw, not vanish.
+func TestREPLAutoSaveFailureWarned(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("hi")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	app.SessionPath = unsavablePath(t)
+
+	// One prompt then /exit; the after-turn auto-save fails first.
+	in := strings.NewReader("hello\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("REPL should still exit 0, got %d; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "save failed") {
+		t.Errorf("failed auto-save must warn to errw, got %q", errw.String())
+	}
+}
+
+// TestREPLCompactSaveFailureWarned covers the /compact save path, the sixth
+// automatic-save site: after a forced compaction the collapsed transcript must
+// be saved, and a failed save must warn rather than leave a stale file silently.
+func TestREPLCompactSaveFailureWarned(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake",
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("CANNED SUMMARY")}, Stop: llm.StopEndTurn, Usage: llm.Usage{InputTokens: 100, OutputTokens: 10}},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+	app.SessionPath = unsavablePath(t)
+
+	var seed []llm.Message
+	for i := 0; i < 10; i++ {
+		label := string(rune('a' + i))
+		seed = append(seed,
+			llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: label + " q"}}},
+			llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: label + " a"}}},
+		)
+	}
+	app.Agent.SetTranscript(seed)
+
+	// /compact compacts and saves; the save fails and must warn. The failure does
+	// not abort the REPL.
+	in := strings.NewReader("/compact\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("REPL should exit 0 on EOF, got %d; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "save failed") {
+		t.Errorf("failed /compact save must warn to errw, got %q", errw.String())
+	}
+}
+
+// TestREPLExitSaveFailureWarned covers the /exit save path: if the final save
+// fails, the user must be told the on-disk session is stale rather than exiting
+// as if it were saved.
+func TestREPLExitSaveFailureWarned(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.SessionPath = unsavablePath(t)
+
+	in := strings.NewReader("/exit\n") // no turn; only the /exit save runs
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("/exit should exit 0, got %d; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "save failed") {
+		t.Errorf("failed /exit save must warn to errw, got %q", errw.String())
+	}
+}
+
+// TestREPLEOFSaveFailureWarned covers the EOF (^D) exit-save path.
+func TestREPLEOFSaveFailureWarned(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.SessionPath = unsavablePath(t)
+
+	in := strings.NewReader("") // immediate EOF, no prompt
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("EOF should exit 0, got %d; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "save failed") {
+		t.Errorf("failed EOF save must warn to errw, got %q", errw.String())
+	}
+}
+
 // erroringReader returns its data once, then a non-EOF error (not io.EOF), so the
 // scanner stops with a real read error rather than clean end-of-input.
 type erroringReader struct {
