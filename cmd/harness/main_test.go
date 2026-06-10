@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -187,6 +190,90 @@ func TestRunSavesSessionToDefaultPath(t *testing.T) {
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("expected a saved session under %s: %v (errw=%q)", sessionsDir, err, errw.String())
 	}
+}
+
+// TestRunSigintExitDuringTurnNoRace exercises the SIGINT-exit-while-a-turn-is-in-
+// flight path through run() with a non-nil injected signal channel. The first ^C
+// cancels the in-flight turn; a second ^C within the double-press window requests
+// exit. The REPL goroutine completes the cancelled turn (its per-turn save and
+// usage update) and then performs the final exit save itself, with no concurrent
+// writer. Run under -race this is the regression guard for the data race that the
+// previous main-side concurrent exit save produced (design §8.4): the run() exit
+// wiring is exercised under the race detector, and the SIGINT exit code is 130.
+func TestRunSigintExitDuringTurnNoRace(t *testing.T) {
+	inTurn := make(chan struct{}) // closed when the turn's stream is in flight
+	stdinBlock := make(chan struct{})
+	t.Cleanup(func() { close(stdinBlock) }) // unblock the leftover scanner read
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "partial"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 7, OutputTokens: 2},
+		Block: func(ctx context.Context) {
+			close(inTurn)
+			<-ctx.Done() // released by the first ^C cancelling the turn
+		},
+	})
+
+	dir := t.TempDir()
+	getenv := func(k string) string {
+		switch k {
+		case "HOME":
+			return dir
+		case "XDG_STATE_HOME":
+			return filepath.Join(dir, "state")
+		default:
+			return ""
+		}
+	}
+	sigCh := make(chan os.Signal, 2)
+	var out, errw bytes.Buffer
+	env := environment{
+		args:     []string{"-model", "claude-opus-4-8"},
+		stdin:    &pausingReader{line: []byte("trigger a turn\n"), block: stdinBlock},
+		stdout:   &out,
+		stderr:   &errw,
+		getenv:   getenv,
+		now:      func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
+		colorTTY: false,
+		sigCh:    sigCh,
+		newProvider: func(factory.Options) (llm.Provider, error) {
+			return fp, nil
+		},
+	}
+
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- run(env) }()
+
+	<-inTurn
+	// First ^C cancels the in-flight turn; the second requests exit. The REPL
+	// goroutine finishes the cancelled turn (saving + accumulating usage) before
+	// acting on the exit request, so there is no concurrent save.
+	sigCh <- syscall.SIGINT
+	sigCh <- syscall.SIGINT
+
+	code := <-codeCh
+	if code != ui.ExitInterrupt {
+		t.Fatalf("SIGINT exit should return 130, got %d; errw=%q", code, errw.String())
+	}
+}
+
+// pausingReader feeds one line, then blocks Read until block is closed. It keeps
+// the REPL alive (no premature EOF) while the test drives signals, so the SIGINT
+// exit path is what ends the REPL rather than end-of-input.
+type pausingReader struct {
+	line  []byte
+	off   int
+	block <-chan struct{}
+}
+
+func (r *pausingReader) Read(p []byte) (int, error) {
+	if r.off < len(r.line) {
+		n := copy(p, r.line[r.off:])
+		r.off += n
+		return n, nil
+	}
+	<-r.block
+	return 0, io.EOF
 }
 
 type runtimeErr struct{ s string }

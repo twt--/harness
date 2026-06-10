@@ -62,35 +62,67 @@ func (app *App) clock() func() time.Time {
 
 // Run drives the interactive REPL: it reads lines from in, dispatches
 // meta-commands, and runs one agent turn per prompt, saving the session after
-// every turn (design §10, §11). It returns 0 on /exit, /quit, or EOF (^D).
-func Run(in io.Reader, app *App) int {
+// every turn (design §10, §11).
+//
+// exit carries SIGINT exit requests (design §8.4); a nil channel disables them.
+// Run owns the final save in every exit path — /exit, EOF (^D), and SIGINT — so
+// no second goroutine ever touches the transcript or session file concurrently
+// with an in-flight turn. It returns 0 on /exit, /quit, or EOF, and
+// ExitInterrupt (130) on a SIGINT exit request. Input is scanned in a helper
+// goroutine so an exit request received while idle at the prompt is acted on
+// immediately rather than blocking on the next line.
+func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	if app.Created.IsZero() {
 		app.Created = app.clock()()
 	}
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
-	for sc.Scan() {
-		line := sc.Text()
-		if line == "" {
-			continue
-		}
-
-		if strings.HasPrefix(line, "//") {
-			app.runTurn(line[1:]) // // escapes one literal leading slash
-			continue
-		}
-		if strings.HasPrefix(line, "/") {
-			if app.command(line) {
-				return 0
+	lines := make(chan string)
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(in)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			select {
+			case lines <- sc.Text():
+			case <-scanDone:
+				return
 			}
-			continue
 		}
-		app.runTurn(line)
+	}()
+	// Unblock the scanner goroutine's pending send on every return path.
+	defer close(scanDone)
+
+	for {
+		select {
+		case <-exit:
+			// SIGINT exit request (design §8.4). Any in-flight turn has already
+			// returned (this loop runs turns synchronously), so the save here has
+			// no concurrent writer.
+			app.save(app.SessionPath)
+			return ExitInterrupt
+		case line, ok := <-lines:
+			if !ok {
+				// EOF (^D): save and exit cleanly (design §8.4).
+				app.save(app.SessionPath)
+				return ExitOK
+			}
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "//") {
+				app.runTurn(line[1:]) // // escapes one literal leading slash
+				continue
+			}
+			if strings.HasPrefix(line, "/") {
+				if app.command(line) {
+					return ExitOK
+				}
+				continue
+			}
+			app.runTurn(line)
+		}
 	}
-	// EOF (^D): save and exit cleanly (design §8.4).
-	app.save(app.SessionPath)
-	return 0
 }
 
 // command dispatches a meta-command line. It returns true when the REPL should
@@ -156,7 +188,7 @@ func (app *App) runTurn(prompt string) {
 	}
 
 	app.Renderer.StartTurn()
-	sink := &accumulatingSink{r: app.Renderer, model: app.Model, totals: &app.usage}
+	sink := &accumulatingSink{r: app.Renderer, app: app}
 	err := app.Agent.RunTurn(ctx, prompt, sink)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		fmt.Fprintf(app.Errw, "[error: %v]\n", err)
@@ -168,9 +200,16 @@ func (app *App) runTurn(prompt string) {
 // /usage and saved totals continue from the prior run (design §11).
 func (app *App) SetUsage(u session.UsageTotals) { app.usage = u }
 
-// SaveNow saves the current session to its path; used by main's SIGINT exit
-// path (design §8.4).
-func (app *App) SaveNow() { app.save(app.SessionPath) }
+// addUsage folds one turn's usage into the cumulative session totals.
+func (app *App) addUsage(u agent.TurnUsage) {
+	app.usage.InputTokens += u.Usage.InputTokens
+	app.usage.OutputTokens += u.Usage.OutputTokens
+	app.usage.CacheReadTokens += u.Usage.CacheReadTokens
+	app.usage.CacheWriteTokens += u.Usage.CacheWriteTokens
+	if usd, known := llm.Cost(app.Model, u.Usage); known {
+		app.usage.CostUSD += usd
+	}
+}
 
 // save writes the current transcript and usage totals to path (design §11).
 func (app *App) save(path string) error {
@@ -192,11 +231,11 @@ func (app *App) save(path string) error {
 
 // usageSummary renders the cumulative session usage for /usage (design §10).
 func (app *App) usageSummary() string {
-	u := app.usage.Usage
+	u := app.usage
 	var b strings.Builder
 	fmt.Fprintf(&b, "[session: %d in / %d out", u.InputTokens, u.OutputTokens)
-	if app.usage.CostUSD > 0 {
-		fmt.Fprintf(&b, " · $%.4f", app.usage.CostUSD)
+	if u.CostUSD > 0 {
+		fmt.Fprintf(&b, " · $%.4f", u.CostUSD)
 	}
 	b.WriteString("]")
 	return b.String()
@@ -205,9 +244,8 @@ func (app *App) usageSummary() string {
 // accumulatingSink forwards events to the renderer while accumulating cumulative
 // token totals and cost for the session (design §10 /usage, §11 saved totals).
 type accumulatingSink struct {
-	r      *Renderer
-	model  string
-	totals *session.UsageTotals
+	r   *Renderer
+	app *App
 }
 
 func (s *accumulatingSink) TextDelta(text string)         { s.r.TextDelta(text) }
@@ -216,12 +254,6 @@ func (s *accumulatingSink) ToolResult(res llm.ToolResult) { s.r.ToolResult(res) 
 func (s *accumulatingSink) Notice(msg string)             { s.r.Notice(msg) }
 
 func (s *accumulatingSink) TurnComplete(u agent.TurnUsage) {
-	s.totals.InputTokens += u.Usage.InputTokens
-	s.totals.OutputTokens += u.Usage.OutputTokens
-	s.totals.CacheReadTokens += u.Usage.CacheReadTokens
-	s.totals.CacheWriteTokens += u.Usage.CacheWriteTokens
-	if usd, known := llm.Cost(s.model, u.Usage); known {
-		s.totals.CostUSD += usd
-	}
+	s.app.addUsage(u)
 	s.r.TurnComplete(u)
 }

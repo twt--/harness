@@ -39,7 +39,7 @@ func OneShot(app *App, prompt string) int {
 	}
 
 	app.Renderer.StartTurn()
-	sink := &accumulatingSink{r: app.Renderer, model: app.Model, totals: &app.usage}
+	sink := &accumulatingSink{r: app.Renderer, app: app}
 	err := app.Agent.RunTurn(ctx, prompt, sink)
 
 	// Save before deciding the exit code so a session is never lost (design §11).

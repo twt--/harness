@@ -47,7 +47,7 @@ func TestREPLHelpPromptExit(t *testing.T) {
 	app := newTestApp(t, &out, &errw, fp)
 
 	in := strings.NewReader("/help\nwhat is 2+2?\n/exit\n")
-	code := Run(in, app)
+	code := Run(in, app, nil)
 
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -74,7 +74,7 @@ func TestREPLSavesSessionAfterTurn(t *testing.T) {
 	path := app.SessionPath
 
 	in := strings.NewReader("hello\n/exit\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -96,7 +96,7 @@ func TestREPLClearResetsAndRotates(t *testing.T) {
 	origPath := app.SessionPath
 
 	in := strings.NewReader("first prompt\n/clear\nsecond prompt\n/exit\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 
@@ -127,7 +127,7 @@ func TestREPLUnknownCommand(t *testing.T) {
 	app := newTestApp(t, &out, &errw, fp)
 
 	in := strings.NewReader("/bogus\n/exit\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	if !strings.Contains(errw.String(), "/bogus") || !strings.Contains(strings.ToLower(errw.String()), "unknown") {
@@ -147,7 +147,7 @@ func TestREPLLiteralSlashEscape(t *testing.T) {
 	app := newTestApp(t, &out, &errw, fp)
 
 	in := strings.NewReader("//not-a-command\n/exit\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	if len(fp.Requests) != 1 {
@@ -169,7 +169,7 @@ func TestREPLUsageCumulative(t *testing.T) {
 	app := newTestApp(t, &out, &errw, fp)
 
 	in := strings.NewReader("p1\np2\n/usage\n/exit\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	got := errw.String()
@@ -185,7 +185,7 @@ func TestREPLModelCommand(t *testing.T) {
 	app := newTestApp(t, &out, &errw, fp)
 
 	in := strings.NewReader("/model\n/exit\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	got := errw.String()
@@ -204,7 +204,7 @@ func TestREPLSaveToPath(t *testing.T) {
 	alt := filepath.Join(t.TempDir(), "alt.json")
 
 	in := strings.NewReader("hello\n/save " + alt + "\n/exit\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	if _, err := os.Stat(alt); err != nil {
@@ -222,7 +222,7 @@ func TestREPLEOFSavesAndExitsZero(t *testing.T) {
 
 	// No trailing /exit: stream ends (EOF) after one prompt.
 	in := strings.NewReader("hello\n")
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Errorf("^D/EOF should exit 0, got %d", code)
 	}
 	if _, err := os.Stat(app.SessionPath); err != nil {
@@ -237,7 +237,7 @@ func TestREPLProviderErrorReported(t *testing.T) {
 
 	in := strings.NewReader("hello\n/exit\n")
 	// A turn error in the REPL is reported but does not end the session.
-	if code := Run(in, app); code != 0 {
+	if code := Run(in, app, nil); code != 0 {
 		t.Errorf("REPL should survive a turn error and exit 0 via /exit, got %d", code)
 	}
 	if !strings.Contains(strings.ToLower(errw.String()), "error") {

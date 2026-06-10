@@ -220,18 +220,11 @@ func run(env environment) int {
 		return code
 	}
 
-	// Interactive REPL.
+	// Interactive REPL. ui.Run owns the session save in every exit path,
+	// including SIGINT, so the exit-save never races an in-flight turn's own save
+	// or usage update (design §8.4); main only forwards the exit request.
 	fmt.Fprintf(stderr, "session: %s\n", sessionPath)
-	done := make(chan int, 1)
-	go func() { done <- ui.Run(env.stdin, app) }()
-	select {
-	case <-exitCh:
-		// Exit requested via SIGINT: save and exit 130 (design §8.4).
-		app.SaveNow()
-		return ui.ExitInterrupt
-	case code := <-done:
-		return code
-	}
+	return ui.Run(env.stdin, app, exitCh)
 }
 
 // resolveConfigPath determines the config-file path config.Load should read: an
