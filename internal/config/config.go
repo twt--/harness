@@ -13,11 +13,17 @@ package config
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 )
+
+// ErrHelp is returned by Load when -h/--help is requested. It is not a usage
+// error: the caller prints the usage screen (via Usage) and exits 0, because
+// help is a request, not a misuse (design §10).
+var ErrHelp = flag.ErrHelp
 
 // Config is the fully resolved, provider-neutral configuration.
 type Config struct {
@@ -79,31 +85,18 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		return Config{}, err
 	}
 
-	fs := flag.NewFlagSet("harness", flag.ContinueOnError)
+	fs, f := newFlagSet()
 	fs.SetOutput(io.Discard) // errors are returned, not printed by the loader
-
-	var (
-		fProvider       = fs.String("provider", "", "openai | anthropic (default: inferred from -model)")
-		fModel          = fs.String("model", "", "model id")
-		fBaseURL        = fs.String("base-url", "", "provider base URL")
-		fSystem         = fs.String("system", "", "append to system prompt (text or @file)")
-		fSystemOverride = fs.String("system-override", "", "replace builtin instructions (text or @file)")
-		fNoEnv          = fs.Bool("no-env", false, "omit the environment context block")
-		fResume         = fs.String("resume", "", "load a session transcript and continue")
-		fSession        = fs.String("session", "", "explicit session save path")
-		fMaxSteps       = fs.Int("max-steps", defaultMaxSteps, "model round-trips per user turn")
-		fContextWindow  = fs.Int("context-window", 0, "context window override")
-		fPrompt         = fs.String("p", "", "one-shot prompt; \"-\" or piped stdin reads stdin")
-		fVerbose        = fs.Bool("v", false, "show tool result snippets")
-		fNoColor        = fs.Bool("no-color", false, "disable color output")
-		// -config is consumed by the caller before Load; accepted here so it is
-		// not rejected as an unknown flag.
-		_ = fs.String("config", "", "alternate config path")
-	)
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+
+	fProvider, fModel, fBaseURL := f.provider, f.model, f.baseURL
+	fSystem, fSystemOverride, fNoEnv := f.system, f.systemOverride, f.noEnv
+	fResume, fSession := f.resume, f.session
+	fMaxSteps, fContextWindow := f.maxSteps, f.contextWindow
+	fPrompt, fVerbose, fNoColor := f.prompt, f.verbose, f.noColor
 
 	// set records which flags were explicitly provided, so a flag only overrides
 	// env/file when actually present (flag defaults must not beat lower sources).
@@ -174,6 +167,62 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	c.APIKey = providerAPIKeyEnv(c.Provider, getenv)
 
 	return c, nil
+}
+
+// flags holds the pointers returned by the FlagSet so the same flag definitions
+// back both Load (parsing) and Usage (the -h screen) — one source of truth, so
+// the help can never drift from what is actually parsed (design §10).
+type flags struct {
+	provider, model, baseURL *string
+	system, systemOverride   *string
+	noEnv                    *bool
+	resume, session          *string
+	maxSteps, contextWindow  *int
+	prompt                   *string
+	verbose, noColor         *bool
+	config                   *string
+}
+
+// newFlagSet defines every design §10 flag on a fresh FlagSet, used by both Load
+// and Usage so the help screen lists exactly the flags that are parsed.
+func newFlagSet() (*flag.FlagSet, flags) {
+	fs := flag.NewFlagSet("harness", flag.ContinueOnError)
+	var f flags
+	f.prompt = fs.String("p", "", "one-shot prompt; \"-\" or piped stdin reads the prompt from stdin")
+	f.provider = fs.String("provider", "", "openai | anthropic (default: inferred from -model)")
+	f.model = fs.String("model", "", "model id (required)")
+	f.baseURL = fs.String("base-url", "", "provider base URL (e.g. http://localhost:11434/v1 for Ollama)")
+	f.system = fs.String("system", "", "append to system prompt (text or @file)")
+	f.systemOverride = fs.String("system-override", "", "replace builtin instructions (text or @file)")
+	f.noEnv = fs.Bool("no-env", false, "omit the environment context block")
+	f.resume = fs.String("resume", "", "load a session transcript and continue")
+	f.session = fs.String("session", "", "explicit session save path")
+	f.maxSteps = fs.Int("max-steps", defaultMaxSteps, "model round-trips per user turn")
+	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
+	f.verbose = fs.Bool("v", false, "show tool result snippets")
+	f.noColor = fs.Bool("no-color", false, "disable color output")
+	// -config is consumed by the caller before Load (it picks the file Load
+	// reads); accepted here so it is not rejected as an unknown flag.
+	f.config = fs.String("config", "", "alternate config path")
+	return fs, f
+}
+
+// Usage writes the -h/--help screen: a one-line summary followed by every design
+// §10 flag with its description and default. API keys are intentionally absent —
+// they come from the environment only (design §2, §7).
+func Usage(w io.Writer) {
+	fmt.Fprintln(w, "harness — a minimal agentic coding harness.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  harness [flags]            interactive REPL")
+	fmt.Fprintln(w, "  harness -p \"prompt\" [flags]  one-shot: prints the assistant's answer to stdout")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "API keys come from the environment only: OPENAI_API_KEY or ANTHROPIC_API_KEY.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Flags:")
+	fs, _ := newFlagSet()
+	fs.SetOutput(w)
+	fs.PrintDefaults()
 }
 
 // readConfigFile reads and decodes the config file at path. An empty path means

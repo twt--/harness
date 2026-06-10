@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -370,6 +373,42 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 	_, err := Load([]string{"-max-steps", "notanumber"}, noEnv, "")
 	if err == nil {
 		t.Fatalf("expected usage error for non-integer -max-steps")
+	}
+}
+
+// helpFlags are every flag the design §10 table lists. The -h usage screen must
+// name every one of them so the help is an accurate reference.
+var helpFlags = []string{
+	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
+	"-no-env", "-resume", "-session", "-max-steps", "-context-window",
+	"-v", "-no-color", "-config",
+}
+
+// -h and --help are help requests, not usage errors: Load reports ErrHelp so the
+// caller can print a proper usage screen and exit 0 (design §10).
+func TestHelpFlagReturnsErrHelp(t *testing.T) {
+	for _, arg := range []string{"-h", "--help", "-help"} {
+		_, err := Load([]string{arg}, noEnv, "")
+		if !errors.Is(err, ErrHelp) {
+			t.Fatalf("Load(%q) err = %v, want ErrHelp", arg, err)
+		}
+	}
+}
+
+// Usage writes a screen that names every design §10 flag with its default, so the
+// help output is a complete and accurate reference.
+func TestUsageListsEveryFlag(t *testing.T) {
+	var b bytes.Buffer
+	Usage(&b)
+	out := b.String()
+	for _, f := range helpFlags {
+		if !strings.Contains(out, f) {
+			t.Errorf("usage text missing flag %q:\n%s", f, out)
+		}
+	}
+	// -max-steps default (50) must be visible so the reference is accurate.
+	if !strings.Contains(out, "50") {
+		t.Errorf("usage text should show the -max-steps default 50:\n%s", out)
 	}
 }
 

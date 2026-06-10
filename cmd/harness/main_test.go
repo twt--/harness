@@ -80,6 +80,35 @@ func TestRunOneShotAssistantToStdout(t *testing.T) {
 	}
 }
 
+// TestRunHelpFlagExitsZeroWithUsage covers the design §10 help path: -h/--help is
+// a request, not a usage error. It prints a usage screen naming every §10 flag
+// and exits 0 (the prior defect exited 2 with a terse "flag: help requested").
+func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
+	flags := []string{
+		"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
+		"-no-env", "-resume", "-session", "-max-steps", "-context-window",
+		"-v", "-no-color", "-config",
+	}
+	for _, arg := range []string{"-h", "--help"} {
+		fp := llmtest.New("fake")
+		env, out, errw, _ := fakeProviderEnv(t, []string{arg}, fp, "")
+		code := run(env)
+		if code != ui.ExitOK {
+			t.Fatalf("run(%q) exit = %d, want 0; errw=%q", arg, code, errw.String())
+		}
+		// Usage goes to stdout (it is the requested output, not an error).
+		text := out.String()
+		for _, f := range flags {
+			if !strings.Contains(text, f) {
+				t.Errorf("run(%q) usage missing flag %q:\n%s", arg, f, text)
+			}
+		}
+		if len(fp.Requests) != 0 {
+			t.Errorf("run(%q) should not call the provider, got %d requests", arg, len(fp.Requests))
+		}
+	}
+}
+
 func TestRunMissingModelUsageError(t *testing.T) {
 	fp := llmtest.New("fake")
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-p", "hi"}, fp, "")

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -78,6 +79,12 @@ func run(env environment) int {
 
 	cfg, err := config.Load(args, getenv, cfgPath)
 	if err != nil {
+		// -h/--help is a request, not a misuse: print the usage screen to stdout
+		// and exit 0 (design §10).
+		if errors.Is(err, config.ErrHelp) {
+			config.Usage(stdout)
+			return ui.ExitOK
+		}
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
 	}
