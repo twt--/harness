@@ -119,6 +119,8 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		prompt = "> "
 	}
 
+	// Reset terminal before the first prompt (VT100 reset sequence)
+	fmt.Fprint(app.Errw, "\033c")
 	fmt.Fprint(app.Errw, prompt)
 	for {
 		select {
