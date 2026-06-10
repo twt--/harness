@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,10 +14,6 @@ import (
 // binarySniffBytes is how many leading bytes are scanned for NUL to classify a
 // file as binary (design §9.1).
 const binarySniffBytes = 8 * 1024
-
-// readFileMaxBytes bounds how much of a very large file is loaded when no
-// explicit window is requested (design §9.1: >10MB reads only the first window).
-const readFileMaxBytes = 10 * 1024 * 1024
 
 // readFileDefaultLimit is the default number of lines returned (design §9.1).
 const readFileDefaultLimit = 1000
@@ -68,73 +65,87 @@ func (readFile) Run(ctx context.Context, input json.RawMessage) (string, error) 
 		return "", fmt.Errorf("%s is a directory; use list_dir", args.Path)
 	}
 
-	windowed := args.Offset > 0 || args.Limit > 0
-
 	f, err := os.Open(args.Path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
 
-	// Cap the read for very large files unless an explicit window was given.
-	var reader io.Reader = f
-	if !windowed && info.Size() > readFileMaxBytes {
-		reader = io.LimitReader(f, readFileMaxBytes)
-	}
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return "", err
-	}
-
-	sniff := data
-	if len(sniff) > binarySniffBytes {
-		sniff = sniff[:binarySniffBytes]
-	}
-	if bytes.IndexByte(sniff, 0) >= 0 {
+	br := bufio.NewReader(f)
+	head, _ := br.Peek(binarySniffBytes)
+	if bytes.IndexByte(head, 0) >= 0 {
 		return "", fmt.Errorf("%s appears to be binary", args.Path)
 	}
-
-	if len(data) == 0 {
-		return "(empty file)", nil
-	}
-
-	lines := splitLines(data)
-	total := len(lines)
 
 	offset := args.Offset
 	if offset == 0 {
 		offset = 1
 	}
-	if offset > total {
-		return "", fmt.Errorf("offset %d is past end of file (%s has %d lines)", offset, args.Path, total)
-	}
 	limit := args.Limit
 	if limit == 0 {
 		limit = readFileDefaultLimit
 	}
-	end := offset - 1 + limit
-	if end > total {
-		end = total
-	}
 
-	var b strings.Builder
-	for i := offset - 1; i < end; i++ {
-		if i > offset-1 {
-			b.WriteByte('\n')
-		}
-		fmt.Fprintf(&b, "%6d\t%s", i+1, lines[i])
+	// Always read line-by-line and stop after the window so a small window (or
+	// the default 1000-line cap) of a huge file never loads the whole thing
+	// into memory. This subsumes the design's >10MB guard: an unwindowed read
+	// returns at most readFileDefaultLimit lines regardless of file size.
+	lines, total, err := readWindowLines(br, offset, limit)
+	if err != nil {
+		return "", err
 	}
-	return b.String(), nil
+	if total == 0 {
+		return "(empty file)", nil
+	}
+	if offset > total {
+		return "", fmt.Errorf("offset %d is past end of file (%s has %d lines)", offset, args.Path, total)
+	}
+	return numberLines(lines, offset), nil
 }
 
-// splitLines splits file content into logical lines, dropping a single trailing
-// newline so a file ending in "\n" does not yield a spurious empty final line.
-func splitLines(data []byte) []string {
-	s := string(data)
-	s = strings.TrimSuffix(s, "\n")
-	if s == "" {
-		// Content was a single trailing newline only.
-		return []string{""}
+// numberLines renders lines in cat -n style; startLine is the 1-based number of
+// the first line.
+func numberLines(lines []string, startLine int) string {
+	var b strings.Builder
+	for i, ln := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%6d\t%s", startLine+i, ln)
 	}
-	return strings.Split(s, "\n")
+	return b.String()
+}
+
+// readWindowLines streams r line by line, returning the lines in
+// [offset, offset+limit) and the count of lines seen. It stops as soon as the
+// window is fully collected; it reads to EOF only when the window starts past
+// the end of input (so the caller can report the true line count). Memory use
+// is bounded by the window size and the longest line, never the whole file.
+func readWindowLines(r io.Reader, offset, limit int) ([]string, int, error) {
+	br, ok := r.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReader(r)
+	}
+	var window []string
+	lineno := 0
+	end := offset + limit // first line number past the window (1-based exclusive)
+	for {
+		line, err := br.ReadString('\n')
+		if len(line) > 0 || err == nil {
+			lineno++
+			if lineno >= offset && lineno < end {
+				window = append(window, strings.TrimSuffix(line, "\n"))
+			}
+			// Stop once the window is filled; no need to read further.
+			if lineno >= end-1 && len(window) == limit {
+				return window, lineno, nil
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return window, lineno, nil
+			}
+			return nil, lineno, err
+		}
+	}
 }
