@@ -48,6 +48,7 @@ func RegisterFileTools(r *Registry) {
 func RegisterExecTools(r *Registry) {
 	r.Register(runCommand{})
 	r.Register(gitTool{})
+	r.Register(webFetch{})
 }
 
 // Default returns a Registry preloaded with every built-in tool.
