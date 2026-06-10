@@ -22,6 +22,7 @@ import (
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
 	"harness/internal/session"
+	"harness/internal/skills"
 	"harness/internal/sysprompt"
 	"harness/internal/tools"
 	"harness/internal/ui"
@@ -145,13 +146,31 @@ func run(env environment) int {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitRuntime
 	}
+	// Skills discovery: scan project and user-level .agents/skills/ directories
+	// for SKILL.md files, build a catalog for the system prompt, and surface
+	// any warnings to stderr. Skills are disclosed via file-read activation so
+	// the model uses its existing read_file tool to load them on demand.
+	var skillWarnings skills.Warnings
+	discoveredSkills := skills.Discover([]skills.Dir{
+		{Path: filepath.Join(wd, ".agents", "skills"), Scope: skills.ScopeProject},
+		{Path: filepath.Join(homeDir(getenv), ".agents", "skills"), Scope: skills.ScopeUser},
+	}, &skillWarnings)
+	for _, w := range skillWarnings {
+		fmt.Fprintf(stderr, "skills: %s\n", w)
+	}
+	catalog := skills.BuildCatalog(discoveredSkills)
+	instructions := skills.Instructions(len(discoveredSkills))
 	systemPrompt := sysprompt.Build(sysprompt.Options{
-		Append:   appendText,
-		Override: overrideText,
-		NoEnv:    cfg.NoEnv,
-		AgentsMD: agentsMD,
-		Env:      sysprompt.EnvOptions{Dir: wd},
+		Append:        appendText,
+		Override:      overrideText,
+		NoEnv:         cfg.NoEnv,
+		AgentsMD:      agentsMD,
+		SkillsCatalog: catalog,
+		Env:           sysprompt.EnvOptions{Dir: wd},
 	})
+	if instructions != "" {
+		systemPrompt += "\n\n" + instructions
+	}
 
 	newProvider := env.newProvider
 	if newProvider == nil {
@@ -503,6 +522,11 @@ func defaultConfigDir(getenv func(string) string) string {
 		return filepath.Join(home, ".config", "harness")
 	}
 	return filepath.Join(os.TempDir(), "harness-config")
+}
+
+// homeDir returns the user's home directory, or empty string if unavailable.
+func homeDir(getenv func(string) string) string {
+	return getenv("HOME")
 }
 
 // flagValue extracts a string flag's value from raw args, supporting both
