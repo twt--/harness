@@ -140,6 +140,53 @@ func TestBuildOverrideReplacesBuiltin(t *testing.T) {
 	}
 }
 
+func TestBuildIncludesAgentsMD(t *testing.T) {
+	dir := t.TempDir()
+	out := Build(Options{
+		AgentsMD: "# Project rules\nAlways write tests.",
+		Env:      EnvOptions{Dir: dir, Now: func() time.Time { return fixedDate }},
+	})
+	if !strings.Contains(out, "# Project rules\nAlways write tests.") {
+		t.Errorf("AGENTS.md content should appear in system prompt:\n%s", out)
+	}
+	// Order: builtin -> env -> agents.md (no append)
+	envIdx := strings.Index(out, "<env>")
+	agentsIdx := strings.Index(out, "# Project rules")
+	if envIdx < 0 || agentsIdx < 0 || envIdx >= agentsIdx {
+		t.Errorf("AGENTS.md should come after the env block:\n%s", out)
+	}
+}
+
+func TestBuildAgentsMDBeforeAppend(t *testing.T) {
+	dir := t.TempDir()
+	out := Build(Options{
+		AgentsMD: "from agents.md",
+		Append:   "from -system flag",
+		Env:      EnvOptions{Dir: dir, Now: func() time.Time { return fixedDate }},
+	})
+	agentsIdx := strings.Index(out, "from agents.md")
+	appendIdx := strings.Index(out, "from -system flag")
+	if agentsIdx < 0 || appendIdx < 0 || agentsIdx >= appendIdx {
+		t.Errorf("AGENTS.md should come before -system append:\n%s", out)
+	}
+}
+
+func TestBuildEmptyAgentsMDOmitted(t *testing.T) {
+	dir := t.TempDir()
+	out := Build(Options{
+		AgentsMD: "",
+		Append:   "project note",
+		Env:      EnvOptions{Dir: dir, Now: func() time.Time { return fixedDate }},
+	})
+	// No double blank-line gap beyond the normal separators.
+	if strings.Contains(out, "\n\n\n\n") {
+		t.Errorf("empty AGENTS.md should not leave extra blank lines:\n%q", out)
+	}
+	if !strings.Contains(out, "project note") {
+		t.Errorf("append text should still be present:\n%s", out)
+	}
+}
+
 func TestBuildNoEnvDropsEnvBlock(t *testing.T) {
 	dir := t.TempDir()
 	out := Build(Options{

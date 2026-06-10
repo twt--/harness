@@ -28,10 +28,15 @@ Stop and report once the task is done. Do not keep calling tools after the work 
 // Options controls system-prompt composition (design §8.5 flags). Append and
 // Override are mutually relevant: Override replaces the builtin instructions,
 // Append adds project notes after them. NoEnv drops the env block entirely.
+// AgentsMD carries the contents of an AGENTS.md file discovered in the working
+// directory; when non-empty it is appended after the env block (and before
+// Append), giving the model project-specific instructions without the user
+// having to pass -system explicitly.
 type Options struct {
 	Append   string // appended after the builtin (or override) instructions
 	Override string // replaces the builtin instructions when non-empty
 	NoEnv    bool   // drop the env-context block
+	AgentsMD string // contents of AGENTS.md from the working directory (optional)
 	Env      EnvOptions
 }
 
@@ -46,6 +51,9 @@ func Build(opts Options) string {
 	parts := []string{instructions}
 	if !opts.NoEnv {
 		parts = append(parts, EnvContext(opts.Env))
+	}
+	if opts.AgentsMD != "" {
+		parts = append(parts, opts.AgentsMD)
 	}
 	if opts.Append != "" {
 		parts = append(parts, opts.Append)

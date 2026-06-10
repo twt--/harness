@@ -135,10 +135,21 @@ func run(env environment) int {
 	// path reasoning. An os.Getwd failure leaves Dir empty (the "." fallback), the
 	// best we can do.
 	wd, _ := os.Getwd()
+	// AGENTS.md auto-discovery: if a file named AGENTS.md exists in the
+	// directory harness was launched from, include its contents in the system
+	// prompt so the model receives project-specific instructions without the
+	// user needing to pass -system. A missing file is silently ignored; a read
+	// error on an existing file is fatal so the user isn't silently surprised.
+	agentsMD, err := loadAgentsMD(wd)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness: %v\n", err)
+		return ui.ExitRuntime
+	}
 	systemPrompt := sysprompt.Build(sysprompt.Options{
 		Append:   appendText,
 		Override: overrideText,
 		NoEnv:    cfg.NoEnv,
+		AgentsMD: agentsMD,
 		Env:      sysprompt.EnvOptions{Dir: wd},
 	})
 
@@ -531,6 +542,24 @@ func resolveAtFile(v string) (string, error) {
 		return string(data), nil
 	}
 	return v, nil
+}
+
+// loadAgentsMD reads AGENTS.md from dir when present. A missing file returns
+// an empty string with no error; other read failures (e.g. permissions) are
+// returned so the user isn't silently surprised.
+func loadAgentsMD(dir string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	path := filepath.Join(dir, "AGENTS.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading %s: %w", path, err)
+	}
+	return string(data), nil
 }
 
 // stateDir returns the base directory for auto-saved sessions: $XDG_STATE_HOME

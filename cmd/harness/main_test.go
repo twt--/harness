@@ -583,3 +583,115 @@ func (r *pausingReader) Read(p []byte) (int, error) {
 type runtimeErr struct{ s string }
 
 func (e *runtimeErr) Error() string { return e.s }
+
+func TestLoadAgentsMD_Missing(t *testing.T) {
+	dir := t.TempDir()
+	content, err := loadAgentsMD(dir)
+	if err != nil {
+		t.Fatalf("loadAgentsMD should not error on missing file: %v", err)
+	}
+	if content != "" {
+		t.Errorf("loadAgentsMD should return empty string for missing file, got %q", content)
+	}
+}
+
+func TestLoadAgentsMD_Present(t *testing.T) {
+	dir := t.TempDir()
+	expected := "# Project Rules\n\nAlways write tests."
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(expected), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	content, err := loadAgentsMD(dir)
+	if err != nil {
+		t.Fatalf("loadAgentsMD should not error: %v", err)
+	}
+	if content != expected {
+		t.Errorf("loadAgentsMD returned %q, want %q", content, expected)
+	}
+}
+
+func TestLoadAgentsMD_EmptyDir(t *testing.T) {
+	content, err := loadAgentsMD("")
+	if err != nil {
+		t.Fatalf("loadAgentsMD should not error on empty dir: %v", err)
+	}
+	if content != "" {
+		t.Errorf("loadAgentsMD should return empty string for empty dir, got %q", content)
+	}
+}
+
+func TestMain_IntegrationAgentsMDIncluded(t *testing.T) {
+	// Create a temp directory with an AGENTS.md file.
+	dir := t.TempDir()
+	agentsMD := "# Custom Rules\n\nUse camelCase variables."
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(agentsMD), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+
+	// Change to the temp directory.
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(originalDir)
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("want 1 request, got %d", len(fp.Requests))
+	}
+	system := fp.Requests[0].System
+
+	if !strings.Contains(system, agentsMD) {
+		t.Errorf("system prompt should include AGENTS.md content %q; system=%q", agentsMD, system)
+	}
+}
+
+func TestMain_IntegrationNoAgentsMDWhenMissing(t *testing.T) {
+	// Create a temp directory without AGENTS.md.
+	dir := t.TempDir()
+
+	// Change to the temp directory.
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(originalDir)
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("want 1 request, got %d", len(fp.Requests))
+	}
+	system := fp.Requests[0].System
+
+	// Should contain the builtin instructions and env block.
+	if !strings.Contains(system, "You are a coding agent") {
+		t.Errorf("system prompt should contain builtin instructions; system=%q", system)
+	}
+	if !strings.Contains(system, "<env>") {
+		t.Errorf("system prompt should contain env block; system=%q", system)
+	}
+}
