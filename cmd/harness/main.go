@@ -5,6 +5,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +89,13 @@ func run(env environment) int {
 		}
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
+	}
+	if cfg.Setup {
+		if err := runSetup(env); err != nil {
+			fmt.Fprintf(stderr, "harness: setup: %v\n", err)
+			return ui.ExitUsage
+		}
+		return ui.ExitOK
 	}
 	if cfg.Model == "" {
 		fmt.Fprintln(stderr, "harness: a model is required (-model or HARNESS_MODEL)")
@@ -266,6 +275,170 @@ func configDir(path string) string {
 	return filepath.Dir(path)
 }
 
+type setupMainConfig struct {
+	Provider        string   `json:"provider"`
+	Model           string   `json:"model"`
+	ProviderConfigs []string `json:"provider_configs"`
+}
+
+type setupProviderConfig struct {
+	Name    string             `json:"name"`
+	APIType string             `json:"api_type"`
+	BaseURL string             `json:"base_url"`
+	APIKey  string             `json:"api_key"`
+	Models  []setupModelConfig `json:"models"`
+}
+
+type setupModelConfig struct {
+	Name string `json:"name"`
+}
+
+func runSetup(env environment) error {
+	dir := defaultConfigDir(env.getenv)
+	configPath := filepath.Join(dir, "config.json")
+	if exists, err := pathExists(configPath); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("%s already exists", configPath)
+	}
+
+	reader := bufio.NewReader(env.stdin)
+	providerName, err := promptRequired(reader, env.stdout, "Provider name: ", "provider name")
+	if err != nil {
+		return err
+	}
+	providerFile := providerConfigFilename(providerName)
+	providerPath := filepath.Join(dir, providerFile)
+	if exists, err := pathExists(providerPath); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("%s already exists", providerPath)
+	}
+
+	baseURL, err := promptRequired(reader, env.stdout, "Provider URL: ", "provider url")
+	if err != nil {
+		return err
+	}
+	apiType, err := promptRequired(reader, env.stdout, "API type (openai/anthropic): ", "api type")
+	if err != nil {
+		return err
+	}
+	apiType = strings.ToLower(apiType)
+	if apiType != "openai" && apiType != "anthropic" {
+		return fmt.Errorf("api type %q is not supported (want openai or anthropic)", apiType)
+	}
+	apiKey, err := promptLine(reader, env.stdout, "API key (optional): ")
+	if err != nil {
+		return err
+	}
+	modelName, err := promptRequired(reader, env.stdout, "Model name: ", "model name")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	provider := setupProviderConfig{
+		Name:    providerName,
+		APIType: apiType,
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+		Models:  []setupModelConfig{{Name: modelName}},
+	}
+	if err := writeJSONFileExclusive(providerPath, provider); err != nil {
+		return err
+	}
+
+	mainConfig := setupMainConfig{
+		Provider:        providerName,
+		Model:           modelName,
+		ProviderConfigs: []string{providerFile},
+	}
+	if err := writeJSONFileExclusive(configPath, mainConfig); err != nil {
+		_ = os.Remove(providerPath)
+		return err
+	}
+
+	fmt.Fprintf(env.stdout, "Wrote %s\n", configPath)
+	fmt.Fprintf(env.stdout, "Wrote %s\n", providerPath)
+	return nil
+}
+
+func promptRequired(r *bufio.Reader, w io.Writer, label, field string) (string, error) {
+	value, err := promptLine(r, w, label)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", fmt.Errorf("%s is required", field)
+	}
+	return value, nil
+}
+
+func promptLine(r *bufio.Reader, w io.Writer, label string) (string, error) {
+	if _, err := fmt.Fprint(w, label); err != nil {
+		return "", err
+	}
+	line, err := r.ReadString('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+func writeJSONFileExclusive(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func pathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func providerConfigFilename(name string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(name) {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '.'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	s := strings.Trim(b.String(), ".-")
+	if s == "" {
+		s = "provider"
+	}
+	return s + ".json"
+}
+
 func resolveProvider(cfg config.Config, providers []llm.ProviderConfig) (provider, baseURL, apiKey string) {
 	provider = cfg.Provider
 	baseURL = cfg.BaseURL
@@ -303,15 +476,18 @@ func resolveConfigPath(args []string, getenv func(string) string) string {
 	if p := flagValue(args, "config"); p != "" {
 		return p
 	}
-	home := getenv("HOME")
-	if home == "" {
-		return ""
-	}
-	def := filepath.Join(home, ".config", "harness", "config.json")
+	def := filepath.Join(defaultConfigDir(getenv), "config.json")
 	if _, err := os.Stat(def); err == nil {
 		return def
 	}
 	return ""
+}
+
+func defaultConfigDir(getenv func(string) string) string {
+	if home := getenv("HOME"); home != "" {
+		return filepath.Join(home, ".config", "harness")
+	}
+	return filepath.Join(os.TempDir(), "harness-config")
 }
 
 // flagValue extracts a string flag's value from raw args, supporting both

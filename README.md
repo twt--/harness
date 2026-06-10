@@ -36,8 +36,9 @@ go build ./... && go vet ./... && go test ./...
 
 ## Quickstart
 
-API keys are read from the **environment only** — never from flags or the config
-file, because both leak into shell history and committed dotfiles.
+API keys are read from environment variables or provider config files — never
+from flags or the main config file, because those leak into shell history and
+committed dotfiles.
 
 ### Anthropic
 
@@ -107,6 +108,7 @@ interrupted.
 -v                show tool result snippets (first ~5 lines, dimmed)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
 -config <file>    alternate config path
+--setup           create a basic config in ~/.config/harness
 -h, --help        print this usage screen and exit 0
 ```
 
@@ -126,6 +128,8 @@ Precedence is **flags > environment > config file > built-in defaults**.
   config paths are resolved relative to the config file and may define `api_type`,
   `base_url`, `api_key`, models, context windows, and pricing. See
   `examples/config/` for sample files.
+- Run `./harness --setup` to create a basic default config and provider config.
+  It prompts for provider name, provider URL, API type, API key, and model name.
 
 ## Meta-commands (REPL)
 

@@ -122,7 +122,7 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	flags := []string{
 		"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 		"-no-env", "-resume", "-session", "-max-steps", "-context-window",
-		"-v", "-no-color", "-config",
+		"-v", "-no-color", "-config", "-setup",
 	}
 	for _, arg := range []string{"-h", "--help"} {
 		fp := llmtest.New("fake")
@@ -141,6 +141,96 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 		if len(fp.Requests) != 0 {
 			t.Errorf("run(%q) should not call the provider, got %d requests", arg, len(fp.Requests))
 		}
+	}
+}
+
+func TestRunSetupCreatesDefaultConfigAndProviderConfig(t *testing.T) {
+	fp := llmtest.New("fake")
+	stdin := strings.Join([]string{
+		"openrouter",
+		"https://openrouter.ai/api/v1",
+		"openai",
+		"sk-openrouter",
+		"openai/gpt-5.5",
+	}, "\n") + "\n"
+	env, out, errw, getenv := fakeProviderEnv(t, []string{"--setup"}, fp, stdin)
+
+	code := run(env)
+	if code != ui.ExitOK {
+		t.Fatalf("setup exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 0 {
+		t.Fatalf("setup should not call provider, got %d requests", len(fp.Requests))
+	}
+
+	configPath := filepath.Join(getenv("HOME"), ".config", "harness", "config.json")
+	providerPath := filepath.Join(getenv("HOME"), ".config", "harness", "openrouter.json")
+	if !strings.Contains(out.String(), configPath) || !strings.Contains(out.String(), providerPath) {
+		t.Fatalf("setup output should name written files, got %q", out.String())
+	}
+
+	var mainCfg struct {
+		Provider        string   `json:"provider"`
+		Model           string   `json:"model"`
+		ProviderConfigs []string `json:"provider_configs"`
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	if err := json.Unmarshal(data, &mainCfg); err != nil {
+		t.Fatalf("decode generated config: %v", err)
+	}
+	if mainCfg.Provider != "openrouter" || mainCfg.Model != "openai/gpt-5.5" {
+		t.Fatalf("generated config = %+v", mainCfg)
+	}
+	if len(mainCfg.ProviderConfigs) != 1 || mainCfg.ProviderConfigs[0] != "openrouter.json" {
+		t.Fatalf("provider configs = %#v", mainCfg.ProviderConfigs)
+	}
+
+	var providerCfg struct {
+		Name    string `json:"name"`
+		APIType string `json:"api_type"`
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		Models  []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	data, err = os.ReadFile(providerPath)
+	if err != nil {
+		t.Fatalf("read generated provider config: %v", err)
+	}
+	if err := json.Unmarshal(data, &providerCfg); err != nil {
+		t.Fatalf("decode generated provider config: %v", err)
+	}
+	if providerCfg.Name != "openrouter" || providerCfg.APIType != "openai" ||
+		providerCfg.BaseURL != "https://openrouter.ai/api/v1" || providerCfg.APIKey != "sk-openrouter" {
+		t.Fatalf("generated provider config = %+v", providerCfg)
+	}
+	if len(providerCfg.Models) != 1 || providerCfg.Models[0].Name != "openai/gpt-5.5" {
+		t.Fatalf("generated models = %#v", providerCfg.Models)
+	}
+}
+
+func TestRunSetupRefusesExistingDefaultConfig(t *testing.T) {
+	fp := llmtest.New("fake")
+	env, _, errw, getenv := fakeProviderEnv(t, []string{"--setup"}, fp, "")
+	configDir := filepath.Join(getenv("HOME"), ".config", "harness")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(configDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"model":"existing"}`), 0o600); err != nil {
+		t.Fatalf("write existing config: %v", err)
+	}
+
+	code := run(env)
+	if code != ui.ExitUsage {
+		t.Fatalf("setup with existing config exit = %d, want 2", code)
+	}
+	if !strings.Contains(errw.String(), "already exists") || !strings.Contains(errw.String(), configPath) {
+		t.Fatalf("stderr should name existing config, got %q", errw.String())
 	}
 }
 

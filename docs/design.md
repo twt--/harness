@@ -415,6 +415,9 @@ Precedence: **flags > environment > config file > built-in defaults.**
   provider_configs, and flag defaults. Provider config paths are resolved relative to
   the config file and may define api_type, base_url, api_key, models, context windows,
   and pricing.
+- `--setup` creates a basic config in the default directory. It prompts for provider
+  name, provider URL, api_type, API key, and model name, then writes the main config
+  plus one provider config.
 - **Selection rule:** `-model` is primary. Provider is inferred — model names starting
   with `claude` → Anthropic, everything else → OpenAI-compatible (the right fallback for
   arbitrary local model names). Explicit `-provider` overrides inference and may name a
