@@ -270,6 +270,7 @@ func TestHarnessEnvMapping(t *testing.T) {
 		"HARNESS_NO_ENV":                 "true",
 		"HARNESS_NO_COLOR":               "true",
 		"HARNESS_VERBOSE":                "true",
+		"HARNESS_PROMPT":                 "env> ",
 	})
 	c, err := Load(nil, env, "")
 	if err != nil {
@@ -298,6 +299,49 @@ func TestHarnessEnvMapping(t *testing.T) {
 	}
 	if !c.Verbose {
 		t.Fatalf("verbose false, want true")
+	}
+	if c.ReplPrompt != "env> " {
+		t.Fatalf("repl prompt %q, want env> ", c.ReplPrompt)
+	}
+}
+
+func TestReplPromptPrecedence(t *testing.T) {
+	// Default is "> ".
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ReplPrompt != "> " {
+		t.Fatalf("default repl prompt %q, want %q", c.ReplPrompt, "> ")
+	}
+
+	// File overrides default.
+	cfgPath := writeConfig(t, `{"prompt":"$ "}`)
+	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ReplPrompt != "$ " {
+		t.Fatalf("file repl prompt %q, want %q", c.ReplPrompt, "$ ")
+	}
+
+	// Env overrides file.
+	env := envFrom(map[string]string{"HARNESS_PROMPT": "# "})
+	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ReplPrompt != "# " {
+		t.Fatalf("env repl prompt %q, want %q", c.ReplPrompt, "# ")
+	}
+
+	// Flag overrides all.
+	c, err = Load([]string{"-model", "gpt-5.5", "-prompt", ">>> "}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ReplPrompt != ">>> " {
+		t.Fatalf("flag repl prompt %q, want %q", c.ReplPrompt, ">>> ")
 	}
 }
 
@@ -435,7 +479,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-	"-v", "-no-color", "-config", "-setup",
+	"-v", "-no-color", "-config", "-setup", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the

@@ -97,6 +97,7 @@ func (r *Renderer) ToolResult(result llm.ToolResult) {
 func (r *Renderer) Notice(msg string) { r.dimLine(msg) }
 
 func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
+	fmt.Fprintln(r.out)
 	elapsed := r.now().Sub(r.turnStart)
 	r.dimLine(usageLine(r.registry, r.model, usage, elapsed))
 }

@@ -109,8 +109,8 @@ func TestUsageLineKnownModelShowsCost(t *testing.T) {
 	})
 
 	got := errw.String()
-	if out.Len() != 0 {
-		t.Errorf("usage line must go to errw, not out; out=%q", out.String())
+	if out.String() != "\n" {
+		t.Errorf("TurnComplete trailing newline should go to out, got out=%q", out.String())
 	}
 	if !strings.Contains(got, "[turn:") {
 		t.Errorf("usage line should be bracketed, got %q", got)
@@ -162,6 +162,23 @@ func TestColorEmittedWhenEnabled(t *testing.T) {
 	r.ToolResult(llm.ToolResult{ForID: "c1", Text: "a\nb\n"})
 	if !strings.Contains(errw.String(), "\x1b[") {
 		t.Errorf("expected ANSI dim escapes when color enabled, got %q", errw.String())
+	}
+}
+
+func TestTurnCompleteWritesTrailingNewline(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{})
+	r.StartTurn()
+	r.TextDelta("hello world")
+	r.TurnComplete(agent.TurnUsage{Steps: 1})
+
+	got := out.String()
+	if !strings.HasSuffix(got, "\n") {
+		t.Errorf("TurnComplete should write a trailing newline to out, got %q", got)
+	}
+	// The trailing newline should appear after the text.
+	if !strings.Contains(got, "hello world\n") {
+		t.Errorf("trailing newline must come after assistant text, got %q", got)
 	}
 }
 

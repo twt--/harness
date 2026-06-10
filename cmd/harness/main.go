@@ -227,6 +227,7 @@ func run(env environment) int {
 		StateDir:    stateDir(getenv),
 		Created:     created,
 		Now:         now,
+		Prompt:      cfg.ReplPrompt,
 	}
 	app.SetUsage(totals)
 

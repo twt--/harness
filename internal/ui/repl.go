@@ -40,6 +40,9 @@ type App struct {
 	// (design §8.4). Tests leave it nil.
 	Interrupt *agent.InterruptWatcher
 
+	// Prompt is the REPL input prompt string (default "> ").
+	Prompt string
+
 	usage session.UsageTotals // cumulative across the session
 }
 
@@ -99,6 +102,12 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	// Unblock the scanner goroutine's pending send on every return path.
 	defer close(scanDone)
 
+	prompt := app.Prompt
+	if prompt == "" {
+		prompt = "> "
+	}
+
+	fmt.Fprint(app.Errw, prompt)
 	for {
 		select {
 		case <-exit:
@@ -119,19 +128,23 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				return ExitOK
 			}
 			if line == "" {
+				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
 			if strings.HasPrefix(line, "//") {
 				app.runTurn(line[1:]) // // escapes one literal leading slash
+				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
 			if strings.HasPrefix(line, "/") {
 				if app.command(line) {
 					return ExitOK
 				}
+				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
 			app.runTurn(line)
+			fmt.Fprint(app.Errw, prompt)
 		}
 	}
 }

@@ -54,8 +54,9 @@ type Config struct {
 	PromptSet bool   // -p was supplied (distinguishes "" from absent)
 
 	// UI.
-	Verbose bool // -v
-	NoColor bool // -no-color or NO_COLOR
+	Verbose     bool   // -v
+	NoColor     bool   // -no-color or NO_COLOR
+	ReplPrompt  string // -prompt: REPL input prompt (default "> ")
 
 	// Provider configs: filenames resolved relative to the config file's directory.
 	ProviderConfigs []string
@@ -80,6 +81,7 @@ type fileConfig struct {
 	ContextWindow        *int     `json:"context_window"`
 	Verbose              *bool    `json:"verbose"`
 	NoColor              *bool    `json:"no_color"`
+	Prompt               string   `json:"prompt"`
 	ProviderConfigs      []string `json:"provider_configs"`
 }
 
@@ -114,7 +116,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fSystem, fSystemOverride, fNoEnv := f.system, f.systemOverride, f.noEnv
 	fResume, fSession := f.resume, f.session
 	fMaxSteps, fDefaultContextWindow, fContextWindow := f.maxSteps, f.defaultContextWindow, f.contextWindow
-	fPrompt, fVerbose, fNoColor := f.prompt, f.verbose, f.noColor
+	fPrompt, fReplPrompt, fVerbose, fNoColor := f.prompt, f.replPrompt, f.verbose, f.noColor
 
 	// set records which flags were explicitly provided, so a flag only overrides
 	// env/file when actually present (flag defaults must not beat lower sources).
@@ -161,6 +163,8 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_VERBOSE"), fc.Verbose, false)
 	c.NoColor = resolveBool(set["no-color"], *fNoColor,
 		getenv("HARNESS_NO_COLOR"), fc.NoColor, false)
+	c.ReplPrompt = resolveString(set["prompt"], *fReplPrompt,
+		getenv("HARNESS_PROMPT"), fc.Prompt, "> ")
 	c.ProviderConfigs = append([]string(nil), fc.ProviderConfigs...)
 	// NO_COLOR (the de-facto standard) disables color regardless of HARNESS_*.
 	if getenv("NO_COLOR") != "" {
@@ -202,6 +206,7 @@ type flags struct {
 	defaultContextWindow     *int
 	contextWindow            *int
 	prompt                   *string
+	replPrompt               *string
 	verbose, noColor         *bool
 	config                   *string
 	setup                    *bool
@@ -226,6 +231,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.noColor = fs.Bool("no-color", false, "disable color output")
+	f.replPrompt = fs.String("prompt", "> ", "REPL input prompt")
 	// -config is consumed by the caller before Load (it picks the file Load
 	// reads); accepted here so it is not rejected as an unknown flag.
 	f.config = fs.String("config", "", "alternate config path")
