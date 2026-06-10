@@ -157,8 +157,14 @@ func applyHunks(content string, hunks []Hunk) (string, error) {
 		// Candidate start in the current file (0-based), from the header
 		// position adjusted by the running offset.
 		want := h.OldStart - 1 + offset
-		if h.OldStart == 0 {
+		switch {
+		case h.OldStart == 0:
 			want = len(lines) // pure insertion at EOF for an empty old side
+		case len(from) == 0:
+			// Pure insertion with OldStart >= 1: unified-diff semantics place
+			// the new lines AFTER existing line OldStart (0-based index
+			// OldStart), not before it.
+			want = h.OldStart + offset
 		}
 
 		pos, ok := locate(lines, from, want, cursor)

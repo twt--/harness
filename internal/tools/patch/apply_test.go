@@ -128,6 +128,24 @@ func TestApplyLaterHunksShiftAfterInsertion(t *testing.T) {
 	}
 }
 
+func TestApplyZeroContextInsertion(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f.txt")
+	writeFile(t, p, "a\nb\nc\n")
+	// Pure zero-old-count insertion with OldStart >= 1: unified-diff semantics
+	// insert the new line AFTER existing line OldStart (here line 1), matching
+	// GNU patch, which yields "a\nINSERTED\nb\nc".
+	patch := "--- a/" + p + "\n+++ b/" + p + "\n@@ -1,0 +2,1 @@\n+INSERTED\n"
+	res := Apply(mustParse(t, patch))
+	if len(res.Rejected) != 0 {
+		t.Fatalf("unexpected rejection: %+v", res.Rejected)
+	}
+	want := "a\nINSERTED\nb\nc\n"
+	if got := readFile(t, p); got != want {
+		t.Errorf("content wrong:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestApplyCreate(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "sub", "new.txt")
