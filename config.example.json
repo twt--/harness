@@ -1,0 +1,11 @@
+{
+  "provider": "openai",
+  "model": "llama3.2",
+  "base_url": "http://localhost:11434/v1",
+  "system": "Prefer concise, direct answers. Mention files by path when discussing code changes.",
+  "no_env": false,
+  "max_steps": 50,
+  "context_window": 0,
+  "verbose": false,
+  "no_color": false
+}
