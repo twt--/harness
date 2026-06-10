@@ -23,11 +23,13 @@ const defaultContextWindow = 128_000
 // modelRegistry is a hand-maintained, best-effort price/context table. Prices
 // are USD per 1M tokens.
 //
-// Anthropic figures verified against current public pricing (Claude model
-// catalog, retrieved at implementation time): cache-read ≈ 0.1× input,
-// 5-minute cache-write ≈ 1.25× input. OpenAI Chat Completions figures from the
-// public pricing page; OpenAI has no separate cache-write charge, and cached
-// input is billed at a reduced rate (CacheRead), so CacheWrite is 0.
+// Anthropic figures verified against the official pricing page (2026-06-09):
+// cache-read = 0.1× input, 5-minute cache-write = 1.25× input. OpenAI GPT-5.x
+// figures verified against developers.openai.com/api/docs/pricing (2026-06-09);
+// OpenAI has no separate cache-write charge, and cached input is billed at a
+// reduced rate (CacheRead), so CacheWrite is 0. The older OpenAI entries match
+// their historical launch prices but are deprecated and no longer listed on the
+// current pricing page (dated versions shut down 2026-10-23).
 var modelRegistry = map[string]ModelInfo{
 	// --- Anthropic ---
 	"claude-fable-5": {
@@ -64,6 +66,24 @@ var modelRegistry = map[string]ModelInfo{
 	},
 
 	// --- OpenAI (Chat Completions) ---
+	"gpt-5.5": {
+		ContextWindow: 1_000_000,
+		Price:         Price{Input: 5.0, Output: 30.0, CacheRead: 0.5},
+	},
+	"gpt-5.4": {
+		ContextWindow: 1_000_000,
+		Price:         Price{Input: 2.5, Output: 15.0, CacheRead: 0.25},
+	},
+	"gpt-5.4-mini": {
+		ContextWindow: 400_000,
+		Price:         Price{Input: 0.75, Output: 4.5, CacheRead: 0.075},
+	},
+	// nano's window is not stated on the official pricing/models pages; 400k is
+	// inferred from the gpt-5.4 mini tier.
+	"gpt-5.4-nano": {
+		ContextWindow: 400_000,
+		Price:         Price{Input: 0.2, Output: 1.25, CacheRead: 0.02},
+	},
 	"gpt-4.1": {
 		ContextWindow: 1_047_576,
 		Price:         Price{Input: 2.0, Output: 8.0, CacheRead: 0.5},
