@@ -30,6 +30,24 @@ type Registry struct {
 	tools map[string]Tool
 }
 
+// RegisterFileTools registers the five built-in file tools (read_file,
+// list_dir, grep, edit, write_file) on r, in that order. It is the only
+// exported path to these tools; their types are unexported by design.
+func RegisterFileTools(r *Registry) {
+	r.Register(readFile{})
+	r.Register(listDir{})
+	r.Register(grep{})
+	r.Register(edit{})
+	r.Register(writeFile{})
+}
+
+// Default returns a Registry preloaded with the built-in file tools.
+func Default() *Registry {
+	r := &Registry{}
+	RegisterFileTools(r)
+	return r
+}
+
 // Register adds a tool. A later registration with the same name replaces the
 // earlier one but keeps its position in the order.
 func (r *Registry) Register(t Tool) {
