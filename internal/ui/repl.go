@@ -140,9 +140,7 @@ func (app *App) command(line string) (exit bool) {
 	case "/clear":
 		app.clear()
 	case "/compact":
-		// Full compaction lands in Phase 11 (design §12); honestly report that
-		// it is not yet wired rather than silently no-op.
-		fmt.Fprintln(app.Errw, "[compact: not yet available; lands in a later phase]")
+		app.compact()
 	case "/usage":
 		fmt.Fprintln(app.Errw, app.usageSummary())
 	case "/save":
@@ -193,6 +191,21 @@ func (app *App) runTurn(prompt string) {
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		fmt.Fprintf(app.Errw, "[error: %v]\n", err)
 	}
+	app.save(app.SessionPath)
+}
+
+// compact forces compaction now (/compact, design §12). The summary call's usage
+// is folded into the cumulative session totals so /usage stays accurate, and the
+// session is saved with the collapsed transcript. A summary-call error is already
+// warned about via the sink by Compact; the transcript is left intact.
+func (app *App) compact() {
+	ctx := context.Background()
+	sink := &accumulatingSink{r: app.Renderer, app: app}
+	u, err := app.Agent.Compact(ctx, sink)
+	if err != nil {
+		return
+	}
+	app.addUsage(agent.TurnUsage{Usage: u})
 	app.save(app.SessionPath)
 }
 

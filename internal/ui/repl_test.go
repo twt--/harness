@@ -179,6 +179,52 @@ func TestREPLUsageCumulative(t *testing.T) {
 	}
 }
 
+func TestREPLCompactCommand(t *testing.T) {
+	var out, errw bytes.Buffer
+	// The only model call here is the summary call /compact triggers.
+	fp := llmtest.New("fake",
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("CANNED SUMMARY")}, Stop: llm.StopEndTurn, Usage: llm.Usage{InputTokens: 9100, OutputTokens: 400}},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+
+	// Seed enough whole turns that there is something older than the last four
+	// to summarize.
+	var seed []llm.Message
+	for i := 0; i < 10; i++ {
+		label := string(rune('a' + i))
+		seed = append(seed,
+			llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: label + " q"}}},
+			llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: label + " a"}}},
+		)
+	}
+	app.Agent.SetTranscript(seed)
+
+	in := strings.NewReader("/compact\n/usage\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+
+	msgs := app.Agent.Transcript()
+	if err := llm.ValidateTranscript(msgs); err != nil {
+		t.Fatalf("transcript invalid after /compact: %v", err)
+	}
+	if len(msgs) != 1+8 {
+		t.Fatalf("/compact should collapse to summary + last 4 turns (9 msgs), got %d", len(msgs))
+	}
+	got := errw.String()
+	if !strings.Contains(got, "compacted") {
+		t.Errorf("/compact should print a compaction report, errw=%q", got)
+	}
+	// The summary call's tokens must fold into the cumulative session totals.
+	if !strings.Contains(got, "9100") || !strings.Contains(got, "400 out") {
+		t.Errorf("/usage should include the summary call usage after /compact, errw=%q", got)
+	}
+	// The summary call was actually issued (the only model call here).
+	if len(fp.Requests) != 1 {
+		t.Errorf("/compact should issue exactly the summary call, got %d requests", len(fp.Requests))
+	}
+}
+
 func TestREPLModelCommand(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake")

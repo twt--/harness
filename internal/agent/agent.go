@@ -96,6 +96,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 	})
 
 	var total llm.Usage
+	var lastInput int // input tokens the final step reported (drives the trigger)
 	steps := 0
 
 	for steps < a.maxSteps {
@@ -109,6 +110,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		res, err := a.stream(ctx, req, sink)
 		steps++
 		total = add(total, res.usage)
+		lastInput = res.usage.InputTokens
 
 		if err != nil {
 			// Cancellation repair: keep streamed partial text as a text-only
@@ -154,6 +156,15 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			sink.Notice(maxStepsNotice(a.maxSteps))
 			break
 		}
+	}
+
+	// Post-turn compaction trigger (design §12, §8.1): fires after the turn
+	// completes, before returning to the prompt. The summary call's usage folds
+	// into the turn total so session totals (via the sink) include compaction. A
+	// compaction error never fails the turn — the warning was already reported and
+	// the transcript was kept intact.
+	if compUsage, err := a.MaybeCompact(ctx, lastInput, sink); err == nil {
+		total = add(total, compUsage)
 	}
 
 	sink.TurnComplete(TurnUsage{Steps: steps, Usage: total})
