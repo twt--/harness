@@ -77,7 +77,10 @@ internal/sysprompt       builtin instructions + environment context (cwd/os/date
 ```
 
 `internal/llm` is the shared contract between the agent loop and the dialects. The loop
-imports only `internal/llm`; a small factory (`llm.New(cfg)`) selects the dialect.
+imports only `internal/llm`; a small factory package (`internal/llm/factory`,
+`factory.New(opts)`) selects the dialect. The factory is its own package — not a file in
+`internal/llm` — because it imports both dialect packages, which themselves import
+`internal/llm` (an import cycle otherwise).
 
 ## 4. Message model (`internal/llm`)
 
@@ -418,7 +421,7 @@ Precedence: **flags > environment > config file > built-in defaults.**
   path (`/chat/completions`, `/messages`) — so `-base-url http://localhost:11434/v1`
   works for Ollama.
 - `internal/config` resolves the user-facing settings, then hands the provider factory a
-  small `llm.Options` struct (provider, model, base URL, API key, max tokens,
+  small `factory.Options` struct (provider, model, base URL, API key, max tokens,
   temperature, context window). This keeps `internal/llm` free of any dependency on the
   flag/env/file machinery.
 
