@@ -47,6 +47,7 @@ func RegisterFileTools(r *Registry) {
 // are unexported by design.
 func RegisterExecTools(r *Registry) {
 	r.Register(runCommand{})
+	r.Register(gitTool{})
 }
 
 // Default returns a Registry preloaded with every built-in tool.
