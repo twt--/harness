@@ -151,10 +151,11 @@ func run(env environment) int {
 	// any warnings to stderr. Skills are disclosed via file-read activation so
 	// the model uses its existing read_file tool to load them on demand.
 	var skillWarnings skills.Warnings
-	discoveredSkills := skills.Discover([]skills.Dir{
+	skillDirs := []skills.Dir{
 		{Path: filepath.Join(wd, ".agents", "skills"), Scope: skills.ScopeProject},
 		{Path: filepath.Join(homeDir(getenv), ".agents", "skills"), Scope: skills.ScopeUser},
-	}, &skillWarnings)
+	}
+	discoveredSkills := skills.Discover(skillDirs, &skillWarnings)
 	for _, w := range skillWarnings {
 		fmt.Fprintf(stderr, "skills: %s\n", w)
 	}
@@ -259,6 +260,7 @@ func run(env environment) int {
 		Now:         now,
 		Prompt:      cfg.ReplPrompt,
 		Skills:      discoveredSkills,
+		SkillDirs:   skillDirs,
 	}
 	app.SetUsage(totals)
 

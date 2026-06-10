@@ -48,6 +48,10 @@ type App struct {
 	// Skills is the discovered skills map for /skills listing and
 	// $skillName invocation (design §10). nil disables both features.
 	Skills map[string]skills.Skill
+	
+	// SkillDirs is the list of scanned skill directories with their scopes,
+	// used by /skills to group output by source location.
+	SkillDirs []skills.Dir
 
 	usage session.UsageTotals // cumulative across the session
 }
@@ -345,22 +349,58 @@ func (app *App) usageSummary() string {
 	return b.String()
 }
 
-// skillsSummary renders the available skills for /skills (design §10).
+// skillsSummary renders the available skills for /skills (design §10), grouped
+// by source directory (local vs user skills).
 func (app *App) skillsSummary() string {
 	if len(app.Skills) == 0 {
 		return "[no skills available]"
 	}
+	
+	// Group skills by scope
+	byScope := make(map[skills.Scope][]string)
+	for name, s := range app.Skills {
+		byScope[s.Scope] = append(byScope[s.Scope], name)
+	}
+	
+	// Find directory paths for each scope
+	scopePath := make(map[skills.Scope]string)
+	for _, d := range app.SkillDirs {
+		scopePath[d.Scope] = d.Path
+	}
+	
 	var b strings.Builder
-	b.WriteString("available skills:\n")
-	names := make([]string, 0, len(app.Skills))
-	for name := range app.Skills {
-		names = append(names, name)
+	
+	// Build directory label
+	dirLabel := func(scope skills.Scope) string {
+		if path, ok := scopePath[scope]; ok {
+			return path
+		}
+		if scope == skills.ScopeProject {
+			return "project"
+		}
+		return "user"
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		s := app.Skills[name]
-		fmt.Fprintf(&b, "  $%s - %s\n", name, s.Description)
+	
+	// Print local (project) skills first, then user skills
+	for _, scope := range []skills.Scope{skills.ScopeProject, skills.ScopeUser} {
+		names := byScope[scope]
+		if len(names) == 0 {
+			continue
+		}
+		sort.Strings(names)
+		
+		if scope == skills.ScopeProject {
+			b.WriteString("local skills:\n")
+		} else {
+			fmt.Fprintf(&b, "user skills (%s):\n", dirLabel(scope))
+		}
+		
+		for _, name := range names {
+			s := app.Skills[name]
+			fmt.Fprintf(&b, "  $%s - %s\n", name, s.Description)
+		}
 	}
+	
 	return b.String()
 }
 
