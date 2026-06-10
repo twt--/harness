@@ -76,13 +76,13 @@ func TestDefaultRegistersFileTools(t *testing.T) {
 			t.Errorf("tool %q has empty schema", s.Name)
 		}
 	}
-	for _, name := range []string{"read_file", "list_dir", "grep", "edit", "write_file", "apply_patch"} {
+	for _, name := range []string{"read_file", "list_dir", "grep", "edit", "write_file", "apply_patch", "run_command"} {
 		if !got[name] {
 			t.Errorf("Default() missing tool %q", name)
 		}
 	}
-	if len(r.Specs()) != 6 {
-		t.Errorf("Default() should register exactly 6 tools, got %d", len(r.Specs()))
+	if len(r.Specs()) != 7 {
+		t.Errorf("Default() should register exactly 7 tools, got %d", len(r.Specs()))
 	}
 }
 

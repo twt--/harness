@@ -42,10 +42,18 @@ func RegisterFileTools(r *Registry) {
 	r.Register(applyPatch{})
 }
 
-// Default returns a Registry preloaded with the built-in file tools.
+// RegisterExecTools registers the exec tools (run_command, git, web_fetch) on
+// r, in that order. It is the only exported path to these tools; their types
+// are unexported by design.
+func RegisterExecTools(r *Registry) {
+	r.Register(runCommand{})
+}
+
+// Default returns a Registry preloaded with every built-in tool.
 func Default() *Registry {
 	r := &Registry{}
 	RegisterFileTools(r)
+	RegisterExecTools(r)
 	return r
 }
 
