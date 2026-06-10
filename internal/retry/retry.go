@@ -1,11 +1,15 @@
-// Package retry holds the backoff policy. Next is a pure function of the attempt
-// number and a Retry-After floor; the retry loop (success/give-up/ctx handling)
-// lives in each provider, which owns APIError.Retryable and injects a sleeper.
+// Package retry holds the backoff policy and Retry-After parsing. Next is a
+// pure function of the attempt number and a Retry-After floor; the retry loop
+// (success/give-up/ctx handling) lives in each provider, which owns
+// APIError.Retryable and injects a sleeper.
 package retry
 
 import (
 	"crypto/rand"
 	"math/big"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +35,42 @@ func Next(attempt int, retryAfter time.Duration) time.Duration {
 		d = retryAfter
 	}
 	return d
+}
+
+// RetryableStatus reports whether an HTTP status code is in the retryable
+// class (design §5.5): 429, 500, 502, 503, and 529 (overloaded).
+func RetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		529:                            // overloaded (Anthropic; compatible servers)
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseRetryAfter parses a Retry-After header value (delay-seconds or HTTP-date)
+// into a duration; 0 when absent or unparseable.
+func ParseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // randN returns a uniform draw from [0, n). n must be positive.

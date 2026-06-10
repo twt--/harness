@@ -7,6 +7,42 @@ import (
 
 const base = 500 * time.Millisecond
 
+func TestRetryableStatus(t *testing.T) {
+	retryable := []int{429, 500, 502, 503, 529}
+	for _, c := range retryable {
+		if !RetryableStatus(c) {
+			t.Errorf("status %d should be retryable", c)
+		}
+	}
+	fatal := []int{400, 401, 403, 404, 422, 200}
+	for _, c := range fatal {
+		if RetryableStatus(c) {
+			t.Errorf("status %d should not be retryable", c)
+		}
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	if d := ParseRetryAfter("3"); d != 3*time.Second {
+		t.Errorf("seconds form = %v, want 3s", d)
+	}
+	if d := ParseRetryAfter(""); d != 0 {
+		t.Errorf("empty = %v, want 0", d)
+	}
+	if d := ParseRetryAfter("-5"); d != 0 {
+		t.Errorf("negative = %v, want 0", d)
+	}
+	if d := ParseRetryAfter("not-a-number"); d != 0 {
+		t.Errorf("garbage = %v, want 0", d)
+	}
+	if d := ParseRetryAfter(time.Now().Add(time.Hour).UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")); d <= 0 || d > time.Hour {
+		t.Errorf("HTTP-date form = %v, want in (0, 1h]", d)
+	}
+	if d := ParseRetryAfter("Mon, 02 Jan 2006 15:04:05 GMT"); d != 0 {
+		t.Errorf("past HTTP-date = %v, want 0", d)
+	}
+}
+
 // uncappedCeiling is base·2^attempt without the 30s clamp, used to bound jitter.
 func uncappedCeiling(attempt int) time.Duration {
 	return base * time.Duration(int64(1)<<uint(attempt))

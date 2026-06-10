@@ -530,36 +530,6 @@ func TestNormalizeStopReason(t *testing.T) {
 	}
 }
 
-func TestParseRetryAfter(t *testing.T) {
-	if d := parseRetryAfter("3"); d != 3*time.Second {
-		t.Errorf("seconds form = %v, want 3s", d)
-	}
-	if d := parseRetryAfter(""); d != 0 {
-		t.Errorf("empty = %v, want 0", d)
-	}
-	if d := parseRetryAfter("-5"); d != 0 {
-		t.Errorf("negative = %v, want 0", d)
-	}
-	if d := parseRetryAfter("not-a-number"); d != 0 {
-		t.Errorf("garbage = %v, want 0", d)
-	}
-}
-
-func TestRetryableStatus(t *testing.T) {
-	retryable := []int{429, 500, 502, 503, 529}
-	for _, c := range retryable {
-		if !retryableStatus(c) {
-			t.Errorf("status %d should be retryable", c)
-		}
-	}
-	fatal := []int{400, 401, 403, 404, 422, 200}
-	for _, c := range fatal {
-		if retryableStatus(c) {
-			t.Errorf("status %d should not be retryable", c)
-		}
-	}
-}
-
 // --- helpers ---
 
 func kindsOf(events []llm.StreamEvent) []llm.EventKind {

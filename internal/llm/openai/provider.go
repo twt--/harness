@@ -13,7 +13,6 @@ import (
 	"io"
 	"iter"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -253,8 +252,8 @@ func normalizeUsage(u *wireUsage) llm.Usage {
 func parseErrorResponse(resp *http.Response) *llm.APIError {
 	apiErr := &llm.APIError{
 		StatusCode: resp.StatusCode,
-		Retryable:  retryableStatus(resp.StatusCode),
-		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		Retryable:  retry.RetryableStatus(resp.StatusCode),
+		RetryAfter: retry.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -273,42 +272,6 @@ func parseErrorResponse(resp *http.Response) *llm.APIError {
 		apiErr.Message = strings.TrimSpace(string(body))
 	}
 	return apiErr
-}
-
-// retryableStatus reports whether a status code is in the retryable class
-// (design §5.5).
-func retryableStatus(code int) bool {
-	switch code {
-	case http.StatusTooManyRequests, // 429
-		http.StatusInternalServerError, // 500
-		http.StatusBadGateway,          // 502
-		http.StatusServiceUnavailable,  // 503
-		529:                            // overloaded (compatible servers)
-		return true
-	default:
-		return false
-	}
-}
-
-// parseRetryAfter parses a Retry-After header value (delay-seconds or HTTP-date)
-// into a duration; 0 when absent or unparseable.
-func parseRetryAfter(v string) time.Duration {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(v); err == nil {
-		if secs < 0 {
-			return 0
-		}
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
 }
 
 // normalizeStopReason maps OpenAI finish_reason values onto the four normalized
