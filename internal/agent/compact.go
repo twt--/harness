@@ -79,7 +79,7 @@ func (a *Agent) Compact(ctx context.Context, sink EventSink) (llm.Usage, error) 
 
 	// Degradation ladder: shrink further while the estimate still overflows
 	// (design §12). Never wedge.
-	compacted = a.degrade(compacted, starts, boundary)
+	compacted = a.degrade(compacted, starts)
 
 	a.transcript = compacted
 	sink.Notice(compactionReport(a.model, collapsed, usage))
@@ -119,9 +119,9 @@ func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm
 // degrade applies the lower rungs of the ladder when the compacted transcript's
 // estimate still exceeds budget: first drop to only the last turn, then
 // hard-truncate the largest tool results in place (design §12). compacted is
-// [summary, ...keptTurns]; starts and boundary describe the pre-compaction
-// transcript so the last turn's start can be located.
-func (a *Agent) degrade(compacted []llm.Message, starts []int, boundary int) []llm.Message {
+// [summary, ...keptTurns]; starts indexes the pre-compaction transcript so the
+// last turn's start can be located.
+func (a *Agent) degrade(compacted []llm.Message, starts []int) []llm.Message {
 	budget := llm.ContextWindow(a.model) * compactThresholdPct / 100
 	if estimateTokens(compacted) <= budget {
 		return compacted

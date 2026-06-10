@@ -291,6 +291,50 @@ func TestREPLProviderErrorReported(t *testing.T) {
 	}
 }
 
+// TestREPLInputReadErrorWarned covers the lint fix: a non-EOF read error from
+// stdin must be surfaced (warned to errw) rather than silently treated as a clean
+// end of input. The scanner stops on the error; Run reports it and exits 0
+// (there is nothing more to read, but the user should know why).
+func TestREPLInputReadErrorWarned(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("hi")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+
+	in := &erroringReader{data: []byte("hello\n"), err: errContext("disk gone")}
+	code := Run(in, app, nil)
+	if code != ExitOK {
+		t.Fatalf("read error should still exit 0, got %d; errw=%q", code, errw.String())
+	}
+	got := errw.String()
+	if !strings.Contains(strings.ToLower(got), "input") || !strings.Contains(got, "disk gone") {
+		t.Errorf("input read error should be warned to errw, got %q", got)
+	}
+	// The session is still saved on this exit path.
+	if _, err := os.Stat(app.SessionPath); err != nil {
+		t.Errorf("read-error exit should save the session: %v", err)
+	}
+}
+
+// erroringReader returns its data once, then a non-EOF error (not io.EOF), so the
+// scanner stops with a real read error rather than clean end-of-input.
+type erroringReader struct {
+	data []byte
+	off  int
+	err  error
+}
+
+func (r *erroringReader) Read(p []byte) (int, error) {
+	if r.off < len(r.data) {
+		n := copy(p, r.data[r.off:])
+		r.off += n
+		return n, nil
+	}
+	return 0, r.err
+}
+
 // errContext is a sentinel non-cancellation error for provider-error tests.
 type errContextT string
 

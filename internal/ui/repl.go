@@ -78,6 +78,10 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 
 	lines := make(chan string)
 	scanDone := make(chan struct{})
+	// scanErr holds a non-EOF read error from the input scanner. It is written
+	// before lines is closed, so Run reads it only after observing the close
+	// (the channel close establishes the happens-before, no race).
+	var scanErr error
 	go func() {
 		defer close(lines)
 		sc := bufio.NewScanner(in)
@@ -89,6 +93,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				return
 			}
 		}
+		scanErr = sc.Err() // nil on clean EOF; a real error otherwise
 	}()
 	// Unblock the scanner goroutine's pending send on every return path.
 	defer close(scanDone)
@@ -103,7 +108,12 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			return ExitInterrupt
 		case line, ok := <-lines:
 			if !ok {
-				// EOF (^D): save and exit cleanly (design §8.4).
+				// Input ended: clean EOF (^D) or a read error. Surface a read
+				// error so it is not mistaken for a deliberate ^D, then save and
+				// exit cleanly either way (design §8.4).
+				if scanErr != nil {
+					fmt.Fprintf(app.Errw, "[input error: %v]\n", scanErr)
+				}
 				app.save(app.SessionPath)
 				return ExitOK
 			}
