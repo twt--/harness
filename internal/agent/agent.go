@@ -47,13 +47,17 @@ type Options struct {
 	// trigger for unknown/local models whose real window differs from the 128k
 	// default.
 	ContextWindow int
+	// Registry supplies model context windows and pricing loaded from provider
+	// config files.
+	Registry *llm.Registry
 }
 
 // Agent drives the turn loop against one provider and tool registry, owning the
 // running transcript.
 type Agent struct {
 	provider      llm.Provider
-	registry      *tools.Registry
+	tools         *tools.Registry
+	registry      *llm.Registry
 	transcript    []llm.Message
 	system        string
 	model         string
@@ -67,9 +71,14 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 	if maxSteps <= 0 {
 		maxSteps = defaultMaxSteps
 	}
+	modelRegistry := opts.Registry
+	if modelRegistry == nil {
+		modelRegistry = llm.NewRegistry(nil)
+	}
 	return &Agent{
 		provider:      provider,
-		registry:      registry,
+		tools:         registry,
+		registry:      modelRegistry,
 		model:         opts.Model,
 		maxSteps:      maxSteps,
 		contextWindow: opts.ContextWindow,
@@ -84,7 +93,7 @@ func (a *Agent) window() int {
 	if a.contextWindow > 0 {
 		return a.contextWindow
 	}
-	return llm.ContextWindow(a.model)
+	return a.registry.ContextWindow(a.model)
 }
 
 // SetSystem sets the system prompt sent on every request.
@@ -124,7 +133,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Model:    a.model,
 			System:   a.system,
 			Messages: a.transcript,
-			Tools:    a.registry.Specs(),
+			Tools:    a.tools.Specs(),
 		}
 
 		res, err := a.stream(ctx, req, sink)
@@ -158,7 +167,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		results := make([]llm.ContentBlock, 0, len(res.toolCalls))
 		for _, call := range res.toolCalls {
 			sink.ToolStart(call)
-			result := a.registry.Dispatch(ctx, call)
+			result := a.tools.Dispatch(ctx, call)
 			sink.ToolResult(result)
 			results = append(results, llm.ContentBlock{
 				Kind:        llm.BlockToolResult,

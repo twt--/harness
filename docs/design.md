@@ -401,21 +401,24 @@ func ContextWindow(model string) int // registry hit, else default 128_000
 
 Unknown models (arbitrary names on OpenAI-compatible servers) display token counts
 without a dollar figure, and use a conservative 128k context-window default,
-overridable with `-context-window`. The price table is maintained by hand and is
-explicitly best-effort.
+overridable with `-context-window`. Model prices and context windows are loaded
+from provider config files referenced by the main config.
 
 ## 7. Configuration and provider selection
 
 Precedence: **flags > environment > config file > built-in defaults.**
 
 - Environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_BASE_URL`,
-  `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags.
-- Config file (optional): `~/.config/harness/config.json` — provider, model, base_url,
-  and flag defaults. **API keys are env-only** (never config or flags — they leak into
-  shell history and committed dotfiles).
+  `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags. Environment API
+  keys override provider-config keys.
+- Config file (optional): `~/.config/harness/config.json` — provider, model,
+  provider_configs, and flag defaults. Provider config paths are resolved relative to
+  the config file and may define api_type, base_url, api_key, models, context windows,
+  and pricing.
 - **Selection rule:** `-model` is primary. Provider is inferred — model names starting
   with `claude` → Anthropic, everything else → OpenAI-compatible (the right fallback for
-  arbitrary local model names). Explicit `-provider` overrides inference. An empty API
+  arbitrary local model names). Explicit `-provider` overrides inference and may name a
+  provider config whose `api_type` selects the OpenAI or Anthropic dialect. An empty API
   key is allowed when the base URL is non-default (local servers need none).
 - A custom base URL supplies scheme/host/prefix only; the dialect appends its standard
   path (`/chat/completions`, `/messages`) — so `-base-url http://localhost:11434/v1`

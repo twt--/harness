@@ -29,22 +29,24 @@ const snippetLines = 5
 // plus NO_COLOR / -no-color); Now is injected so the per-turn duration is
 // deterministic in tests (design §10, §13).
 type RenderOptions struct {
-	Color   bool
-	Verbose bool
-	Model   string
-	Now     func() time.Time
+	Color    bool
+	Verbose  bool
+	Model    string
+	Registry *llm.Registry
+	Now      func() time.Time
 }
 
 // Renderer implements agent.EventSink: assistant text streams to out, while tool
 // one-liners, the usage line, and notices go to errw so one-shot stdout carries
 // only the model's answer (design §10).
 type Renderer struct {
-	out     io.Writer
-	errw    io.Writer
-	color   bool
-	verbose bool
-	model   string
-	now     func() time.Time
+	out      io.Writer
+	errw     io.Writer
+	color    bool
+	verbose  bool
+	model    string
+	registry *llm.Registry
+	now      func() time.Time
 
 	turnStart time.Time
 	pending   map[string]llm.ToolCall // tool_use id -> call, awaiting its result
@@ -57,13 +59,14 @@ func NewRenderer(out, errw io.Writer, opts RenderOptions) *Renderer {
 		now = time.Now
 	}
 	return &Renderer{
-		out:     out,
-		errw:    errw,
-		color:   opts.Color,
-		verbose: opts.Verbose,
-		model:   opts.Model,
-		now:     now,
-		pending: make(map[string]llm.ToolCall),
+		out:      out,
+		errw:     errw,
+		color:    opts.Color,
+		verbose:  opts.Verbose,
+		model:    opts.Model,
+		registry: opts.Registry,
+		now:      now,
+		pending:  make(map[string]llm.ToolCall),
 	}
 }
 
@@ -95,7 +98,7 @@ func (r *Renderer) Notice(msg string) { r.dimLine(msg) }
 
 func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
 	elapsed := r.now().Sub(r.turnStart)
-	r.dimLine(usageLine(r.model, usage, elapsed))
+	r.dimLine(usageLine(r.registry, r.model, usage, elapsed))
 }
 
 // dimLine writes one line to errw, wrapping it in dim ANSI codes when color is
@@ -170,11 +173,13 @@ func resultSummary(result llm.ToolResult) string {
 //	[turn: 3 steps · 12.4k in / 1.8k out · $0.071 · 4.3s]
 //
 // The cost segment is omitted for models with no price entry.
-func usageLine(model string, u agent.TurnUsage, elapsed time.Duration) string {
+func usageLine(registry *llm.Registry, model string, u agent.TurnUsage, elapsed time.Duration) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[turn: %d steps · %s in / %s out", u.Steps, humanTokens(u.Usage.InputTokens), humanTokens(u.Usage.OutputTokens))
-	if usd, known := llm.Cost(model, u.Usage); known {
-		fmt.Fprintf(&b, " · $%.3f", usd)
+	if registry != nil {
+		if usd, known := registry.Cost(model, u.Usage); known {
+			fmt.Fprintf(&b, " · $%.3f", usd)
+		}
 	}
 	fmt.Fprintf(&b, " · %s]", humanDuration(elapsed))
 	return b.String()

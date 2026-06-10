@@ -158,7 +158,7 @@ func TestCompactBelowThresholdUntouched(t *testing.T) {
 	a.SetSystem("sys")
 	a.SetTranscript(transcript)
 
-	window := llm.ContextWindow("claude-opus-4-8")
+	window := a.window()
 	below := window / 2 // well under 78%
 
 	sink := &recordSink{}
@@ -183,7 +183,7 @@ func TestMaybeCompactAboveThresholdCompacts(t *testing.T) {
 	a.SetSystem("sys")
 	a.SetTranscript(transcript)
 
-	window := llm.ContextWindow("claude-opus-4-8")
+	window := a.window()
 	above := window * 80 / 100 // ≥ 78%
 
 	if _, err := a.MaybeCompact(context.Background(), above, &recordSink{}); err != nil {
@@ -333,7 +333,7 @@ func TestMaybeCompactReturnsUsageForTotals(t *testing.T) {
 	a.SetSystem("sys")
 	a.SetTranscript(transcript)
 
-	window := llm.ContextWindow("claude-opus-4-8")
+	window := a.window()
 	above := window * 80 / 100
 
 	u, err := a.MaybeCompact(context.Background(), above, &recordSink{})
@@ -352,7 +352,7 @@ func TestMaybeCompactBelowThresholdReturnsZeroUsage(t *testing.T) {
 	a.SetSystem("sys")
 	a.SetTranscript(transcript)
 
-	below := llm.ContextWindow("claude-opus-4-8") / 2
+	below := a.window() / 2
 	u, err := a.MaybeCompact(context.Background(), below, &recordSink{})
 	if err != nil {
 		t.Fatalf("MaybeCompact: %v", err)
@@ -366,7 +366,7 @@ func TestMaybeCompactBelowThresholdReturnsZeroUsage(t *testing.T) {
 // -context-window override never reaching compaction (design §6, §12). An
 // unknown local model whose real window is far below the 128k registry default,
 // run with a small override, must compact at 78% of the OVERRIDE, not 78% of
-// 128k. Before the fix MaybeCompact read llm.ContextWindow(model) (128k) and
+// 128k. Before the fix MaybeCompact read the registry default (128k) and
 // never fired here, wedging the context.
 func TestContextWindowOverrideMovesTrigger(t *testing.T) {
 	const overrideWindow = 8000
@@ -382,7 +382,7 @@ func TestContextWindowOverrideMovesTrigger(t *testing.T) {
 	// 80% of the 8k override is ≥ 78% of the override but a tiny fraction of the
 	// 128k registry default, so it only triggers when the override is honored.
 	above := overrideWindow * 80 / 100
-	if above*100 >= llm.ContextWindow("local-tiny-8k")*compactThresholdPct {
+	if above*100 >= llm.NewRegistry(nil).ContextWindow("local-tiny-8k")*compactThresholdPct {
 		t.Fatalf("test setup: %d should be below the 128k default trigger", above)
 	}
 
@@ -402,7 +402,7 @@ func TestContextWindowOverrideMovesTrigger(t *testing.T) {
 // the ladder. With a small override the ladder drops to the last turn and
 // hard-truncates the big tool result; with the 128k default the same transcript
 // sails under budget and is left fully intact. Comparing the two proves degrade
-// reads the override, not llm.ContextWindow (design §12 "never wedge").
+// reads the override, not the registry default (design §12 "never wedge").
 func TestContextWindowOverrideMovesDegradeBudget(t *testing.T) {
 	big := strings.Repeat("x", 20_000) // ~5000 estimated tokens in one result
 	build := func() []llm.Message {

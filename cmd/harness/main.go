@@ -93,6 +93,19 @@ func run(env environment) int {
 		return ui.ExitUsage
 	}
 
+	modelRegistry, providerConfigs, err := llm.LoadProviderConfigs(configDir(cfgPath), cfg.ProviderConfigs, func(msg string) {
+		fmt.Fprintf(stderr, "harness: %s\n", msg)
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "harness: %v\n", err)
+		return ui.ExitUsage
+	}
+	effectiveProvider, effectiveBaseURL, effectiveAPIKey := resolveProvider(cfg, providerConfigs)
+	effectiveContextWindow := cfg.ContextWindow
+	if effectiveContextWindow <= 0 {
+		effectiveContextWindow = modelRegistry.ContextWindow(cfg.Model)
+	}
+
 	// System prompt composition (design §8.5). -system and -system-override may
 	// be @file references.
 	appendText, err := resolveAtFile(cfg.System)
@@ -124,22 +137,23 @@ func run(env environment) int {
 		newProvider = factory.New
 	}
 	provider, err := newProvider(factory.Options{
-		Provider:      cfg.Provider,
+		Provider:      effectiveProvider,
 		Model:         cfg.Model,
-		BaseURL:       cfg.BaseURL,
-		APIKey:        cfg.APIKey,
-		ContextWindow: cfg.ContextWindow,
+		BaseURL:       effectiveBaseURL,
+		APIKey:        effectiveAPIKey,
+		ContextWindow: effectiveContextWindow,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
 	}
 
-	registry := tools.Default()
-	ag := agent.New(provider, registry, agent.Options{
+	toolRegistry := tools.Default()
+	ag := agent.New(provider, toolRegistry, agent.Options{
 		MaxSteps:      cfg.MaxSteps,
 		Model:         cfg.Model,
 		ContextWindow: cfg.ContextWindow,
+		Registry:      modelRegistry,
 	})
 
 	created := now()
@@ -182,10 +196,11 @@ func run(env environment) int {
 
 	color := !cfg.NoColor && env.colorTTY
 	renderer := ui.NewRenderer(stdout, stderr, ui.RenderOptions{
-		Color:   color,
-		Verbose: cfg.Verbose,
-		Model:   cfg.Model,
-		Now:     now,
+		Color:    color,
+		Verbose:  cfg.Verbose,
+		Model:    cfg.Model,
+		Registry: modelRegistry,
+		Now:      now,
 	})
 
 	app := &ui.App{
@@ -195,7 +210,8 @@ func run(env environment) int {
 		Errw:        stderr,
 		Provider:    cfg.Provider,
 		Model:       cfg.Model,
-		BaseURL:     cfg.BaseURL,
+		BaseURL:     effectiveBaseURL,
+		Registry:    modelRegistry,
 		System:      systemPrompt,
 		SessionPath: sessionPath,
 		StateDir:    stateDir(getenv),
@@ -241,6 +257,42 @@ func run(env environment) int {
 	// or usage update (design §8.4); main only forwards the exit request.
 	fmt.Fprintf(stderr, "session: %s\n", sessionPath)
 	return ui.Run(env.stdin, app, exitCh)
+}
+
+func configDir(path string) string {
+	if path == "" {
+		return "."
+	}
+	return filepath.Dir(path)
+}
+
+func resolveProvider(cfg config.Config, providers []llm.ProviderConfig) (provider, baseURL, apiKey string) {
+	provider = cfg.Provider
+	baseURL = cfg.BaseURL
+	apiKey = cfg.APIKey
+	pc, ok := providerConfigByName(providers, cfg.Provider)
+	if !ok {
+		return provider, baseURL, apiKey
+	}
+	if pc.APIType != "" {
+		provider = pc.APIType
+	}
+	if baseURL == "" {
+		baseURL = pc.BaseURL
+	}
+	if apiKey == "" {
+		apiKey = pc.APIKey
+	}
+	return provider, baseURL, apiKey
+}
+
+func providerConfigByName(providers []llm.ProviderConfig, name string) (llm.ProviderConfig, bool) {
+	for _, pc := range providers {
+		if pc.Name == name {
+			return pc, true
+		}
+	}
+	return llm.ProviderConfig{}, false
 }
 
 // resolveConfigPath determines the config-file path config.Load should read: an

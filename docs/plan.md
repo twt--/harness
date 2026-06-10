@@ -36,8 +36,8 @@ Implements design §4 (message model), §5.1 (Provider contract), §6 (usage/cos
 - [ ] **Step 3:** Run `go test ./internal/llm/` — expect FAIL (undefined types).
 - [ ] **Step 4:** Implement `message.go`, `provider.go`, `validate.go`. `ValidateTranscript` walks messages tracking the set of open tool_use IDs; any assistant message closes the previous set only if empty.
 - [ ] **Step 5:** Run `go test ./internal/llm/` — expect PASS.
-- [ ] **Step 6:** Write `model_test.go`: known model returns `(cost>0, true)`; unknown model returns `(0, false)`; `ContextWindow("unknown-model")` returns 128000; registry entry returns its own window. Seed the registry with current Anthropic/OpenAI models and prices (verify against current public pricing pages at implementation time — do not trust memory).
-- [ ] **Step 7:** Implement `model.go`; tests PASS.
+- [ ] **Step 6:** Write registry tests: known model returns `(cost>0, true)`; unknown model returns `(0, false)`; `ContextWindow("unknown-model")` returns 128000; provider config files load models, context windows, and prices.
+- [ ] **Step 7:** Implement runtime model registry loading from provider config files; tests PASS.
 - [ ] **Step 8:** Commit `feat: core llm types, transcript validation, model registry`.
 
 ## Phase 2 — SSE reader and retry policy
@@ -197,7 +197,7 @@ Implements design §10. First end-to-end dogfood point.
 Implements design §12 and finishes §6 display.
 
 **Files:**
-- Create: `internal/agent/compact.go` — threshold check (≥78% of `llm.ContextWindow`), summary request, transcript replacement, degradation ladder
+- Create: `internal/agent/compact.go` — threshold check (≥78% of the injected model registry context window), summary request, transcript replacement, degradation ladder
 - Modify: `internal/agent/agent.go` — post-turn trigger; `internal/ui/repl.go` — `/compact`, `/usage`
 - Test: `internal/agent/compact_test.go`
 

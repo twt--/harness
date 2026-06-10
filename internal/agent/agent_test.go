@@ -75,6 +75,14 @@ func dump(msgs []llm.Message) string {
 }
 
 func newAgent(p llm.Provider, reg *tools.Registry, opts Options) *Agent {
+	if opts.Registry == nil {
+		opts.Registry = llm.NewRegistry(map[string]llm.ModelInfo{
+			"claude-opus-4-8": {
+				ContextWindow: 1_000_000,
+				Price:         llm.Price{Input: 5.0, Output: 25.0, CacheRead: 0.5, CacheWrite: 6.25},
+			},
+		})
+	}
 	return New(p, reg, opts)
 }
 

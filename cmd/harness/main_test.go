@@ -156,6 +156,83 @@ func TestRunMissingModelUsageError(t *testing.T) {
 	}
 }
 
+func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	providerPath := filepath.Join(dir, "openrouter.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+  "provider": "openrouter",
+  "model": "openai/gpt-5.1",
+  "provider_configs": ["openrouter.json"]
+}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(providerPath, []byte(`{
+  "name": "openrouter",
+  "api_type": "openai",
+  "base_url": "https://openrouter.ai/api/v1",
+  "api_key": "sk-openrouter-file",
+  "models": [
+    {"name":"openai/gpt-5.1","context_window":1000000,"price":{"input":2,"output":8}}
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.Provider != "openai" {
+		t.Fatalf("factory provider = %q, want api_type openai", got.Provider)
+	}
+	if got.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("factory base URL = %q", got.BaseURL)
+	}
+	if got.APIKey != "sk-openrouter-file" {
+		t.Fatalf("factory API key = %q", got.APIKey)
+	}
+	if got.ContextWindow != 1_000_000 {
+		t.Fatalf("factory context window = %d, want 1000000", got.ContextWindow)
+	}
+}
+
+func TestRunMissingProviderConfigWarnsAndSkips(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+  "provider": "openai",
+  "model": "gpt-5.1",
+  "base_url": "http://localhost:11434/v1",
+  "provider_configs": ["missing.json"]
+}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "warning") || !strings.Contains(errw.String(), "missing.json") {
+		t.Fatalf("stderr should warn and name missing config, got %q", errw.String())
+	}
+}
+
 func TestRunBadFlagUsageError(t *testing.T) {
 	fp := llmtest.New("fake")
 	env, _, _, _ := fakeProviderEnv(t, []string{"-model", "x", "-nonsense"}, fp, "")

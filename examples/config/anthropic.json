@@ -1,0 +1,23 @@
+{
+  "name": "anthropic",
+  "api_type": "anthropic",
+  "base_url": "https://api.anthropic.com",
+  "api_key": "",
+  "models": [
+    {
+      "name": "claude-fable-5",
+      "context_window": 1000000,
+      "price": { "input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5 }
+    },
+    {
+      "name": "claude-opus-4-8",
+      "context_window": 1000000,
+      "price": { "input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25 }
+    },
+    {
+      "name": "claude-sonnet-4-6",
+      "context_window": 1000000,
+      "price": { "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75 }
+    }
+  ]
+}

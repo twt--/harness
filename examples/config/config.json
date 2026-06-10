@@ -1,7 +1,12 @@
 {
-  "provider": "openai",
-  "model": "llama3.2",
-  "base_url": "http://localhost:11434/v1",
+  "provider": "openrouter",
+  "model": "openai/gpt-5.5",
+  "provider_configs": [
+    "openai.json",
+    "anthropic.json",
+    "deepseek.json",
+    "openrouter.json"
+  ],
   "system": "Prefer concise, direct answers. Mention files by path when discussing code changes.",
   "no_env": false,
   "max_steps": 50,

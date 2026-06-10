@@ -1,0 +1,23 @@
+{
+  "name": "openai",
+  "api_type": "openai",
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "",
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "context_window": 1000000,
+      "price": { "input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 0.0 }
+    },
+    {
+      "name": "gpt-5.4",
+      "context_window": 1000000,
+      "price": { "input": 2.5, "output": 15.0, "cache_read": 0.25, "cache_write": 0.0 }
+    },
+    {
+      "name": "o3",
+      "context_window": 200000,
+      "price": { "input": 2.0, "output": 8.0, "cache_read": 0.5, "cache_write": 0.0 }
+    }
+  ]
+}

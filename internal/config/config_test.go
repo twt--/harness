@@ -119,6 +119,17 @@ func TestBaseURLPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
 	}
 }
 
+func TestProviderConfigsReadFromConfigFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"provider_configs":["openai.json","anthropic.json"]}`)
+	c, err := Load(nil, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := strings.Join(c.ProviderConfigs, ","); got != "openai.json,anthropic.json" {
+		t.Fatalf("provider configs %q, want openai.json,anthropic.json", got)
+	}
+}
+
 // The provider-specific base-url env vars seed the base URL for the selected
 // provider. A custom base URL also lets the empty-API-key case stand.
 func TestProviderSpecificBaseURLEnv(t *testing.T) {

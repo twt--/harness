@@ -27,6 +27,7 @@ type App struct {
 	Provider string
 	Model    string
 	BaseURL  string
+	Registry *llm.Registry
 	System   string
 
 	SessionPath string    // current save path; /clear rotates it
@@ -229,8 +230,10 @@ func (app *App) addUsage(u agent.TurnUsage) {
 	app.usage.OutputTokens += u.Usage.OutputTokens
 	app.usage.CacheReadTokens += u.Usage.CacheReadTokens
 	app.usage.CacheWriteTokens += u.Usage.CacheWriteTokens
-	if usd, known := llm.Cost(app.Model, u.Usage); known {
-		app.usage.CostUSD += usd
+	if app.Registry != nil {
+		if usd, known := app.Registry.Cost(app.Model, u.Usage); known {
+			app.usage.CostUSD += usd
+		}
 	}
 }
 

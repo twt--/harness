@@ -119,10 +119,13 @@ Precedence is **flags > environment > config file > built-in defaults**.
 
 - Environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_BASE_URL`,
   `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags
-  (`HARNESS_MODEL`, `HARNESS_MAX_STEPS`, …).
+  (`HARNESS_MODEL`, `HARNESS_MAX_STEPS`, …). Environment API keys override keys
+  from provider config files.
 - Optional config file at `~/.config/harness/config.json` (override with
-  `-config`): `provider`, `model`, `base_url`, and flag defaults. **API keys are
-  never read from the config file.**
+  `-config`): `provider`, `model`, `provider_configs`, and flag defaults. Provider
+  config paths are resolved relative to the config file and may define `api_type`,
+  `base_url`, `api_key`, models, context windows, and pricing. See
+  `examples/config/` for sample files.
 
 ## Meta-commands (REPL)
 

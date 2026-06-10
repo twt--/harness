@@ -2,10 +2,19 @@ package llm
 
 import "testing"
 
+func testRegistry() *Registry {
+	return NewRegistry(map[string]ModelInfo{
+		"claude-opus-4-8": {
+			ContextWindow: 1_000_000,
+			Price:         Price{Input: 5.0, Output: 25.0, CacheRead: 0.5, CacheWrite: 6.25},
+		},
+	})
+}
+
 func TestCostKnownModel(t *testing.T) {
-	// A known model with non-zero usage must report a positive cost and known=true.
+	r := testRegistry()
 	u := Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}
-	cost, known := Cost("claude-opus-4-8", u)
+	cost, known := r.Cost("claude-opus-4-8", u)
 	if !known {
 		t.Fatalf("Cost(known model) known = false, want true")
 	}
@@ -15,8 +24,9 @@ func TestCostKnownModel(t *testing.T) {
 }
 
 func TestCostUnknownModel(t *testing.T) {
+	r := testRegistry()
 	u := Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}
-	cost, known := Cost("totally-made-up-model", u)
+	cost, known := r.Cost("totally-made-up-model", u)
 	if known {
 		t.Fatalf("Cost(unknown model) known = true, want false")
 	}
@@ -26,13 +36,12 @@ func TestCostUnknownModel(t *testing.T) {
 }
 
 func TestCostComponents(t *testing.T) {
-	// All four token categories contribute to the cost. Compare a usage that
-	// exercises cache fields against one that does not.
+	r := testRegistry()
 	base := Usage{InputTokens: 1_000_000}
 	withCache := Usage{InputTokens: 1_000_000, CacheReadTokens: 1_000_000, CacheWriteTokens: 1_000_000}
 
-	baseCost, ok1 := Cost("claude-opus-4-8", base)
-	cacheCost, ok2 := Cost("claude-opus-4-8", withCache)
+	baseCost, ok1 := r.Cost("claude-opus-4-8", base)
+	cacheCost, ok2 := r.Cost("claude-opus-4-8", withCache)
 	if !ok1 || !ok2 {
 		t.Fatalf("expected known model")
 	}
@@ -42,26 +51,23 @@ func TestCostComponents(t *testing.T) {
 }
 
 func TestContextWindowDefault(t *testing.T) {
-	if got := ContextWindow("unknown-model"); got != 128000 {
+	r := testRegistry()
+	if got := r.ContextWindow("unknown-model"); got != 128000 {
 		t.Fatalf("ContextWindow(unknown) = %d, want 128000", got)
 	}
 }
 
 func TestContextWindowKnown(t *testing.T) {
-	// A registry entry returns its own window. claude-opus-4-8 has a 1M window,
-	// which is larger than the default, so this also proves the lookup happened.
-	got := ContextWindow("claude-opus-4-8")
-	if got == 128000 {
-		t.Fatalf("ContextWindow(claude-opus-4-8) returned the default; expected the registered window")
-	}
+	r := testRegistry()
+	got := r.ContextWindow("claude-opus-4-8")
 	if got != 1_000_000 {
 		t.Fatalf("ContextWindow(claude-opus-4-8) = %d, want 1000000", got)
 	}
 }
 
 func TestRegistryEntriesWellFormed(t *testing.T) {
-	// Every registered model must have a positive context window and prices.
-	for name, info := range modelRegistry {
+	r := testRegistry()
+	for name, info := range r.models {
 		if info.ContextWindow <= 0 {
 			t.Errorf("model %q has non-positive context window %d", name, info.ContextWindow)
 		}

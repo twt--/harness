@@ -31,7 +31,7 @@ const (
 type Config struct {
 	APIKey        string
 	BaseURL       string // default https://api.anthropic.com
-	ContextWindow int    // 0 = registry lookup by request model
+	ContextWindow int    // resolved by main from provider config registry
 	HTTPClient    *http.Client
 	Sleep         func(time.Duration) // nil = time.Sleep
 }
@@ -78,9 +78,6 @@ func (p *Provider) Name() string { return "anthropic" }
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		window := p.contextWindow
-		if window == 0 {
-			window = llm.ContextWindow(req.Model)
-		}
 		body, err := json.Marshal(buildRequest(req, window))
 		if err != nil {
 			yield(llm.StreamEvent{}, &llm.APIError{Message: "marshal request: " + err.Error()})

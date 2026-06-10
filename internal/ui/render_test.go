@@ -94,7 +94,13 @@ func TestUsageLineKnownModelShowsCost(t *testing.T) {
 	start := time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC)
 	r := NewRenderer(&out, &errw, RenderOptions{
 		Model: "claude-opus-4-8",
-		Now:   fixedClock(start, 4300*time.Millisecond),
+		Registry: llm.NewRegistry(map[string]llm.ModelInfo{
+			"claude-opus-4-8": {
+				ContextWindow: 1_000_000,
+				Price:         llm.Price{Input: 5.0, Output: 25.0},
+			},
+		}),
+		Now: fixedClock(start, 4300*time.Millisecond),
 	})
 	r.StartTurn()
 	r.TurnComplete(agent.TurnUsage{

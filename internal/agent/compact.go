@@ -82,7 +82,7 @@ func (a *Agent) Compact(ctx context.Context, sink EventSink) (llm.Usage, error) 
 	compacted = a.degrade(compacted, starts)
 
 	a.transcript = compacted
-	sink.Notice(compactionReport(a.model, collapsed, usage))
+	sink.Notice(compactionReport(a.registry, a.model, collapsed, usage))
 	return usage, nil
 }
 
@@ -230,12 +230,14 @@ func estimateTokens(msgs []llm.Message) int {
 //	[compacted: 38 messages → summary · 9.1k in / 0.4k out · $0.05]
 //
 // The cost segment is omitted for models with no price entry.
-func compactionReport(model string, collapsed int, u llm.Usage) string {
+func compactionReport(registry *llm.Registry, model string, collapsed int, u llm.Usage) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[compacted: %d messages → summary · %s in / %s out",
 		collapsed, kiloTokens(u.InputTokens), kiloTokens(u.OutputTokens))
-	if usd, known := llm.Cost(model, u); known {
-		fmt.Fprintf(&b, " · $%.2f", usd)
+	if registry != nil {
+		if usd, known := registry.Cost(model, u); known {
+			fmt.Fprintf(&b, " · $%.2f", usd)
+		}
 	}
 	b.WriteString("]")
 	return b.String()

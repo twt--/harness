@@ -21,7 +21,7 @@ import (
 // (design §7). API keys are passed in (resolved from the environment by the
 // config layer), never read here.
 type Options struct {
-	Provider      string // "openai" | "anthropic"; empty = infer from Model
+	Provider      string // api type: "openai" | "anthropic"; empty = infer from Model
 	Model         string
 	BaseURL       string
 	APIKey        string

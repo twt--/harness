@@ -5,9 +5,9 @@
 // layer, and main (Phase 10) translates a resolved Config into factory.Options
 // and agent/ui options.
 //
-// API keys are read from the environment only — never from flags or the config
-// file — because both leak into shell history and committed dotfiles (design §2,
-// §7).
+// API keys are never read from flags or the main config file. Provider config
+// files may carry keys for users who choose that tradeoff; environment variables
+// still take precedence where the main package resolves the selected provider.
 package config
 
 import (
@@ -28,7 +28,7 @@ var ErrHelp = flag.ErrHelp
 // Config is the fully resolved, provider-neutral configuration.
 type Config struct {
 	// Provider selection.
-	Provider string // "openai" | "anthropic"; resolved after inference
+	Provider string // provider config name or api type; resolved after inference
 	Model    string
 	BaseURL  string
 	APIKey   string // env-only; selected by the resolved provider
@@ -53,23 +53,27 @@ type Config struct {
 	// UI.
 	Verbose bool // -v
 	NoColor bool // -no-color or NO_COLOR
+
+	// Provider configs: filenames resolved relative to the config file's directory.
+	ProviderConfigs []string
 }
 
 const defaultMaxSteps = 50
 
-// fileConfig mirrors the subset of Config that the config file may set
-// (design §7). API keys are intentionally absent: keys are env-only, so any
-// key-like field in the file is ignored.
+// fileConfig mirrors the subset of Config that the main config file may set.
+// API keys are intentionally absent here; provider config files carry provider
+// connection settings and optional keys.
 type fileConfig struct {
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	BaseURL       string `json:"base_url"`
-	System        string `json:"system"`
-	NoEnv         *bool  `json:"no_env"`
-	MaxSteps      *int   `json:"max_steps"`
-	ContextWindow *int   `json:"context_window"`
-	Verbose       *bool  `json:"verbose"`
-	NoColor       *bool  `json:"no_color"`
+	Provider        string   `json:"provider"`
+	Model           string   `json:"model"`
+	BaseURL         string   `json:"base_url"`
+	System          string   `json:"system"`
+	NoEnv           *bool    `json:"no_env"`
+	MaxSteps        *int     `json:"max_steps"`
+	ContextWindow   *int     `json:"context_window"`
+	Verbose         *bool    `json:"verbose"`
+	NoColor         *bool    `json:"no_color"`
+	ProviderConfigs []string `json:"provider_configs"`
 }
 
 // Load resolves a Config from the given args (argv after the program name), a
@@ -141,6 +145,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_VERBOSE"), fc.Verbose, false)
 	c.NoColor = resolveBool(set["no-color"], *fNoColor,
 		getenv("HARNESS_NO_COLOR"), fc.NoColor, false)
+	c.ProviderConfigs = append([]string(nil), fc.ProviderConfigs...)
 	// NO_COLOR (the de-facto standard) disables color regardless of HARNESS_*.
 	if getenv("NO_COLOR") != "" {
 		c.NoColor = true
@@ -189,7 +194,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	fs := flag.NewFlagSet("harness", flag.ContinueOnError)
 	var f flags
 	f.prompt = fs.String("p", "", "one-shot prompt; \"-\" or piped stdin reads the prompt from stdin")
-	f.provider = fs.String("provider", "", "openai | anthropic (default: inferred from -model)")
+	f.provider = fs.String("provider", "", "provider config name or api type (default: inferred from -model)")
 	f.model = fs.String("model", "", "model id (required)")
 	f.baseURL = fs.String("base-url", "", "provider base URL (e.g. http://localhost:11434/v1 for Ollama)")
 	f.system = fs.String("system", "", "append to system prompt (text or @file)")
@@ -208,8 +213,8 @@ func newFlagSet() (*flag.FlagSet, flags) {
 }
 
 // Usage writes the -h/--help screen: a one-line summary followed by every design
-// §10 flag with its description and default. API keys are intentionally absent —
-// they come from the environment only (design §2, §7).
+// §10 flag with its description and default. API keys are intentionally absent
+// from flags; use environment variables or provider config files.
 func Usage(w io.Writer) {
 	fmt.Fprintln(w, "harness — a minimal agentic coding harness.")
 	fmt.Fprintln(w)
@@ -217,7 +222,7 @@ func Usage(w io.Writer) {
 	fmt.Fprintln(w, "  harness [flags]            interactive REPL")
 	fmt.Fprintln(w, "  harness -p \"prompt\" [flags]  one-shot: prints the assistant's answer to stdout")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "API keys come from the environment only: OPENAI_API_KEY or ANTHROPIC_API_KEY.")
+	fmt.Fprintln(w, "API keys come from environment variables or provider config files; env wins.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
 	fs, _ := newFlagSet()
