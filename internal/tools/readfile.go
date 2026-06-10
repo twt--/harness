@@ -71,7 +71,10 @@ func (readFile) Run(ctx context.Context, input json.RawMessage) (string, error) 
 	}
 	defer f.Close()
 
-	br := bufio.NewReader(f)
+	// Buffer must hold the full sniff window; bufio.NewReader's default 4096-byte
+	// buffer would make Peek(binarySniffBytes) return only 4096 bytes and miss a
+	// NUL deeper in the head.
+	br := bufio.NewReaderSize(f, binarySniffBytes)
 	head, _ := br.Peek(binarySniffBytes)
 	if bytes.IndexByte(head, 0) >= 0 {
 		return "", fmt.Errorf("%s appears to be binary", args.Path)

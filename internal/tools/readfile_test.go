@@ -108,6 +108,30 @@ func TestReadFileBinary(t *testing.T) {
 	}
 }
 
+// Regression: the NUL sniff must scan the full 8KB head (design §9.1), not just
+// the first 4KB. A NUL at byte 6000 (no earlier NUL) lies past bufio.Reader's
+// default 4096-byte buffer, so Peek(8192) would return only 4096 bytes and the
+// file would be misclassified as text (review issue: readfile.go).
+func TestReadFileBinaryDeepNUL(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "deep.bin")
+	buf := make([]byte, 8000)
+	for i := range buf {
+		buf[i] = 'a'
+	}
+	buf[6000] = 0
+	if err := os.WriteFile(p, buf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runReadFile(t, map[string]any{"path": p})
+	if err == nil {
+		t.Fatal("expected binary rejection for NUL at byte 6000")
+	}
+	if !strings.Contains(err.Error(), "appears to be binary") {
+		t.Errorf("binary error text wrong: %v", err)
+	}
+}
+
 func TestReadFileEmpty(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "empty.txt")

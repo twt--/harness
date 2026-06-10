@@ -129,6 +129,27 @@ func TestGrepBinarySkipped(t *testing.T) {
 	}
 }
 
+// Regression: the NUL sniff must scan the full 8KB head (design §9.1), not just
+// the first 4KB. A binary file whose first NUL is at ~byte 6300 lies past
+// bufio.Reader's default 4096-byte buffer, so Peek(8192) returns only 4096 bytes
+// and the file would be scanned/emitted as text (review issue: grep.go grepFile).
+func TestGrepBinaryDeepNULSkipped(t *testing.T) {
+	dir := t.TempDir()
+	deep := strings.Repeat("a", 6300) + "needle\x00needle" + strings.Repeat("a", 100)
+	mustWrite(t, filepath.Join(dir, "deep.bin"), deep+"\n")
+	mustWrite(t, filepath.Join(dir, "text.txt"), "needle\n")
+	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, "deep.bin:") {
+		t.Errorf("binary file with deep NUL should be skipped: %q", out)
+	}
+	if !strings.Contains(out, "text.txt") {
+		t.Errorf("text file should match: %q", out)
+	}
+}
+
 func TestGrepSingleFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "only.txt")
