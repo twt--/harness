@@ -235,6 +235,31 @@ func TestStreamEmptyArgs(t *testing.T) {
 	}
 }
 
+func TestStreamInvalidToolJSON(t *testing.T) {
+	srv := serveFixture(t, "invalid_json.sse")
+	p := testProvider(t, srv, nil)
+	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	if err == nil {
+		t.Fatal("expected turn-fatal error from invalid accumulated tool JSON")
+	}
+	var apiErr *llm.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error is not *llm.APIError: %T %v", err, err)
+	}
+	if !strings.Contains(apiErr.Message, "get_weather") {
+		t.Errorf("error message %q does not name the offending tool", apiErr.Message)
+	}
+	// The invalid tail must never surface as a garbage Done, nor reach EventDone.
+	for _, e := range events {
+		if e.Kind == llm.EventToolCallDone {
+			t.Errorf("emitted garbage ToolCallDone for invalid JSON: %s", e.ToolInput)
+		}
+		if e.Kind == llm.EventDone {
+			t.Error("EventDone emitted despite invalid tool JSON")
+		}
+	}
+}
+
 func TestStreamErrorFrame(t *testing.T) {
 	srv := serveFixture(t, "error_frame.sse")
 	p := testProvider(t, srv, nil)
