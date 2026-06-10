@@ -190,3 +190,23 @@ func TestGrepMissingPatternArg(t *testing.T) {
 		t.Fatal("expected error for missing pattern")
 	}
 }
+
+// Regression: a file under the 5MB cap with a single line longer than the
+// scanner's 1MB token limit must still be matched, not silently dropped when
+// bufio.Scanner stops with ErrTooLong (review issue: grep.go grepFile).
+func TestGrepLongSingleLineNotDropped(t *testing.T) {
+	dir := t.TempDir()
+	// 2MB single line containing the pattern, well over the 1MB scan token.
+	long := strings.Repeat("a", 2*1024*1024) + "needle"
+	mustWrite(t, filepath.Join(dir, "big.txt"), long+"\n")
+	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "(no matches)" {
+		t.Fatalf("long line silently dropped: got %q", out)
+	}
+	if !strings.Contains(out, "big.txt:1:") {
+		t.Errorf("expected match on big.txt line 1: %q", out)
+	}
+}

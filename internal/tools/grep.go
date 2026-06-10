@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -194,20 +195,30 @@ func grepFile(ctx context.Context, fsPath, displayPath string, re *regexp.Regexp
 		return nil // binary
 	}
 
-	sc := bufio.NewScanner(br)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// ReadString tolerates lines longer than any fixed buffer (minified bundles
+	// commonly exceed 1MB); bufio.Scanner would stop with ErrTooLong and the
+	// file would be silently dropped. Match text is capped per match in emit.
 	lineno := 0
-	for sc.Scan() {
+	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		lineno++
-		line := sc.Text()
-		if re.MatchString(line) {
-			if !emit(displayPath, lineno, line) {
-				return nil
+		line, err := br.ReadString('\n')
+		if len(line) > 0 || err == nil {
+			lineno++
+			trimmed := strings.TrimRight(line, "\n")
+			trimmed = strings.TrimRight(trimmed, "\r")
+			if re.MatchString(trimmed) {
+				if !emit(displayPath, lineno, trimmed) {
+					return nil
+				}
 			}
 		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return nil // read error mid-file: stop scanning this file, keep walking
+		}
 	}
-	return nil
 }
