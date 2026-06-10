@@ -109,6 +109,7 @@ func run(env environment) int {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
 	}
+	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
 	effectiveProvider, effectiveBaseURL, effectiveAPIKey := resolveProvider(cfg, providerConfigs)
 	effectiveContextWindow := cfg.ContextWindow
 	if effectiveContextWindow <= 0 {
@@ -276,9 +277,10 @@ func configDir(path string) string {
 }
 
 type setupMainConfig struct {
-	Provider        string   `json:"provider"`
-	Model           string   `json:"model"`
-	ProviderConfigs []string `json:"provider_configs"`
+	Provider             string   `json:"provider"`
+	Model                string   `json:"model"`
+	ProviderConfigs      []string `json:"provider_configs"`
+	DefaultContextWindow int      `json:"default_context_window"`
 }
 
 type setupProviderConfig struct {
@@ -352,9 +354,10 @@ func runSetup(env environment) error {
 	}
 
 	mainConfig := setupMainConfig{
-		Provider:        providerName,
-		Model:           modelName,
-		ProviderConfigs: []string{providerFile},
+		Provider:             providerName,
+		Model:                modelName,
+		ProviderConfigs:      []string{providerFile},
+		DefaultContextWindow: llm.DefaultContextWindow,
 	}
 	if err := writeJSONFileExclusive(configPath, mainConfig); err != nil {
 		_ = os.Remove(providerPath)

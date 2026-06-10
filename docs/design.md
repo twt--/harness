@@ -396,13 +396,14 @@ type ModelInfo struct {
     Price         Price
 }
 func Cost(model string, u Usage) (usd float64, known bool)
-func ContextWindow(model string) int // registry hit, else default 128_000
+func ContextWindow(model string) int // registry hit, else default 256_000
 ```
 
 Unknown models (arbitrary names on OpenAI-compatible servers) display token counts
-without a dollar figure, and use a conservative 128k context-window default,
-overridable with `-context-window`. Model prices and context windows are loaded
-from provider config files referenced by the main config.
+without a dollar figure, and use a conservative 256k context-window default,
+configurable with `-default-context-window` and overridable for a run with
+`-context-window`. Model prices and context windows are loaded from provider
+config files referenced by the main config.
 
 ## 7. Configuration and provider selection
 
@@ -742,6 +743,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 -resume <file>    load a session transcript and continue
 -session <file>   explicit session save path
 -max-steps <n>    model round-trips per user turn (default 50)
+-default-context-window <n>
 -context-window <n>
 -v                show tool result snippets
 -no-color

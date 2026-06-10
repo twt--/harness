@@ -10,6 +10,7 @@
   "system": "Prefer concise, direct answers. Mention files by path when discussing code changes.",
   "no_env": false,
   "max_steps": 50,
+  "default_context_window": 256000,
   "context_window": 0,
   "verbose": false,
   "no_color": false

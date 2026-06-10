@@ -44,7 +44,7 @@ type Options struct {
 	// positive it drives the compaction trigger and degradation budget instead of
 	// the model registry's window; zero means "use the registry default" (design
 	// §6, §12). Plumbing it here is what makes the override actually move the
-	// trigger for unknown/local models whose real window differs from the 128k
+	// trigger for unknown/local models whose real window differs from the default
 	// default.
 	ContextWindow int
 	// Registry supplies model context windows and pricing loaded from provider
@@ -87,7 +87,7 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 
 // window returns the context window the compaction trigger and degradation
 // budget should use: the resolved -context-window override when positive,
-// otherwise the model registry's window (128k for unknown models). This is what
+// otherwise the model registry's window (256k by default for unknown models). This is what
 // honors the §6 "overridable with -context-window" promise in the §12 trigger.
 func (a *Agent) window() int {
 	if a.contextWindow > 0 {

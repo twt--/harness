@@ -45,8 +45,9 @@ type Config struct {
 	Session string // -session: explicit save path
 
 	// Loop / model limits.
-	MaxSteps      int // -max-steps, default 50
-	ContextWindow int // -context-window, 0 = registry/default
+	MaxSteps             int // -max-steps, default 50
+	DefaultContextWindow int // -default-context-window, fallback for unknown/unconfigured models
+	ContextWindow        int // -context-window, 0 = registry/default
 
 	// One-shot mode (design §10).
 	Prompt    string // -p value
@@ -60,22 +61,26 @@ type Config struct {
 	ProviderConfigs []string
 }
 
-const defaultMaxSteps = 50
+const (
+	defaultMaxSteps      = 50
+	defaultContextWindow = 256_000
+)
 
 // fileConfig mirrors the subset of Config that the main config file may set.
 // API keys are intentionally absent here; provider config files carry provider
 // connection settings and optional keys.
 type fileConfig struct {
-	Provider        string   `json:"provider"`
-	Model           string   `json:"model"`
-	BaseURL         string   `json:"base_url"`
-	System          string   `json:"system"`
-	NoEnv           *bool    `json:"no_env"`
-	MaxSteps        *int     `json:"max_steps"`
-	ContextWindow   *int     `json:"context_window"`
-	Verbose         *bool    `json:"verbose"`
-	NoColor         *bool    `json:"no_color"`
-	ProviderConfigs []string `json:"provider_configs"`
+	Provider             string   `json:"provider"`
+	Model                string   `json:"model"`
+	BaseURL              string   `json:"base_url"`
+	System               string   `json:"system"`
+	NoEnv                *bool    `json:"no_env"`
+	MaxSteps             *int     `json:"max_steps"`
+	DefaultContextWindow *int     `json:"default_context_window"`
+	ContextWindow        *int     `json:"context_window"`
+	Verbose              *bool    `json:"verbose"`
+	NoColor              *bool    `json:"no_color"`
+	ProviderConfigs      []string `json:"provider_configs"`
 }
 
 // Load resolves a Config from the given args (argv after the program name), a
@@ -108,7 +113,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fProvider, fModel, fBaseURL := f.provider, f.model, f.baseURL
 	fSystem, fSystemOverride, fNoEnv := f.system, f.systemOverride, f.noEnv
 	fResume, fSession := f.resume, f.session
-	fMaxSteps, fContextWindow := f.maxSteps, f.contextWindow
+	fMaxSteps, fDefaultContextWindow, fContextWindow := f.maxSteps, f.defaultContextWindow, f.contextWindow
 	fPrompt, fVerbose, fNoColor := f.prompt, f.verbose, f.noColor
 
 	// set records which flags were explicitly provided, so a flag only overrides
@@ -145,6 +150,8 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 
 	c.MaxSteps = resolveInt(set["max-steps"], *fMaxSteps,
 		getenv("HARNESS_MAX_STEPS"), fc.MaxSteps, defaultMaxSteps)
+	c.DefaultContextWindow = resolveInt(set["default-context-window"], *fDefaultContextWindow,
+		getenv("HARNESS_DEFAULT_CONTEXT_WINDOW"), fc.DefaultContextWindow, defaultContextWindow)
 	c.ContextWindow = resolveInt(set["context-window"], *fContextWindow,
 		getenv("HARNESS_CONTEXT_WINDOW"), fc.ContextWindow, 0)
 
@@ -191,7 +198,9 @@ type flags struct {
 	system, systemOverride   *string
 	noEnv                    *bool
 	resume, session          *string
-	maxSteps, contextWindow  *int
+	maxSteps                 *int
+	defaultContextWindow     *int
+	contextWindow            *int
 	prompt                   *string
 	verbose, noColor         *bool
 	config                   *string
@@ -213,6 +222,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.resume = fs.String("resume", "", "load a session transcript and continue")
 	f.session = fs.String("session", "", "explicit session save path")
 	f.maxSteps = fs.Int("max-steps", defaultMaxSteps, "model round-trips per user turn")
+	f.defaultContextWindow = fs.Int("default-context-window", defaultContextWindow, "default context window for unknown/unconfigured models (tokens)")
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.noColor = fs.Bool("no-color", false, "disable color output")

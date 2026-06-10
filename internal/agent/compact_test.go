@@ -364,26 +364,26 @@ func TestMaybeCompactBelowThresholdReturnsZeroUsage(t *testing.T) {
 
 // TestContextWindowOverrideMovesTrigger is the regression test for the
 // -context-window override never reaching compaction (design §6, §12). An
-// unknown local model whose real window is far below the 128k registry default,
+// unknown local model whose real window is far below the 256k registry default,
 // run with a small override, must compact at 78% of the OVERRIDE, not 78% of
-// 128k. Before the fix MaybeCompact read the registry default (128k) and
+// 256k. Before the fix MaybeCompact read the registry default and
 // never fired here, wedging the context.
 func TestContextWindowOverrideMovesTrigger(t *testing.T) {
 	const overrideWindow = 8000
 	transcript := makeTurns(10)
 	fp := llmtest.New("fake", summaryStep("S", 50, 10))
 	a := newAgent(fp, tools.Default(), Options{
-		Model:         "local-tiny-8k", // unknown model: registry default would be 128k
+		Model:         "local-tiny-8k", // unknown model: registry default would be 256k
 		ContextWindow: overrideWindow,
 	})
 	a.SetSystem("sys")
 	a.SetTranscript(transcript)
 
 	// 80% of the 8k override is ≥ 78% of the override but a tiny fraction of the
-	// 128k registry default, so it only triggers when the override is honored.
+	// 256k registry default, so it only triggers when the override is honored.
 	above := overrideWindow * 80 / 100
 	if above*100 >= llm.NewRegistry(nil).ContextWindow("local-tiny-8k")*compactThresholdPct {
-		t.Fatalf("test setup: %d should be below the 128k default trigger", above)
+		t.Fatalf("test setup: %d should be below the default trigger", above)
 	}
 
 	if _, err := a.MaybeCompact(context.Background(), above, &recordSink{}); err != nil {
@@ -400,7 +400,7 @@ func TestContextWindowOverrideMovesTrigger(t *testing.T) {
 // TestContextWindowOverrideMovesDegradeBudget pins the degradation budget to the
 // override too: the same -context-window value that sizes the trigger must size
 // the ladder. With a small override the ladder drops to the last turn and
-// hard-truncates the big tool result; with the 128k default the same transcript
+// hard-truncates the big tool result; with the 256k default the same transcript
 // sails under budget and is left fully intact. Comparing the two proves degrade
 // reads the override, not the registry default (design §12 "never wedge").
 func TestContextWindowOverrideMovesDegradeBudget(t *testing.T) {
@@ -431,7 +431,7 @@ func TestContextWindowOverrideMovesDegradeBudget(t *testing.T) {
 		t.Fatalf("Compact (override): %v", err)
 	}
 
-	// Same transcript, no override: the 128k default budget leaves all 4 kept
+	// Same transcript, no override: the 256k default budget leaves all 4 kept
 	// turns verbatim (summary + 16 messages), no truncation.
 	def := newAgent(llmtest.New("fake", summaryStep("S", 50, 10)), tools.Default(), Options{
 		Model: "local-tiny",
@@ -445,10 +445,10 @@ func TestContextWindowOverrideMovesDegradeBudget(t *testing.T) {
 	ovEst := estimateTokens(ov.Transcript())
 	defEst := estimateTokens(def.Transcript())
 	if ovEst >= defEst {
-		t.Fatalf("override budget should shrink further than the 128k default: override est %d, default est %d", ovEst, defEst)
+		t.Fatalf("override budget should shrink further than the default: override est %d, default est %d", ovEst, defEst)
 	}
 	// Sanity: the override result must be near its own budget, the default must
-	// keep all four turns verbatim (no truncation under 128k).
+	// keep all four turns verbatim (no truncation under 256k).
 	if len(def.Transcript()) != 1+16 {
 		t.Fatalf("default budget should keep last 4 turns verbatim (summary + 16), got %d", len(def.Transcript()))
 	}

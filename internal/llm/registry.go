@@ -38,14 +38,15 @@ type ModelEntry struct {
 	Price         Price  `json:"price"`
 }
 
-// defaultContextWindow is used for any model not in the registry — arbitrary
-// names on OpenAI-compatible servers. Conservative; overridable via
-// -context-window.
-const defaultContextWindow = 128_000
+// DefaultContextWindow is used for any model not in the registry — arbitrary
+// names on OpenAI-compatible servers. Conservative; configurable via
+// -default-context-window and overridable per run via -context-window.
+const DefaultContextWindow = 256_000
 
 // Registry holds model info loaded from provider config files.
 type Registry struct {
-	models map[string]ModelInfo
+	models               map[string]ModelInfo
+	defaultContextWindow int
 }
 
 // NewRegistry builds a Registry from a pre-built map. Tests use this to avoid
@@ -54,7 +55,10 @@ func NewRegistry(models map[string]ModelInfo) *Registry {
 	if models == nil {
 		models = map[string]ModelInfo{}
 	}
-	return &Registry{models: models}
+	return &Registry{
+		models:               models,
+		defaultContextWindow: DefaultContextWindow,
+	}
 }
 
 // LoadProviderConfigs reads each provider config file, logs warnings for missing
@@ -92,7 +96,19 @@ func LoadProviderConfigs(configDir string, files []string, warn func(string)) (*
 			}
 		}
 	}
-	return &Registry{models: models}, providers, nil
+	return NewRegistry(models), providers, nil
+}
+
+// SetDefaultContextWindow sets the fallback window used when a model has no
+// configured context window. Non-positive values reset to the built-in default.
+func (r *Registry) SetDefaultContextWindow(window int) {
+	if r == nil {
+		return
+	}
+	if window <= 0 {
+		window = DefaultContextWindow
+	}
+	r.defaultContextWindow = window
 }
 
 func decodeProviderConfigs(data []byte) ([]ProviderConfig, error) {
@@ -139,13 +155,16 @@ func (r *Registry) Cost(model string, u Usage) (usd float64, known bool) {
 }
 
 // ContextWindow returns the model's context window from the registry, or the
-// default (128k) for unknown models.
+// configured default for unknown models.
 func (r *Registry) ContextWindow(model string) int {
 	if r == nil {
-		return defaultContextWindow
+		return DefaultContextWindow
 	}
 	if info, ok := r.models[model]; ok && info.ContextWindow > 0 {
 		return info.ContextWindow
 	}
-	return defaultContextWindow
+	if r.defaultContextWindow > 0 {
+		return r.defaultContextWindow
+	}
+	return DefaultContextWindow
 }

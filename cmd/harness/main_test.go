@@ -121,7 +121,7 @@ func TestRunEnvBlockReportsAbsoluteCwd(t *testing.T) {
 func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	flags := []string{
 		"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
-		"-no-env", "-resume", "-session", "-max-steps", "-context-window",
+		"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
 		"-v", "-no-color", "-config", "-setup",
 	}
 	for _, arg := range []string{"-h", "--help"} {
@@ -170,9 +170,10 @@ func TestRunSetupCreatesDefaultConfigAndProviderConfig(t *testing.T) {
 	}
 
 	var mainCfg struct {
-		Provider        string   `json:"provider"`
-		Model           string   `json:"model"`
-		ProviderConfigs []string `json:"provider_configs"`
+		Provider             string   `json:"provider"`
+		Model                string   `json:"model"`
+		ProviderConfigs      []string `json:"provider_configs"`
+		DefaultContextWindow int      `json:"default_context_window"`
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -186,6 +187,9 @@ func TestRunSetupCreatesDefaultConfigAndProviderConfig(t *testing.T) {
 	}
 	if len(mainCfg.ProviderConfigs) != 1 || mainCfg.ProviderConfigs[0] != "openrouter.json" {
 		t.Fatalf("provider configs = %#v", mainCfg.ProviderConfigs)
+	}
+	if mainCfg.DefaultContextWindow != llm.DefaultContextWindow {
+		t.Fatalf("default context window = %d, want %d", mainCfg.DefaultContextWindow, llm.DefaultContextWindow)
 	}
 
 	var providerCfg struct {
@@ -251,10 +255,11 @@ func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.json")
 	providerPath := filepath.Join(dir, "openrouter.json")
 	if err := os.WriteFile(cfgPath, []byte(`{
-  "provider": "openrouter",
-  "model": "openai/gpt-5.1",
-  "provider_configs": ["openrouter.json"]
-}`), 0o644); err != nil {
+	  "provider": "openrouter",
+	  "model": "openai/gpt-5.1",
+	  "default_context_window": 512000,
+	  "provider_configs": ["openrouter.json"]
+	}`), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	if err := os.WriteFile(providerPath, []byte(`{
@@ -294,6 +299,74 @@ func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
 	}
 	if got.ContextWindow != 1_000_000 {
 		t.Fatalf("factory context window = %d, want 1000000", got.ContextWindow)
+	}
+}
+
+func TestRunDefaultContextWindowUsedForUnknownModel(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{
+		"-model", "local-model",
+		"-base-url", "http://localhost:11434/v1",
+		"-default-context-window", "512000",
+		"-p", "hi",
+	}, fp, "")
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.ContextWindow != 512_000 {
+		t.Fatalf("factory context window = %d, want default fallback 512000", got.ContextWindow)
+	}
+}
+
+func TestRunContextWindowOverrideStillWins(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	providerPath := filepath.Join(dir, "openrouter.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+	  "provider": "openrouter",
+	  "model": "openai/gpt-5.1",
+	  "default_context_window": 512000,
+	  "context_window": 64000,
+	  "provider_configs": ["openrouter.json"]
+	}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(providerPath, []byte(`{
+	  "name": "openrouter",
+	  "api_type": "openai",
+	  "base_url": "https://openrouter.ai/api/v1",
+	  "models": [
+	    {"name":"openai/gpt-5.1","context_window":1000000}
+	  ]
+	}`), 0o644); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.ContextWindow != 64_000 {
+		t.Fatalf("factory context window = %d, want explicit override 64000", got.ContextWindow)
 	}
 }
 

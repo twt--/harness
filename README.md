@@ -104,6 +104,7 @@ interrupted.
 -resume <file>    load a session transcript and continue
 -session <file>   explicit session save path
 -max-steps <n>    model round-trips per user turn (default 50)
+-default-context-window <n>   fallback window for unknown/unconfigured models (default 256000)
 -context-window <n>   override the model's context window (tokens)
 -v                show tool result snippets (first ~5 lines, dimmed)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
@@ -121,12 +122,14 @@ Precedence is **flags > environment > config file > built-in defaults**.
 
 - Environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_BASE_URL`,
   `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags
-  (`HARNESS_MODEL`, `HARNESS_MAX_STEPS`, …). Environment API keys override keys
-  from provider config files.
+  (`HARNESS_MODEL`, `HARNESS_MAX_STEPS`, `HARNESS_DEFAULT_CONTEXT_WINDOW`, …).
+  Environment API keys override keys from provider config files.
 - Optional config file at `~/.config/harness/config.json` (override with
   `-config`): `provider`, `model`, `provider_configs`, and flag defaults. Provider
   config paths are resolved relative to the config file and may define `api_type`,
-  `base_url`, `api_key`, models, context windows, and pricing. See
+  `base_url`, `api_key`, models, context windows, and pricing. The
+  `default_context_window` fallback is used only when a model has no configured
+  context window; `context_window` forces an override. See
   `examples/config/` for sample files.
 - Run `./harness --setup` to create a basic default config and provider config.
   It prompts for provider name, provider URL, API type, API key, and model name.

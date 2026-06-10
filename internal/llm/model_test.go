@@ -52,8 +52,19 @@ func TestCostComponents(t *testing.T) {
 
 func TestContextWindowDefault(t *testing.T) {
 	r := testRegistry()
-	if got := r.ContextWindow("unknown-model"); got != 128000 {
-		t.Fatalf("ContextWindow(unknown) = %d, want 128000", got)
+	if got := r.ContextWindow("unknown-model"); got != DefaultContextWindow {
+		t.Fatalf("ContextWindow(unknown) = %d, want %d", got, DefaultContextWindow)
+	}
+}
+
+func TestContextWindowDefaultCanBeConfigured(t *testing.T) {
+	r := testRegistry()
+	r.SetDefaultContextWindow(512_000)
+	if got := r.ContextWindow("unknown-model"); got != 512_000 {
+		t.Fatalf("ContextWindow(unknown) = %d, want 512000", got)
+	}
+	if got := r.ContextWindow("claude-opus-4-8"); got != 1_000_000 {
+		t.Fatalf("configured default should not replace known model window, got %d", got)
 	}
 }
 

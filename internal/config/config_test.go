@@ -262,13 +262,14 @@ func TestProviderInferenceFromModel(t *testing.T) {
 // HARNESS_* env mapping covers the non-key, non-base-url flags too.
 func TestHarnessEnvMapping(t *testing.T) {
 	env := envFrom(map[string]string{
-		"HARNESS_MODEL":          "env-model",
-		"HARNESS_MAX_STEPS":      "12",
-		"HARNESS_CONTEXT_WINDOW": "256000",
-		"HARNESS_SYSTEM":         "env system note",
-		"HARNESS_NO_ENV":         "true",
-		"HARNESS_NO_COLOR":       "true",
-		"HARNESS_VERBOSE":        "true",
+		"HARNESS_MODEL":                  "env-model",
+		"HARNESS_MAX_STEPS":              "12",
+		"HARNESS_DEFAULT_CONTEXT_WINDOW": "512000",
+		"HARNESS_CONTEXT_WINDOW":         "256000",
+		"HARNESS_SYSTEM":                 "env system note",
+		"HARNESS_NO_ENV":                 "true",
+		"HARNESS_NO_COLOR":               "true",
+		"HARNESS_VERBOSE":                "true",
 	})
 	c, err := Load(nil, env, "")
 	if err != nil {
@@ -279,6 +280,9 @@ func TestHarnessEnvMapping(t *testing.T) {
 	}
 	if c.MaxSteps != 12 {
 		t.Fatalf("max-steps %d, want 12", c.MaxSteps)
+	}
+	if c.DefaultContextWindow != 512000 {
+		t.Fatalf("default-context-window %d, want 512000", c.DefaultContextWindow)
 	}
 	if c.ContextWindow != 256000 {
 		t.Fatalf("context-window %d, want 256000", c.ContextWindow)
@@ -316,6 +320,45 @@ func TestMaxStepsDefault(t *testing.T) {
 	}
 	if c.MaxSteps != 50 {
 		t.Fatalf("default max-steps %d, want 50", c.MaxSteps)
+	}
+}
+
+func TestDefaultContextWindowDefault(t *testing.T) {
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DefaultContextWindow != 256_000 {
+		t.Fatalf("default context window %d, want 256000", c.DefaultContextWindow)
+	}
+}
+
+func TestDefaultContextWindowPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"default_context_window":300000}`)
+	env := envFrom(map[string]string{"HARNESS_DEFAULT_CONTEXT_WINDOW": "400000"})
+
+	c, err := Load([]string{"-model", "gpt-5.5", "-default-context-window", "500000"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DefaultContextWindow != 500000 {
+		t.Fatalf("flag precedence: got default context window %d, want 500000", c.DefaultContextWindow)
+	}
+
+	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DefaultContextWindow != 400000 {
+		t.Fatalf("env precedence: got default context window %d, want 400000", c.DefaultContextWindow)
+	}
+
+	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DefaultContextWindow != 300000 {
+		t.Fatalf("file precedence: got default context window %d, want 300000", c.DefaultContextWindow)
 	}
 }
 
@@ -391,7 +434,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 // name every one of them so the help is an accurate reference.
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
-	"-no-env", "-resume", "-session", "-max-steps", "-context-window",
+	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
 	"-v", "-no-color", "-config", "-setup",
 }
 
@@ -433,6 +476,9 @@ func TestUsageListsEveryFlag(t *testing.T) {
 	// -max-steps default (50) must be visible so the reference is accurate.
 	if !strings.Contains(out, "50") {
 		t.Errorf("usage text should show the -max-steps default 50:\n%s", out)
+	}
+	if !strings.Contains(out, "256000") {
+		t.Errorf("usage text should show the -default-context-window default 256000:\n%s", out)
 	}
 }
 
