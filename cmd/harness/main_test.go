@@ -80,6 +80,41 @@ func TestRunOneShotAssistantToStdout(t *testing.T) {
 	}
 }
 
+// TestRunEnvBlockReportsAbsoluteCwd is the regression test for the env block
+// emitting `cwd: .` instead of the absolute working directory (design §8.5).
+// main must populate EnvOptions.Dir via os.Getwd so the system prompt the model
+// receives names a real absolute path it can reason about.
+func TestRunEnvBlockReportsAbsoluteCwd(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("want 1 request, got %d", len(fp.Requests))
+	}
+	system := fp.Requests[0].System
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if !filepath.IsAbs(wd) {
+		t.Fatalf("test precondition: cwd %q is not absolute", wd)
+	}
+	if strings.Contains(system, "cwd: .\n") {
+		t.Errorf("system prompt reports cwd as the literal \".\"; system=%q", system)
+	}
+	if !strings.Contains(system, "cwd: "+wd+"\n") {
+		t.Errorf("system prompt should report the absolute cwd %q; system=%q", wd, system)
+	}
+}
+
 // TestRunHelpFlagExitsZeroWithUsage covers the design §10 help path: -h/--help is
 // a request, not a usage error. It prints a usage screen naming every §10 flag
 // and exits 0 (the prior defect exited 2 with a terse "flag: help requested").
