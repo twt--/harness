@@ -1,6 +1,9 @@
 package modelsdev
 
 import (
+	"bytes"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -165,4 +168,52 @@ func TestModelsByReleaseDateNewestFirst(t *testing.T) {
 	if got := []string{models[0].ID, models[1].ID, models[2].ID}; got[0] != "new" || got[1] != "updated" || got[2] != "old" {
 		t.Fatalf("release sort = %v", got)
 	}
+}
+
+func TestFallbackSnapshotDecodes(t *testing.T) {
+	assertFallbackAPIJSON(t, fallbackAPIJSON)
+}
+
+func TestFallbackCandidateDecodes(t *testing.T) {
+	path := os.Getenv("MODELSDEV_FALLBACK_CANDIDATE")
+	if path == "" {
+		t.Skip("MODELSDEV_FALLBACK_CANDIDATE is not set")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Read candidate: %v", err)
+	}
+	assertFallbackAPIJSON(t, data)
+}
+
+func assertFallbackAPIJSON(t *testing.T, data []byte) {
+	t.Helper()
+	c, err := Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(c.Providers) == 0 {
+		t.Fatal("decoded no providers")
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal raw: %v", err)
+	}
+	if _, ok := raw["providers"]; ok {
+		t.Fatal("expected models.dev api.json provider map, got catalog wrapper with providers key")
+	}
+	if _, ok := raw["models"]; ok {
+		t.Fatal("expected models.dev api.json provider map, got model-only or catalog data with models key")
+	}
+
+	for _, providerData := range raw {
+		var provider struct {
+			Models map[string]json.RawMessage `json:"models"`
+		}
+		if err := json.Unmarshal(providerData, &provider); err == nil && len(provider.Models) > 0 {
+			return
+		}
+	}
+	t.Fatal("expected at least one provider entry with models")
 }
