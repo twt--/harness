@@ -12,10 +12,11 @@ tool-using LLM loop against local files, shell commands, and git.
 - **Unix philosophy for tools.** When the job is already owned by a mature host CLI
   (`grep`, `rg`, `git`, shell commands), expose a thin argv wrapper instead of
   reimplementing optimized search or command semantics in the harness.
-- **Generic over providers.** One internal message/streaming model with two HTTP dialects:
-  Anthropic Messages and OpenAI Chat Completions. "OpenAI-style" means the ecosystem
-  standard — the same code path must work against OpenAI, vLLM, Ollama, OpenRouter, and
-  llama.cpp via a configurable base URL.
+- **Generic over providers.** One internal message/streaming model with three HTTP
+  dialects: Anthropic Messages, OpenAI Responses, and OpenAI Chat Completions.
+  Responses is the default for first-party OpenAI models when models.dev identifies
+  them; Chat Completions remains the OpenAI-compatible path for vLLM, Ollama,
+  OpenRouter, llama.cpp, and custom base URLs.
 - **No sandboxing or permission prompts.** The harness assumes it is launched inside an
   already-sandboxed environment. Tools run with the process's privileges, immediately.
 - **First-class git.** A dedicated `git` tool plus git context in the system prompt.
@@ -24,7 +25,6 @@ tool-using LLM loop against local files, shell commands, and git.
 
 - CLI-subprocess backends (`codex`, `claude -p`) — cut from scope; they run their own
   agent loops and are fundamentally different from a model API.
-- OpenAI Responses API (future work; Chat Completions is the compatibility standard).
 - Markdown rendering, MCP, sub-agents.
 - Adopted in v1.1 (no longer a non-goal; see
   `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`): parallel
@@ -58,8 +58,8 @@ tool-using LLM loop against local files, shell commands, and git.
         │   Provider interface     │   │   registry+dispatch  │
         │   message model, prices  │   │   built-in tools     │
         ├───────────┬──────────────┤   └──────────────────────┘
-        │ llm/openai│ llm/anthropic│
-        └───────────┴──────────────┘
+        │ llm/openai│ llm/responses│ llm/anthropic│
+        └───────────┴──────────────┴──────────────┘
               │ HTTP + SSE (internal/sse, internal/retry)
               ▼
         provider endpoint
@@ -71,6 +71,7 @@ tool-using LLM loop against local files, shell commands, and git.
 cmd/harness/main.go      flags, config load, wiring, signal setup, REPL-vs-oneshot dispatch
 internal/llm             provider-agnostic types, Provider interface, model/price registry, factory
 internal/llm/openai      Chat Completions dialect: wire structs, request builder, stream decode, tool-call assembly
+internal/llm/responses   OpenAI Responses dialect: same responsibilities
 internal/llm/anthropic   Messages dialect: same responsibilities
 internal/sse             generic SSE frame reader
 internal/retry           backoff + jitter + Retry-After parsing
@@ -208,7 +209,7 @@ Mapping subtleties that must be handled:
 
 ```go
 type Provider interface {
-    Name() string // "openai" | "anthropic"
+    Name() string // "openai" | "responses" | "anthropic"
 
     // Stream runs one model call. The iterator yields events until a Done
     // event or a terminal error (yielded at most once, last). Consumer break
@@ -289,7 +290,7 @@ A dialect-agnostic frame reader over `io.Reader`:
 
 ```go
 type Event struct {
-    Type string // from "event:" lines; "" for OpenAI (it never sends them)
+    Type string // from "event:" lines; "" when a dialect sends none
     Data string // "data:" lines joined with \n
 }
 
@@ -301,13 +302,18 @@ func Read(ctx context.Context, r io.Reader) iter.Seq2[Event, error]
 - Accumulates `event:`/`data:` lines; yields on blank line; strips one leading space
   after the colon per the SSE spec; ignores comment (`:`) lines.
 - Dialect handling stays in the providers:
-  - **OpenAI:** every frame is `data:` JSON; the literal `data: [DONE]` terminates.
+  - **OpenAI Chat Completions:** every frame is `data:` JSON; the literal
+    `data: [DONE]` terminates.
+  - **OpenAI Responses:** typed frames such as `response.output_text.delta`,
+    `response.output_item.added`, `response.function_call_arguments.delta`,
+    `response.completed`, `response.incomplete`, and `response.failed`.
   - **Anthropic:** typed frames — `message_start`, `content_block_start`,
     `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`,
     `ping` (ignored), `error` (turn-fatal).
-- **Truncated stream:** body EOF without `[DONE]` / `message_stop` →
-  `ErrTruncatedStream`; the turn fails cleanly. No reconnection — retries never apply
-  mid-stream (§5.5).
+- **Truncated stream:** body EOF without the dialect terminator (`[DONE]`,
+  `response.completed` / `response.incomplete` / `response.failed`, or
+  `message_stop`) → `ErrTruncatedStream`. The agent may re-request the step from
+  scratch when the terminal error is retryable; failed-attempt usage still counts.
 - Cancellation rides on the HTTP request context: cancelling unblocks the body read and
   the iterator yields `ctx.Err()` as its terminal error.
 
@@ -338,16 +344,16 @@ Edge cases:
 
 ### 5.4 Request building
 
-| Concern | OpenAI Chat Completions | Anthropic Messages |
-|---|---|---|
-| Endpoint default | `https://api.openai.com/v1/chat/completions` | `https://api.anthropic.com/v1/messages` |
-| Auth | `Authorization: Bearer <key>` | `x-api-key: <key>` + `anthropic-version: 2023-06-01` |
-| Tool schemas | `tools[].function = {name, description, parameters}` (`type:"function"`) | `tools[] = {name, description, input_schema}` |
-| `max_tokens` | sent only if user-set (compatible servers pick their own defaults) | **required** — if unset, default `min(8192, contextWindow/4)` |
-| Streaming usage | `"stream_options":{"include_usage":true}` (always set) | automatic: input tokens in `message_start`, output in `message_delta` |
-| Stop sequences | `stop` | `stop_sequences` |
-| Temperature | omitted when nil (never send a spurious 0) | same |
-| Reasoning effort | OpenAI: `reasoning_effort`; OpenRouter: `reasoning.effort` | `output_config.effort` |
+| Concern | OpenAI Responses | OpenAI Chat Completions | Anthropic Messages |
+|---|---|---|---|
+| Endpoint default | `https://api.openai.com/v1/responses` | `https://api.openai.com/v1/chat/completions` | `https://api.anthropic.com/v1/messages` |
+| Auth | `Authorization: Bearer <key>` | same | `x-api-key: <key>` + `anthropic-version: 2023-06-01` |
+| Tool schemas | `tools[] = {type:"function", name, description, parameters, strict:false}` | `tools[].function = {name, description, parameters}` (`type:"function"`) | `tools[] = {name, description, input_schema}` |
+| Token cap | `max_output_tokens` sent only if user-set | `max_tokens` sent only if user-set (compatible servers pick their own defaults) | `max_tokens` is required; if unset, default `min(8192, contextWindow/4)` |
+| Streaming usage | final `response.usage` on terminal events | `"stream_options":{"include_usage":true}` (always set) | automatic: input tokens in `message_start`, output in `message_delta` |
+| Stop sequences | not sent | `stop` | `stop_sequences` |
+| Temperature | omitted when nil (never send a spurious 0) | same | same |
+| Reasoning effort | `reasoning.effort` | OpenAI: `reasoning_effort`; OpenRouter: `reasoning.effort` | `output_config.effort` |
 
 The same `ToolSchema.Parameters` bytes go into `parameters` vs `input_schema` —
 schemas are never transformed.
@@ -429,9 +435,10 @@ online lookup.
 
 Precedence: **flags > environment > config file > built-in defaults.**
 
-- Environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_BASE_URL`,
-  `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags. Provider configs
-  may also name provider-specific `api_key_env` variables such as
+- Environment: `OPENAI_API_KEY`, `RESPONSES_API_KEY`, `ANTHROPIC_API_KEY`,
+  `OPENAI_BASE_URL`, `RESPONSES_BASE_URL`, `ANTHROPIC_BASE_URL`, plus `HARNESS_*`
+  equivalents for most flags. `RESPONSES_*` falls back to `OPENAI_*` when unset.
+  Provider configs may also name provider-specific `api_key_env` variables such as
   `OPENROUTER_API_KEY`. Environment API keys override provider-config keys.
 - Config file (optional): `~/.config/harness/config.json` — provider, model,
   provider_configs, run modes, flag defaults, and config-only context-efficiency knobs:
@@ -446,7 +453,8 @@ Precedence: **flags > environment > config file > built-in defaults.**
   harness-supported providers, prompts for the API key, pages the selected provider's
   models newest-first, and asks which model should be the default. The provider config
   is generated from models.dev with all known models for that provider: base URL,
-  api_type, key env vars, context windows, pricing, and reasoning metadata. Without
+  api_type (`responses`, `openai`, or `anthropic`), key env vars, context windows,
+  pricing, and reasoning metadata. Without
   `--force`, setup refuses to overwrite existing provider files and preserves existing
   default provider/model fields; `--force` opts into those overwrites.
 - `--refresh-models` fetches the latest live models.dev catalog and regenerates each
@@ -455,12 +463,16 @@ Precedence: **flags > environment > config file > built-in defaults.**
 - **Selection rule:** `-model` is primary. A `provider:model` value sets the provider and
   strips the prefix before sending requests. Otherwise provider is inferred — model names
   starting with `claude` → Anthropic, everything else → OpenAI-compatible (the right
-  fallback for arbitrary local model names). Explicit `-provider` overrides inference and
-  may name a provider config whose `api_type` selects the OpenAI or Anthropic dialect. An
-  empty API key is allowed when the base URL is non-default (local servers need none).
+  fallback for arbitrary local model names). When models.dev identifies the selected
+  model as first-party OpenAI on the default OpenAI base URL, the effective `api_type`
+  is promoted to `responses`; custom and localhost base URLs stay on Chat Completions
+  unless `api_type:"responses"` is explicit. Explicit `-provider` overrides inference
+  and may name a provider config whose `api_type` selects the Responses, Chat
+  Completions, or Anthropic dialect. An empty API key is allowed when the base URL is
+  non-default (local servers need none).
 - A custom base URL supplies scheme/host/prefix only; the dialect appends its standard
-  path (`/chat/completions`, `/messages`) — so `-base-url http://localhost:11434/v1`
-  works for Ollama.
+  path (`/responses`, `/chat/completions`, `/messages`) — so
+  `-base-url http://localhost:11434/v1` works for Ollama.
 - `internal/config` resolves the user-facing settings, then hands the provider factory a
   small `factory.Options` struct (provider, model, base URL, API key, max tokens,
   temperature, context window, reasoning mode). This keeps `internal/llm` free of any
@@ -885,7 +897,8 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 
 ```
 -p <prompt|->     one-shot mode; "-" or piped stdin reads the prompt from stdin
--provider <name>  openai | anthropic (default: inferred from -model)
+-provider <name>  openai | responses | anthropic, or configured provider name
+                  (default: inferred from -model and models.dev when available)
 -model <id>
 -base-url <url>
 -system <text|@file>           append to system prompt
@@ -991,7 +1004,7 @@ injectable), the retry clock, and `ValidateTranscript`.
 | Layer | Tests |
 |---|---|
 | `internal/sse` | frame parsing tables; huge frames; truncated input |
-| providers | `httptest.Server` replaying `.sse` golden fixtures per dialect → assert ordered events; golden request-JSON tests (role:tool hoisting, args-string vs object, system placement, `stream_options`, cache_control); tool-call reassembly tables (fragment splits, empty args → `{}`, interleaved parallel calls, invalid tail → turn-fatal); truncated stream; mid-stream cancellation; retry loop via injected sleeper (429-then-200, 400 immediate failure, budget exhaustion) |
+| providers | `httptest.Server` replaying `.sse` golden fixtures per dialect → assert ordered events; golden request-JSON tests (Responses input items, Chat role:tool hoisting, args-string vs object, system placement, `stream_options`, cache_control); tool-call reassembly tables (fragment splits, empty args → `{}`, interleaved parallel calls, invalid tail → turn-fatal); truncated stream; mid-stream cancellation; retry loop via injected sleeper (429-then-200, 400 immediate failure, budget exhaustion) |
 | `internal/retry` | `Next`: jitter bounds, 30s cap, Retry-After floor |
 | tools | table-driven against `t.TempDir()`; `grep` wrapper against the host CLI; optional `rg` registration with a fake executable on PATH; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` table: exact/offset/whitespace fuzz, create, delete, rename, multi-file with one rejected file (rejected file untouched) |
 | agent loop | `FakeProvider` scripts: multi-tool batches, error-result feedback (next request carries the error), max-steps stop, cancellation → transcript still re-sendable |
@@ -1034,7 +1047,6 @@ worker, or the wide-open default without separate binaries.
 ## 15. Future work
 
 - CLI-subprocess backends (codex / claude) behind a separate "delegate" abstraction.
-- OpenAI Responses API dialect.
 - Markdown rendering.
 - MCP client support; sub-agent spawning.
 - Smarter prompt-cache breakpoint placement (the fourth allowed breakpoint is still

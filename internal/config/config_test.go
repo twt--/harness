@@ -160,6 +160,29 @@ func TestAnthropicBaseURLEnv(t *testing.T) {
 	}
 }
 
+func TestResponsesBaseURLEnvFallsBackToOpenAI(t *testing.T) {
+	env := envFrom(map[string]string{"OPENAI_BASE_URL": "http://openai.example/v1"})
+	c, err := Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.BaseURL != "http://openai.example/v1" {
+		t.Fatalf("base-url %q, want OPENAI_BASE_URL fallback", c.BaseURL)
+	}
+
+	env = envFrom(map[string]string{
+		"OPENAI_BASE_URL":    "http://openai.example/v1",
+		"RESPONSES_BASE_URL": "http://responses.example/v1",
+	})
+	c, err = Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.BaseURL != "http://responses.example/v1" {
+		t.Fatalf("base-url %q, want RESPONSES_BASE_URL value", c.BaseURL)
+	}
+}
+
 // An explicit -base-url flag overrides the provider-specific base-url env var.
 func TestBaseURLFlagBeatsProviderEnv(t *testing.T) {
 	env := envFrom(map[string]string{"OPENAI_BASE_URL": "http://env.example"})
@@ -191,6 +214,29 @@ func TestAPIKeyReadFromEnvOnlyOpenAI(t *testing.T) {
 	}
 	if c.APIKey != "sk-openai-secret" {
 		t.Fatalf("api key %q, want OPENAI_API_KEY value", c.APIKey)
+	}
+}
+
+func TestAPIKeyReadFromEnvResponsesFallsBackToOpenAI(t *testing.T) {
+	env := envFrom(map[string]string{"OPENAI_API_KEY": "sk-openai-secret"})
+	c, err := Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.APIKey != "sk-openai-secret" {
+		t.Fatalf("api key %q, want OPENAI_API_KEY fallback", c.APIKey)
+	}
+
+	env = envFrom(map[string]string{
+		"OPENAI_API_KEY":    "sk-openai-secret",
+		"RESPONSES_API_KEY": "sk-responses-secret",
+	})
+	c, err = Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.APIKey != "sk-responses-secret" {
+		t.Fatalf("api key %q, want RESPONSES_API_KEY value", c.APIKey)
 	}
 }
 

@@ -144,7 +144,11 @@ func run(env environment) int {
 	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
 	effectiveProvider, effectiveBaseURL, effectiveAPIKey := resolveProvider(cfg, providerConfigs, getenv)
 	reasoning := llm.ReasoningConfig{Effort: cfg.ReasoningEffort}
-	enrichRegistryFromModelsDev(modelRegistry, cfg.Model, cfg.Provider, effectiveProvider, effectiveBaseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr)
+	if apiType, ok := enrichRegistryFromModelsDev(modelRegistry, cfg.Model, cfg.Provider, effectiveProvider, effectiveBaseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr); ok {
+		if useModelsDevAPIType(effectiveProvider, apiType, effectiveBaseURL) {
+			effectiveProvider = apiType
+		}
+	}
 	registryModel := registryModelKey(modelRegistry, cfg.Provider, cfg.Model)
 	if err := validateReasoningEffort(modelRegistry, registryModel, reasoning); err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
@@ -327,7 +331,11 @@ func run(env environment) int {
 			return ui.ModelSelection{}, err
 		}
 		model = modelName
-		enrichRegistryFromModelsDev(modelRegistry, model, providerName, apiType, baseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr)
+		if discoveredAPIType, ok := enrichRegistryFromModelsDev(modelRegistry, model, providerName, apiType, baseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr); ok {
+			if useModelsDevAPIType(apiType, discoveredAPIType, baseURL) {
+				apiType = discoveredAPIType
+			}
+		}
 		registryKey = registryModelKey(modelRegistry, providerName, model)
 		if err := validateReasoningEffort(modelRegistry, registryKey, reasoning); err != nil {
 			return ui.ModelSelection{}, err
@@ -535,15 +543,15 @@ func defaultTerminalRows() int {
 	return rows
 }
 
-func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiType, baseURL string, fetch func(context.Context) (*modelsdev.Catalog, error), needReasoning bool, verbose bool, errw io.Writer) {
+func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiType, baseURL string, fetch func(context.Context) (*modelsdev.Catalog, error), needReasoning bool, verbose bool, errw io.Writer) (string, bool) {
 	if registry == nil || fetch == nil || model == "" {
-		return
+		return "", false
 	}
 	if isLocalBaseURL(baseURL) {
-		return
+		return "", false
 	}
 	if info, ok := registry.Lookup(model); ok && info.ContextWindow > 0 && registry.HasPrice(model) && (!needReasoning || info.Reasoning != nil) {
-		return
+		return "", false
 	}
 
 	catalog, err := fetch(context.Background())
@@ -551,7 +559,7 @@ func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiT
 		if verbose {
 			fmt.Fprintf(errw, "harness: warning: models.dev lookup skipped: %v\n", err)
 		}
-		return
+		return "", false
 	}
 	provider, ok := catalog.Provider(providerID)
 	if !ok {
@@ -560,8 +568,11 @@ func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiT
 	if !ok {
 		provider, ok = catalog.Provider(apiType)
 	}
+	if !ok && apiType == "responses" {
+		provider, ok = catalog.Provider("openai")
+	}
 	if !ok {
-		return
+		return "", false
 	}
 	info, ok := provider.ModelInfo(model)
 	if !ok && apiType != "" && provider.ID != apiType {
@@ -571,7 +582,21 @@ func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiT
 	}
 	if ok {
 		registry.MergeModel(model, info)
+		if discoveredAPIType := provider.APIType(); discoveredAPIType != "" {
+			return discoveredAPIType, true
+		}
 	}
+	return "", false
+}
+
+func useModelsDevAPIType(current, discovered, baseURL string) bool {
+	if discovered == "" || discovered == current {
+		return false
+	}
+	if discovered == "responses" {
+		return isDefaultOpenAIBaseURL(baseURL)
+	}
+	return true
 }
 
 func validateReasoningEffort(registry *llm.Registry, model string, reasoning llm.ReasoningConfig) error {
@@ -614,6 +639,11 @@ func isLocalBaseURL(raw string) bool {
 	}
 	host := strings.ToLower(u.Hostname())
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func isDefaultOpenAIBaseURL(raw string) bool {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	return raw == "" || raw == "https://api.openai.com/v1"
 }
 
 type setupMainConfig struct {
@@ -1606,6 +1636,11 @@ func providerBaseURLEnv(provider string, getenv func(string) string) string {
 	switch provider {
 	case "anthropic":
 		return getenv("ANTHROPIC_BASE_URL")
+	case "responses":
+		if v := getenv("RESPONSES_BASE_URL"); v != "" {
+			return v
+		}
+		return getenv("OPENAI_BASE_URL")
 	default:
 		return getenv("OPENAI_BASE_URL")
 	}
@@ -1615,6 +1650,11 @@ func providerAPIKeyEnv(provider string, getenv func(string) string) string {
 	switch provider {
 	case "anthropic":
 		return getenv("ANTHROPIC_API_KEY")
+	case "responses":
+		if v := getenv("RESPONSES_API_KEY"); v != "" {
+			return v
+		}
+		return getenv("OPENAI_API_KEY")
 	default:
 		return getenv("OPENAI_API_KEY")
 	}

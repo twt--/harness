@@ -304,7 +304,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	fs := flag.NewFlagSet("harness", flag.ContinueOnError)
 	var f flags
 	f.prompt = fs.String("p", "", "one-shot prompt; \"-\" or piped stdin reads the prompt from stdin")
-	f.provider = fs.String("provider", "", "provider config name or api type (default: inferred from -model)")
+	f.provider = fs.String("provider", "", "provider config name or api type: openai, responses, anthropic (default inferred)")
 	f.model = fs.String("model", "", "model id (required)")
 	f.baseURL = fs.String("base-url", "", "provider base URL (e.g. http://localhost:11434/v1 for Ollama)")
 	f.system = fs.String("system", "", "append to system prompt (text or @file)")
@@ -457,6 +457,11 @@ func providerBaseURLEnv(provider string, getenv func(string) string) string {
 	switch provider {
 	case "anthropic":
 		return getenv("ANTHROPIC_BASE_URL")
+	case "responses":
+		if v := getenv("RESPONSES_BASE_URL"); v != "" {
+			return v
+		}
+		return getenv("OPENAI_BASE_URL")
 	default:
 		return getenv("OPENAI_BASE_URL")
 	}
@@ -467,6 +472,11 @@ func providerAPIKeyEnv(provider string, getenv func(string) string) string {
 	switch provider {
 	case "anthropic":
 		return getenv("ANTHROPIC_API_KEY")
+	case "responses":
+		if v := getenv("RESPONSES_API_KEY"); v != "" {
+			return v
+		}
+		return getenv("OPENAI_API_KEY")
 	default:
 		return getenv("OPENAI_API_KEY")
 	}

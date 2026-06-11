@@ -99,7 +99,7 @@ func TestFirstPartyProviderFallbacks(t *testing.T) {
 	if got := openai.BaseURL(); got != "https://api.openai.com/v1" {
 		t.Fatalf("openai BaseURL = %q", got)
 	}
-	if got := openai.APIType(); got != "openai" {
+	if got := openai.APIType(); got != "responses" {
 		t.Fatalf("openai APIType = %q", got)
 	}
 	anthropic, _ := c.Provider("anthropic")

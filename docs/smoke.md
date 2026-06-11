@@ -71,7 +71,7 @@ Expect: a per-turn usage line on stderr with a dollar cost (from configured
 pricing or models.dev), tool one-liners on stderr, the final answer on stdout,
 and a session auto-saved under `~/.local/state/harness/sessions/`.
 
-### OpenAI Chat Completions API
+### OpenAI Responses API
 
 ```sh
 export OPENAI_API_KEY=sk-...
@@ -81,9 +81,10 @@ go build ./cmd/harness
 ./harness -model gpt-5.5            # interactive
 ```
 
-Expect: same behavior as above. Cost appears when the model has configured pricing
-or pricing can be found through models.dev; unknown model names show token counts
-without a dollar figure.
+Expect: same behavior as above. First-party OpenAI models use the Responses
+dialect when models.dev identifies them. Cost appears when the model has
+configured pricing or pricing can be found through models.dev; unknown model
+names show token counts without a dollar figure.
 
 ### Local Ollama (OpenAI-compatible, no key)
 

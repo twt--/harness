@@ -230,7 +230,10 @@ func (p Provider) APIType() string {
 	if p.ID == "anthropic" || strings.Contains(strings.ToLower(p.NPM), "anthropic") || containsString(p.Env, "ANTHROPIC_API_KEY") {
 		return "anthropic"
 	}
-	if p.ID == "openai" || p.API != "" || strings.Contains(strings.ToLower(p.NPM), "openai") {
+	if p.ID == "openai" {
+		return "responses"
+	}
+	if p.API != "" || strings.Contains(strings.ToLower(p.NPM), "openai") {
 		return "openai"
 	}
 	return ""

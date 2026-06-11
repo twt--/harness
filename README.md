@@ -11,10 +11,11 @@ drives a tool-using LLM loop against local files, shell commands, and git.
   diff application, HTML-to-text reduction, and retries are all small enough to
   own; generic Unix capabilities are delegated to host CLIs where that is the
   simpler, battle-tested path.
-- **Generic over providers.** One internal message/streaming model with two HTTP
-  dialects: **Anthropic Messages** and **OpenAI Chat Completions**. The
-  OpenAI-style path is the ecosystem standard — the same code works against
-  OpenAI, vLLM, Ollama, OpenRouter, and llama.cpp via a configurable base URL.
+- **Generic over providers.** One internal message/streaming model with three
+  HTTP dialects: **Anthropic Messages**, **OpenAI Responses**, and **OpenAI Chat
+  Completions**. Responses is the default for first-party OpenAI models when
+  models.dev identifies them; Chat Completions remains the OpenAI-compatible path
+  for vLLM, Ollama, OpenRouter, llama.cpp, and custom base URLs.
 - **No sandbox, no permission prompts.** The harness assumes it is launched
   inside an already-sandboxed environment; tools run with the process's
   privileges, immediately.
@@ -75,14 +76,16 @@ ollama pull llama3.2
 ```
 
 The base URL supplies scheme/host/prefix only; the dialect appends its standard
-path (`/chat/completions` or `/messages`).
+path (`/responses`, `/chat/completions`, or `/messages`).
 
 ### Provider selection
 
 `-model` is primary. The provider is **inferred** from the model name: anything
 starting with `claude` uses the Anthropic dialect, everything else uses the
-OpenAI-compatible dialect (the right fallback for arbitrary local model names).
-An explicit `-provider` overrides the inference. A model value like
+OpenAI-compatible dialect unless models.dev identifies the selected first-party
+OpenAI model, in which case the Responses dialect is used. Custom and local base
+URLs stay on Chat Completions unless `-provider responses` or a provider config
+with `api_type: "responses"` selects Responses explicitly. A model value like
 `openrouter:openai/gpt-5.5` selects the configured `openrouter` provider while
 sending `openai/gpt-5.5` as the provider-local model id.
 
@@ -105,7 +108,8 @@ interrupted.
 
 ```
 -p <prompt|->     one-shot mode; "-" or piped stdin reads the prompt from stdin
--provider <name>  openai | anthropic (default: inferred from -model)
+-provider <name>  openai | responses | anthropic, or a configured provider name
+                  (default: inferred from -model and models.dev when available)
 -model <id>       model id (required)
 -base-url <url>   provider base URL (e.g. http://localhost:11434/v1 for Ollama)
 -system <text|@file>           append to the system prompt (project notes)
@@ -137,16 +141,18 @@ escaped as `@@`).
 
 Precedence is **flags > environment > config file > built-in defaults**.
 
-- Environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_BASE_URL`,
-  `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags
+- Environment: `OPENAI_API_KEY`, `RESPONSES_API_KEY`, `ANTHROPIC_API_KEY`,
+  `OPENAI_BASE_URL`, `RESPONSES_BASE_URL`, `ANTHROPIC_BASE_URL`, plus `HARNESS_*`
+  equivalents for most flags
   (`HARNESS_MODEL`, `HARNESS_MAX_STEPS`, `HARNESS_DEFAULT_CONTEXT_WINDOW`, …).
   Environment API keys override keys from provider config files.
 - Optional config file at `~/.config/harness/config.json` (override with
   `-config`): `provider`, `model`, `provider_configs`, `mode`, `modes` (see
   [Run modes](#run-modes)), and flag defaults. Provider
-  config paths are resolved relative to the config file and may define `api_type`,
-  `base_url`, `api_key`, `api_key_env`, models, context windows, reasoning metadata,
-  and pricing. The `default_context_window` fallback is used only when a model has no
+  config paths are resolved relative to the config file and may define `api_type`
+  (`responses`, `openai`, or `anthropic`), `base_url`, `api_key`, `api_key_env`,
+  models, context windows, reasoning metadata, and pricing. The
+  `default_context_window` fallback is used only when a model has no
   configured context window; `context_window` forces an override. See
   `examples/config/` for sample files.
 - Context-efficiency knobs are config-file only: `agents_md_warn_bytes`
@@ -160,7 +166,8 @@ Precedence is **flags > environment > config file > built-in defaults**.
   local models are left to the provider.
 - If a model is missing context-window, pricing, or needed reasoning metadata locally,
   harness makes a best-effort lookup against `https://models.dev/api.json` and uses
-  the discovered model metadata when available. Localhost base URLs skip this lookup.
+  the discovered model metadata when available. That lookup also promotes
+  first-party OpenAI models to the Responses dialect. Localhost base URLs skip it.
 - Run `./harness --setup` to create a default config and a provider config from
   models.dev, or append a new provider config to an existing default config
   without changing existing defaults. Setup lists harness-supported providers,

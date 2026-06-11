@@ -16,6 +16,7 @@ func TestInferProvider(t *testing.T) {
 		{"gpt infers openai", Options{Model: "gpt-5.4", APIKey: "k"}, "openai"},
 		{"arbitrary local model infers openai", Options{Model: "llama-3.1-70b", APIKey: "k"}, "openai"},
 		{"explicit provider overrides claude inference", Options{Provider: "openai", Model: "claude-weird", APIKey: "k"}, "openai"},
+		{"explicit responses provider", Options{Provider: "responses", Model: "gpt-5.4", APIKey: "k"}, "responses"},
 		{"explicit anthropic overrides non-claude model", Options{Provider: "anthropic", Model: "custom", APIKey: "k"}, "anthropic"},
 	}
 	for _, tc := range cases {
@@ -40,6 +41,10 @@ func TestMissingAPIKeyDefaultBaseURL(t *testing.T) {
 	if _, err := New(Options{Model: "claude-opus-4-8"}); err == nil {
 		t.Error("expected error for missing Anthropic API key with default base URL")
 	}
+	// Responses default base URL with no key is an error.
+	if _, err := New(Options{Provider: "responses", Model: "gpt-5.4"}); err == nil {
+		t.Error("expected error for missing Responses API key with default base URL")
+	}
 }
 
 func TestEmptyKeyAllowedWithCustomBaseURL(t *testing.T) {
@@ -55,6 +60,10 @@ func TestEmptyKeyAllowedWithCustomBaseURL(t *testing.T) {
 	// Same for a custom Anthropic-style endpoint.
 	if _, err := New(Options{Provider: "anthropic", Model: "claude-x", BaseURL: "http://localhost:8080"}); err != nil {
 		t.Errorf("expected empty key allowed with custom anthropic base URL: %v", err)
+	}
+
+	if _, err := New(Options{Provider: "responses", Model: "gpt-5.4", BaseURL: "http://localhost:8080/v1"}); err != nil {
+		t.Errorf("expected empty key allowed with custom responses base URL: %v", err)
 	}
 }
 

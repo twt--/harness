@@ -781,6 +781,119 @@ func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
 	}
 }
 
+func TestRunModelsDevOpenAIDefaultsToResponses(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-p", "hi"}, fp, "")
+	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
+		return testModelsDevCatalog(t), nil
+	}
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.Provider != "responses" || got.ProviderName != "openai" {
+		t.Fatalf("factory options = %+v, want openai provider name on responses api type", got)
+	}
+}
+
+func TestRunModelsDevOpenAICompatibleBaseURLStaysChatCompletions(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-base-url", "https://proxy.example/v1", "-p", "hi"}, fp, "")
+	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
+		return testModelsDevCatalog(t), nil
+	}
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.Provider != "openai" {
+		t.Fatalf("factory provider = %q, want chat-completions api type for custom base URL", got.Provider)
+	}
+}
+
+func TestRunExplicitResponsesUsesOpenAIModelsDevMetadata(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-provider", "responses", "-model", "gpt-5.5", "-p", "hi"}, fp, "")
+	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
+		return testModelsDevCatalog(t), nil
+	}
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.Provider != "responses" {
+		t.Fatalf("factory provider = %q, want responses", got.Provider)
+	}
+	if got.ContextWindow != 1_050_000 {
+		t.Fatalf("context window = %d, want OpenAI models.dev value", got.ContextWindow)
+	}
+}
+
+func TestRunProviderConfigCanSelectResponses(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	providerPath := filepath.Join(dir, "openai.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+	  "provider": "openai",
+	  "model": "gpt-5.5",
+	  "provider_configs": ["openai.json"]
+	}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(providerPath, []byte(`{
+  "name": "openai",
+  "api_type": "responses",
+  "base_url": "https://api.openai.com/v1",
+  "models": [
+    {"name":"gpt-5.5","context_window":1050000,"price":{"input":5,"output":30}}
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.Provider != "responses" || got.ProviderName != "openai" {
+		t.Fatalf("factory options = %+v, want responses api type", got)
+	}
+}
+
 func TestRunReasoningEffortUsesOpenRouterModeAndRequestConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

@@ -15,13 +15,14 @@ import (
 	"harness/internal/llm"
 	"harness/internal/llm/anthropic"
 	"harness/internal/llm/openai"
+	"harness/internal/llm/responses"
 )
 
 // Options is the resolved, provider-neutral configuration handed to the factory
 // (design §7). API keys are passed in (resolved from the environment by the
 // config layer), never read here.
 type Options struct {
-	Provider      string // api type: "openai" | "anthropic"; empty = infer from Model
+	Provider      string // api type: "openai" | "responses" | "anthropic"; empty = infer from Model
 	ProviderName  string // configured provider name, e.g. "openrouter"
 	Model         string
 	BaseURL       string
@@ -67,8 +68,17 @@ func New(opts Options) (llm.Provider, error) {
 			ContextWindow: opts.ContextWindow,
 			ReasoningMode: reasoningMode(opts.ProviderName, provider, opts.BaseURL, opts.ReasoningMode),
 		}), nil
+	case "responses":
+		if opts.APIKey == "" && opts.BaseURL == "" {
+			return nil, fmt.Errorf("llm: OPENAI_API_KEY is required (or set a custom base URL for a local server)")
+		}
+		return responses.New(responses.Config{
+			APIKey:        opts.APIKey,
+			BaseURL:       opts.BaseURL,
+			ContextWindow: opts.ContextWindow,
+		}), nil
 	default:
-		return nil, fmt.Errorf("llm: unknown provider %q (want openai or anthropic)", provider)
+		return nil, fmt.Errorf("llm: unknown provider %q (want openai, responses, or anthropic)", provider)
 	}
 }
 

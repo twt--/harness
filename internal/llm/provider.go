@@ -9,7 +9,7 @@ import (
 // Provider runs one model call as a stream of events. Concrete implementations
 // live in internal/llm/anthropic and internal/llm/openai.
 type Provider interface {
-	Name() string // "openai" | "anthropic"
+	Name() string // "openai" | "responses" | "anthropic"
 
 	// Stream runs one model call. The iterator yields events until a Done
 	// event or a terminal error (yielded at most once, last). Consumer break
