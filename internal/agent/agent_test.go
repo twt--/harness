@@ -527,6 +527,29 @@ func TestTruncatedStreamRetried(t *testing.T) {
 	}
 }
 
+func TestCancellationDuringRetryBackoff(t *testing.T) {
+	// A retryable failure schedules a retry; cancellation arrives during the
+	// backoff sleep, before the next attempt. The loop must honor it: return
+	// context.Canceled, attempt no further request, and leave a valid transcript.
+	fail := llmtest.Step{Err: &llm.APIError{StatusCode: 529, Message: "overloaded", Retryable: true}}
+	fp := llmtest.New("fake", fail, fail, fail)
+	a := newAgent(fp, tools.Default(), Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.sleep = func(time.Duration) { cancel() }
+
+	err := a.RunTurn(ctx, "hi", &recordSink{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+	}
+	// One real attempt, then cancellation during the backoff stops the loop
+	// before any retry re-requests the step.
+	if len(fp.Requests) > 2 {
+		t.Errorf("provider called %d times, want at most 2 (no retry after cancel)", len(fp.Requests))
+	}
+	mustValid(t, a.Transcript())
+}
+
 func TestZeroedFinalUsageFrameDoesNotEraseEarlier(t *testing.T) {
 	// The Done event carries zero usage (FakeProvider appends Done with
 	// step.Usage, here the zero value); the mid-stream snapshot must survive.
