@@ -173,6 +173,40 @@ func TestBuildRequestNoSystemOmitsSystem(t *testing.T) {
 	}
 }
 
+func TestBuildRequestToolsCacheBreakpoint(t *testing.T) {
+	req := llm.Request{
+		Model: "m",
+		Tools: []llm.ToolSchema{
+			{Name: "a", Parameters: json.RawMessage(`{}`)},
+			{Name: "b", Parameters: json.RawMessage(`{}`)},
+		},
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hi"}}},
+		},
+	}
+	w := buildRequest(req, 200_000)
+
+	if w.Tools[0].CacheControl != nil {
+		t.Error("first tool must not carry cache_control")
+	}
+	if w.Tools[1].CacheControl == nil || w.Tools[1].CacheControl.Type != "ephemeral" {
+		t.Errorf("last tool must carry the ephemeral breakpoint, got %+v", w.Tools[1].CacheControl)
+	}
+}
+
+func TestBuildRequestNoToolsNoBreakpointPanic(t *testing.T) {
+	req := llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hi"}}},
+		},
+	}
+	w := buildRequest(req, 200_000)
+	if len(w.Tools) != 0 {
+		t.Fatalf("unexpected tools: %+v", w.Tools)
+	}
+}
+
 // jsonEqual reports whether two JSON documents are semantically equal.
 func jsonEqual(t *testing.T, a, b []byte) bool {
 	t.Helper()
