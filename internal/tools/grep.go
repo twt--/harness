@@ -9,9 +9,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -35,7 +37,8 @@ const grepSchema = `{
     "path": {"type": "string", "description": "File or directory to search (default \".\")."},
     "glob": {"type": "string", "description": "Optional path.Match glob filtering base names."},
     "ignore_case": {"type": "boolean", "description": "Case-insensitive match (prepends (?i))."},
-    "max_matches": {"type": "integer", "description": "Maximum matches to return (default 200)."}
+    "max_matches": {"type": "integer", "description": "Maximum matches to return (default 200)."},
+    "no_ignore": {"type": "boolean", "description": "Search ignored files too (gitignore filtering is the default inside git repos)."}
   },
   "required": ["pattern"]
 }`
@@ -45,7 +48,7 @@ type grep struct{}
 func (grep) Name() string { return "grep" }
 
 func (grep) Description() string {
-	return "Search file contents with a Go (RE2) regular expression. Recurses from a path; prints path:line:text."
+	return "Search file contents with a Go (RE2) regular expression. Recurses from a path; respects .gitignore inside git repos; prints path:line:text."
 }
 
 func (grep) Schema() json.RawMessage { return json.RawMessage(grepSchema) }
@@ -57,6 +60,7 @@ func (grep) Run(ctx context.Context, input json.RawMessage) (string, error) {
 		Glob       string `json:"glob"`
 		IgnoreCase bool   `json:"ignore_case"`
 		MaxMatches int    `json:"max_matches"`
+		NoIgnore   bool   `json:"no_ignore"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return "", err
@@ -118,47 +122,33 @@ func (grep) Run(ctx context.Context, input json.RawMessage) (string, error) {
 			return "", err
 		}
 	} else {
-		walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				// Unreadable entry: skip it, keep walking.
-				if d != nil && d.IsDir() {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if d.IsDir() {
-				if p != root && grepDenylist[d.Name()] {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if !d.Type().IsRegular() {
-				return nil
-			}
-			if args.Glob != "" {
-				ok, _ := path.Match(args.Glob, d.Name())
-				if !ok {
-					return nil
+		listed := false
+		if !args.NoIgnore {
+			if files, ok := gitListFiles(ctx, root); ok {
+				listed = true
+				for _, rel := range files {
+					if ctx.Err() != nil {
+						return "", ctx.Err()
+					}
+					if args.Glob != "" {
+						if ok, _ := path.Match(args.Glob, filepath.Base(rel)); !ok {
+							continue
+						}
+					}
+					display := filepath.Join(filepath.Base(root), rel)
+					if err := grepFile(ctx, filepath.Join(root, rel), display, re, emit); err != nil {
+						return "", err
+					}
+					if truncated {
+						break
+					}
 				}
 			}
-			rel, rerr := filepath.Rel(root, p)
-			if rerr != nil {
-				rel = p
+		}
+		if !listed {
+			if err := walkGrep(ctx, root, args.Glob, re, emit, &truncated); err != nil {
+				return "", err
 			}
-			rel = filepath.Join(filepath.Base(root), rel)
-			if cerr := grepFile(ctx, p, rel, re, emit); cerr != nil {
-				return cerr
-			}
-			if truncated {
-				return errStopWalk
-			}
-			return nil
-		})
-		if walkErr != nil && walkErr != errStopWalk {
-			return "", walkErr
 		}
 	}
 
@@ -170,6 +160,74 @@ func (grep) Run(ctx context.Context, input json.RawMessage) (string, error) {
 		out += fmt.Sprintf("\n[truncated at %d matches]", maxMatches)
 	}
 	return out, nil
+}
+
+// gitListFiles lists tracked plus untracked-but-not-ignored files under root
+// (git grep --untracked semantics), paths relative to root, sorted. ok is
+// false when root is not in a git work tree or git is unavailable; the caller
+// falls back to the denylist walk. Ignore semantics — nesting, negation,
+// global excludes — are git's own, which is the point (spec §9).
+func gitListFiles(ctx context.Context, root string) ([]string, bool) {
+	cmd := exec.CommandContext(ctx, "git", "-C", root,
+		"ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ".")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	var files []string
+	for _, f := range bytes.Split(out, []byte{0}) {
+		if len(f) > 0 {
+			files = append(files, string(f))
+		}
+	}
+	slices.Sort(files)
+	return files, true
+}
+
+// walkGrep is the denylist walk used outside git repos or with no_ignore.
+func walkGrep(ctx context.Context, root, glob string, re *regexp.Regexp, emit func(string, int, string) bool, truncated *bool) error {
+	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.IsDir() {
+			if p != root && grepDenylist[d.Name()] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if glob != "" {
+			ok, _ := path.Match(glob, d.Name())
+			if !ok {
+				return nil
+			}
+		}
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			rel = p
+		}
+		rel = filepath.Join(filepath.Base(root), rel)
+		if cerr := grepFile(ctx, p, rel, re, emit); cerr != nil {
+			return cerr
+		}
+		if *truncated {
+			return errStopWalk
+		}
+		return nil
+	})
+	if walkErr != nil && walkErr != errStopWalk {
+		return walkErr
+	}
+	return nil
 }
 
 // errStopWalk halts a WalkDir once the match cap is hit; it is filtered out by
