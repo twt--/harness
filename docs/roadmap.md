@@ -13,7 +13,6 @@ line-level claims before starting one.
    command line. `exec` (argv array, no shell — design §9.8) eliminates the
    failure class for arguments; `stdin` on both tools eliminates it for
    documents (`git commit -F -`, `python -`, `tee file`).
-<<<<<<< HEAD
 2. **Mid-stream retry.** The agent loop re-requests a step from scratch when
    its stream fails after the first byte (truncated body, retryable error
    frame, transport reset), 2 retries per step with backoff. Failed-attempt
