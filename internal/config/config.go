@@ -52,6 +52,11 @@ type Config struct {
 	ContextWindow        int // -context-window, 0 = registry/default
 	ReasoningEffort      string
 
+	// Run mode. Empty means "not specified" so main can let a resumed
+	// session supply the mode before falling back to the default.
+	Mode  string
+	Modes map[string]FileModeConfig // raw "modes" config entries; main converts to mode.FileMode
+
 	// One-shot mode (design §10).
 	Prompt    string // -p value
 	PromptSet bool   // -p was supplied (distinguishes "" from absent)
@@ -70,6 +75,14 @@ const (
 	defaultContextWindow = 256_000
 )
 
+// FileModeConfig is one entry of the config file's "modes" object. It mirrors
+// mode.FileMode; config deliberately does not import internal/mode (which
+// would pull in the tools/llm layers), so main performs the conversion.
+type FileModeConfig struct {
+	AllowedTools []string `json:"allowed_tools"`
+	Prompt       string   `json:"prompt"`
+}
+
 // fileConfig mirrors the subset of Config that the main config file may set.
 // API keys are intentionally absent here; provider config files carry provider
 // connection settings and optional keys.
@@ -87,6 +100,9 @@ type fileConfig struct {
 	NoColor              *bool    `json:"no_color"`
 	Prompt               string   `json:"prompt"`
 	ProviderConfigs      []string `json:"provider_configs"`
+
+	Mode  string                    `json:"mode"`
+	Modes map[string]FileModeConfig `json:"modes"`
 }
 
 // Load resolves a Config from the given args (argv after the program name), a
@@ -170,6 +186,9 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_CONTEXT_WINDOW"), fc.ContextWindow, 0)
 	c.ReasoningEffort = strings.ToLower(strings.TrimSpace(resolveString(set["reasoning-effort"], *fReasoningEffort,
 		getenv("HARNESS_REASONING_EFFORT"), fc.ReasoningEffort, "")))
+	c.Mode = strings.ToLower(strings.TrimSpace(resolveString(set["mode"], *f.mode,
+		getenv("HARNESS_MODE"), fc.Mode, "")))
+	c.Modes = fc.Modes
 
 	c.NoEnv = resolveBool(set["no-env"], *fNoEnv,
 		getenv("HARNESS_NO_ENV"), fc.NoEnv, false)
@@ -220,6 +239,7 @@ type flags struct {
 	defaultContextWindow     *int
 	contextWindow            *int
 	reasoningEffort          *string
+	mode                     *string
 	prompt                   *string
 	replPrompt               *string
 	verbose, noColor         *bool
@@ -247,6 +267,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.defaultContextWindow = fs.Int("default-context-window", defaultContextWindow, "default context window for unknown/unconfigured models (tokens)")
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
 	f.reasoningEffort = fs.String("reasoning-effort", "", "reasoning/thinking effort (provider/model dependent)")
+	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.noColor = fs.Bool("no-color", false, "disable color output")
 	f.replPrompt = fs.String("prompt", "> ", "REPL input prompt")

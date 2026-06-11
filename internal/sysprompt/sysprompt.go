@@ -39,6 +39,7 @@ type Options struct {
 	NoEnv          bool   // drop the env-context block
 	AgentsMD       string // contents of AGENTS.md from the working directory (optional)
 	SkillsCatalog  string // available skills catalog (optional, from skills discovery)
+	ModePrompt     string // run-mode instructions, appended as the final section (optional)
 	Env            EnvOptions
 }
 
@@ -62,6 +63,11 @@ func Build(opts Options) string {
 	}
 	if opts.Append != "" {
 		parts = append(parts, opts.Append)
+	}
+	// The mode section comes last so run-mode instructions layer on top of
+	// every other customization.
+	if opts.ModePrompt != "" {
+		parts = append(parts, opts.ModePrompt)
 	}
 	return strings.Join(parts, "\n\n")
 }

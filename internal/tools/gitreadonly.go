@@ -47,9 +47,42 @@ func (gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, erro
 	// The first argument must be a bare allowlisted subcommand. Global git
 	// options (-c, -C, --git-dir, --exec-path, --paginate, ...) precede the
 	// subcommand, so requiring a non-flag first argument blocks every global
-	// option injection; subcommand-local flags after args[0] pass through.
-	if sub := args.Args[0]; strings.HasPrefix(sub, "-") || !slices.Contains(gitReadonlySubcommands, sub) {
+	// option injection.
+	sub := args.Args[0]
+	if strings.HasPrefix(sub, "-") || !slices.Contains(gitReadonlySubcommands, sub) {
 		return "", badArgs("first argument must be one of: %s", strings.Join(gitReadonlySubcommands, ", "))
 	}
+	// "bisect run <cmd>" executes an arbitrary command per revision, escaping
+	// the read-only boundary; the other bisect operations only move HEAD.
+	if sub == "bisect" && len(args.Args) > 1 && args.Args[1] == "run" {
+		return "", badArgs(`git_readonly does not allow "bisect run" (it executes commands)`)
+	}
+	// A few subcommand-local flags still write files or launch programs even on
+	// read-only subcommands (diff/log/show --output, grep --open-files-in-pager).
+	// Reject them so the boundary holds; ordinary flags pass through.
+	for _, a := range args.Args[1:] {
+		if disallowedReadonlyFlag(a) {
+			return "", badArgs("flag %q is not allowed in git_readonly", a)
+		}
+	}
 	return runGitArgs(ctx, args.Args)
+}
+
+// disallowedReadonlyFlag reports whether a subcommand-local flag can write a
+// file or launch a program, which would break the read-only boundary:
+// --output/--output-directory (diff, log, show write to a file) and
+// -O/--open-files-in-pager (grep opens matches in a pager/editor).
+func disallowedReadonlyFlag(arg string) bool {
+	switch {
+	case arg == "--output" || strings.HasPrefix(arg, "--output="):
+		return true
+	case arg == "--output-directory" || strings.HasPrefix(arg, "--output-directory="):
+		return true
+	case arg == "--open-files-in-pager" || strings.HasPrefix(arg, "--open-files-in-pager="):
+		return true
+	case arg == "-o" || arg == "-O" || strings.HasPrefix(arg, "-O"):
+		return true
+	default:
+		return false
+	}
 }

@@ -97,6 +97,27 @@ func TestGitReadonlyRejectsGlobalFlagInjection(t *testing.T) {
 	}
 }
 
+// Some allowlisted subcommands carry flags that break the read-only boundary:
+// diff/log/show --output writes a file, grep -O/--open-files-in-pager executes
+// a command, and bisect run executes arbitrary commands per revision.
+func TestGitReadonlyRejectsWriteAndExecCapableFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"diff", "--output=/tmp/pwn"},
+		{"log", "--output", "/tmp/pwn"},
+		{"show", "--output=/tmp/pwn"},
+		{"grep", "-Ovim", "x"},
+		{"grep", "-O", "x"},
+		{"grep", "--open-files-in-pager=vim", "x"},
+		{"grep", "--open-files-in-pager", "x"},
+		{"bisect", "run", "sh", "-c", "true"},
+	} {
+		out, err := runGitReadonly(t, args...)
+		if err == nil {
+			t.Errorf("git_readonly %v should be rejected, got %q", args, out)
+		}
+	}
+}
+
 func TestGitReadonlyRejectionListsAllowedSubcommands(t *testing.T) {
 	_, err := runGitReadonly(t, "commit", "-m", "x")
 	if err == nil {
