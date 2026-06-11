@@ -14,6 +14,10 @@ line-level claims before starting one.
    failure class for arguments; `stdin` on both tools eliminates it for
    documents (`git commit -F -`, `python -`, `tee file`).
 
+4. **Per-tool-call timeout ceiling in `Dispatch`.** Every tool call gets an
+   11-minute ceiling (largest self-limit + grace); Dispatch unblocks even for
+   tools that ignore ctx, returning a timed-out is_error result.
+
 ## High value — loop reliability
 
 2. **Mid-stream retry.** `internal/retry` protects only connection setup: once
@@ -34,9 +38,6 @@ line-level claims before starting one.
 4. **`maxSteps` auto-continue.** Exhausting the 50-step cap stops with a "say
    continue" notice. Optionally summarize-and-continue, or make the behavior
    configurable.
-5. **Per-tool-call timeout ceiling in `Dispatch`.** `run_command`/`exec`
-   self-limit, but a hanging `web_fetch` (or future tool) blocks the turn
-   until ^C. A default ceiling in the dispatch layer covers every tool.
 6. **Defensive usage accounting.** `Agent.stream` overwrites usage on each
    `EventUsage`, trusting providers to send cumulative numbers. Correct for
    both current dialects; brittle for new OpenAI-compatible servers that send
