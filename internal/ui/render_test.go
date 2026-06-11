@@ -73,6 +73,35 @@ func TestToolSummaryErrorMarked(t *testing.T) {
 	}
 }
 
+func TestToolSummaryFinishesAssistantLine(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{})
+
+	r.TextDelta("calling a tool")
+	r.ToolStart(llm.ToolCall{ID: "c1", Name: "list_dir", Input: json.RawMessage(`{"path":"."}`)})
+	r.ToolResult(llm.ToolResult{ForID: "c1", Text: "a\nb\n"})
+
+	if got := out.String(); got != "calling a tool\n" {
+		t.Errorf("tool summary should force a newline after assistant text, got %q", got)
+	}
+	if got := errw.String(); !strings.HasPrefix(got, "[list_dir]") {
+		t.Errorf("tool summary should still go to errw, got %q", got)
+	}
+}
+
+func TestToolSummaryDoesNotDoubleSpaceAfterAssistantNewline(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{})
+
+	r.TextDelta("calling a tool\n")
+	r.ToolStart(llm.ToolCall{ID: "c1", Name: "list_dir", Input: json.RawMessage(`{"path":"."}`)})
+	r.ToolResult(llm.ToolResult{ForID: "c1", Text: "a\nb\n"})
+
+	if got := out.String(); got != "calling a tool\n" {
+		t.Errorf("tool summary should not add a second newline, got %q", got)
+	}
+}
+
 func TestVerboseAddsSnippet(t *testing.T) {
 	var out, errw bytes.Buffer
 	r := NewRenderer(&out, &errw, RenderOptions{Verbose: true})
@@ -109,8 +138,8 @@ func TestUsageLineKnownModelShowsCost(t *testing.T) {
 	})
 
 	got := errw.String()
-	if out.String() != "\n" {
-		t.Errorf("TurnComplete trailing newline should go to out, got out=%q", out.String())
+	if out.Len() != 0 {
+		t.Errorf("TurnComplete should not write a newline before usage with no assistant text, got out=%q", out.String())
 	}
 	if !strings.Contains(got, "[turn:") {
 		t.Errorf("usage line should be bracketed, got %q", got)

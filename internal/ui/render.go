@@ -48,8 +48,9 @@ type Renderer struct {
 	registry *llm.Registry
 	now      func() time.Time
 
-	turnStart time.Time
-	pending   map[string]llm.ToolCall // tool_use id -> call, awaiting its result
+	turnStart         time.Time
+	assistantLineOpen bool
+	pending           map[string]llm.ToolCall // tool_use id -> call, awaiting its result
 }
 
 // NewRenderer builds a Renderer. A nil Now defaults to time.Now.
@@ -77,7 +78,13 @@ func (r *Renderer) StartTurn() { r.turnStart = r.now() }
 // SetModel updates the model used for subsequent usage/cost summaries.
 func (r *Renderer) SetModel(model string) { r.model = model }
 
-func (r *Renderer) TextDelta(text string) { io.WriteString(r.out, text) }
+func (r *Renderer) TextDelta(text string) {
+	if text == "" {
+		return
+	}
+	io.WriteString(r.out, text)
+	r.assistantLineOpen = !strings.HasSuffix(text, "\n")
+}
 
 // ToolStart stashes the call so ToolResult can render name+args+summary on one
 // line once the result is known.
@@ -100,7 +107,7 @@ func (r *Renderer) ToolResult(result llm.ToolResult) {
 func (r *Renderer) Notice(msg string) { r.dimLine(msg) }
 
 func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
-	fmt.Fprintln(r.out)
+	r.finishAssistantLine()
 	elapsed := r.now().Sub(r.turnStart)
 	r.dimLine(usageLine(r.registry, r.model, usage, elapsed))
 }
@@ -108,11 +115,20 @@ func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
 // dimLine writes one line to errw, wrapping it in dim ANSI codes when color is
 // enabled.
 func (r *Renderer) dimLine(s string) {
+	r.finishAssistantLine()
 	if r.color {
 		fmt.Fprintf(r.errw, "%s%s%s\n", ansiDim, s, ansiReset)
 		return
 	}
 	fmt.Fprintln(r.errw, s)
+}
+
+func (r *Renderer) finishAssistantLine() {
+	if !r.assistantLineOpen {
+		return
+	}
+	fmt.Fprintln(r.out)
+	r.assistantLineOpen = false
 }
 
 // formatArgs renders a tool call's input object as space-prefixed key=value
