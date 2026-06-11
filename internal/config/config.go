@@ -47,9 +47,9 @@ type Config struct {
 	Session string // -session: explicit save path
 
 	// Loop / model limits.
-	MaxSteps             int    // -max-steps, default 50
-	DefaultContextWindow int    // -default-context-window, fallback for unknown/unconfigured models
-	ContextWindow        int    // -context-window, 0 = registry/default
+	MaxSteps             int // -max-steps, default 50
+	DefaultContextWindow int // -default-context-window, fallback for unknown/unconfigured models
+	ContextWindow        int // -context-window, 0 = registry/default
 	ReasoningEffort      string
 	OnMaxSteps           string // -on-max-steps: "stop" (default) or "continue"
 
