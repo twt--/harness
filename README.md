@@ -190,6 +190,11 @@ literal prompt, preserving embedded newlines; pasted `/commands` are not
 executed as meta-commands. For non-interactive large input, prefer `-p -` or
 piped stdin.
 
+Press **Ctrl-G** at the prompt, or run `/edit [draft]`, to open an external
+editor for a multi-line prompt. Harness uses `$VISUAL`, then `$EDITOR`, then
+`vi`. The temp file preloads the visible output from the previous turn, followed
+by a delimiter; only text written after the delimiter is sent as the next prompt.
+
 | command | effect |
 |---|---|
 | `/help` | list commands |
@@ -197,6 +202,7 @@ piped stdin.
 | `/clear` | reset the conversation; rotate to a fresh session directory |
 | `/compact` | force compaction now |
 | `/usage` | cumulative session tokens and cost |
+| `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
 | `/model` | show current provider/model/base URL and configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |

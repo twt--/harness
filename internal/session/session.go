@@ -10,6 +10,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -184,6 +185,73 @@ func Replay(dir string, w io.Writer, opts ReplayOptions) error {
 	}
 	finishAssistant()
 	return nil
+}
+
+// LatestTurnOutput returns the user-visible output recorded for the latest turn,
+// excluding the user's prompt. Missing replay logs are treated as empty output so
+// callers can use it before the first completed turn.
+func LatestTurnOutput(dir string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	f, err := os.Open(filepath.Join(dir, eventLog))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
+	latestTurn := 0
+	var b strings.Builder
+	assistantLineOpen := false
+	finishAssistant := func() {
+		if assistantLineOpen {
+			b.WriteByte('\n')
+		}
+		assistantLineOpen = false
+	}
+	resetForTurn := func(turn int) {
+		latestTurn = turn
+		b.Reset()
+		assistantLineOpen = false
+	}
+
+	for sc.Scan() {
+		var ev Event
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			return "", fmt.Errorf("session: replay decode: %w", err)
+		}
+		if ev.Turn == 0 {
+			continue
+		}
+		if ev.Turn > latestTurn || ev.Type == EventUser && ev.Turn == latestTurn {
+			resetForTurn(ev.Turn)
+		}
+		if ev.Turn != latestTurn || ev.Type == EventUser {
+			continue
+		}
+		switch ev.Type {
+		case EventAssistantDelta:
+			b.WriteString(ev.Text)
+			assistantLineOpen = !strings.HasSuffix(ev.Text, "\n")
+		case EventToolResult, EventNotice, EventTurnUsage:
+			finishAssistant()
+			if ev.Display != "" {
+				b.WriteString(ev.Display)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	finishAssistant()
+	return strings.TrimRight(b.String(), "\n"), nil
 }
 
 // Compaction stores the raw messages removed from active context and the summary

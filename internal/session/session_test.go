@@ -320,6 +320,50 @@ func TestReplayPrintsUserFacingView(t *testing.T) {
 	}
 }
 
+func TestLatestTurnOutputReturnsLatestVisibleOutputWithoutUserPrompt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "session")
+	events := []Event{
+		{Type: EventUser, Turn: 1, Text: "first prompt"},
+		{Type: EventAssistantDelta, Turn: 1, Text: "old answer\n"},
+		{Type: EventTurnUsage, Turn: 1, Display: "[turn: 1 steps]"},
+		{Type: EventUser, Turn: 2, Text: "second prompt"},
+		{Type: EventAssistantDelta, Turn: 2, Text: "new answer"},
+		{Type: EventToolResult, Turn: 2, Display: `[read_file path="x"] → 12B`},
+		{Type: EventNotice, Turn: 2, Display: "[notice]"},
+		{Type: EventTurnUsage, Turn: 2, Display: "[turn: 2 steps]"},
+	}
+	for _, ev := range events {
+		if err := AppendEvent(dir, ev); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	got, err := LatestTurnOutput(dir)
+	if err != nil {
+		t.Fatalf("LatestTurnOutput: %v", err)
+	}
+	want := "new answer\n" +
+		`[read_file path="x"] → 12B` + "\n" +
+		"[notice]\n" +
+		"[turn: 2 steps]"
+	if got != want {
+		t.Fatalf("latest output mismatch:\nwant %q\n got %q", want, got)
+	}
+	if strings.Contains(got, "second prompt") || strings.Contains(got, "old answer") {
+		t.Fatalf("latest output included wrong turn/user text: %q", got)
+	}
+}
+
+func TestLatestTurnOutputMissingLogIsEmpty(t *testing.T) {
+	got, err := LatestTurnOutput(filepath.Join(t.TempDir(), "missing"))
+	if err != nil {
+		t.Fatalf("LatestTurnOutput missing log: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("missing log output = %q, want empty", got)
+	}
+}
+
 // DefaultPath builds a timestamped directory path under an injectable state dir.
 func TestDefaultPath(t *testing.T) {
 	stateDir := t.TempDir()

@@ -877,6 +877,19 @@ submitted as one literal user prompt, preserving embedded newlines and preventin
 `/commands` from dispatching as meta-commands. The reader uses `bufio.Reader` rather
 than `bufio.Scanner` so long prompt lines are not capped by Scanner's token limit.
 
+The REPL also configures Ctrl-G as a canonical-mode line delimiter where termios is
+available. Pressing Ctrl-G opens the external prompt editor immediately while preserving
+normal terminal line editing. Before launching the editor, harness restores the original
+termios and disables bracketed paste so the editor owns a normal TTY; after it exits,
+the REPL reapplies its prompt settings.
+
+External editor prompt files use `$VISUAL`, then `$EDITOR`, then `vi`, attached to
+`/dev/tty`. The temp file contains the visible output from the latest recorded turn,
+then a delimiter line (`--- HARNESS EDIT ... ---`), then any draft text. Only content
+after the exact delimiter is submitted as the next prompt; edits above the delimiter are
+context for the user only. Missing delimiters abort the edit and keep the temp file.
+Empty edited content returns to the prompt without running a turn.
+
 ### Meta-commands
 
 Lines starting with `/` are commands; `//` escapes a literal slash.
@@ -888,6 +901,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 | `/clear` | reset conversation; rotate to a fresh session file |
 | `/compact` | force compaction now |
 | `/usage` | cumulative session tokens + cost |
+| `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
 | `/model` | show current provider/model/base-url and configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |

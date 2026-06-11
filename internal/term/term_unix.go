@@ -35,6 +35,7 @@ const softReset = "\x1b7\x1b[?1049l" + // leave alternate screen (DECSC-guarded,
 const (
 	bracketedPasteEnable  = "\x1b[?2004h"
 	bracketedPasteDisable = "\x1b[?2004l"
+	ctrlG                 = 0x07
 )
 
 // Reset restores the controlling terminal to a usable state: kernel termios
@@ -84,6 +85,43 @@ func SetBracketedPaste(enabled bool) error {
 		return fmt.Errorf("term: set bracketed paste: %w", err)
 	}
 	return nil
+}
+
+// EnableCtrlGLineEnd makes Ctrl-G act as a canonical-mode line delimiter. This
+// lets the REPL observe the key immediately while preserving normal terminal
+// line editing. The returned cleanup restores the original termios; both setup
+// and cleanup are silent no-ops when no controlling terminal exists.
+func EnableCtrlGLineEnd() (func() error, error) {
+	f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return func() error { return nil }, nil
+	}
+	defer f.Close()
+
+	orig, err := getTermios(f.Fd())
+	if err != nil {
+		if errors.Is(err, syscall.ENOTTY) {
+			return func() error { return nil }, nil
+		}
+		return nil, fmt.Errorf("term: get termios: %w", err)
+	}
+	next := orig
+	next.Cc[syscall.VEOL] = ctrlG
+	if err := setTermios(f.Fd(), &next); err != nil {
+		return nil, fmt.Errorf("term: set ctrl-g line end: %w", err)
+	}
+
+	return func() error {
+		f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		if err := setTermios(f.Fd(), &orig); err != nil {
+			return fmt.Errorf("term: restore ctrl-g line end: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 // Size reports the controlling terminal's rows and columns. It returns ok=false

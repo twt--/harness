@@ -80,6 +80,14 @@ type App struct {
 	// Prompt is the REPL input prompt string (default "> ").
 	Prompt string
 
+	// OpenEditor launches an editor for a temp prompt file. nil uses
+	// $VISUAL, then $EDITOR, then vi. Tests inject this to edit deterministically.
+	OpenEditor func(path string) error
+	// BeforeEditor/AfterEditor temporarily hand the terminal back to the editor.
+	// Run installs these hooks; tests and non-REPL callers can leave them nil.
+	BeforeEditor func()
+	AfterEditor  func()
+
 	// Skills is the discovered skills map for /skills listing and
 	// $skillName invocation (design §10). nil disables both features.
 	Skills map[string]skills.Skill
@@ -98,12 +106,13 @@ const helpText = `commands:
   /clear           reset conversation; rotate to a fresh session file
   /compact         force compaction now
   /usage           cumulative session tokens and cost
+  /edit [draft]    open $VISUAL/$EDITOR (or vi) for a multi-line prompt
   /save [file]     force save (optionally elsewhere)
   /model [model]   list models, or switch to model
   /mode [name]     list run modes, or switch to mode
   /skills          list available skills
   $skillName       invoke a skill (reads SKILL.md and sends as prompt)
-lines starting with / are commands; // sends a literal leading slash`
+Ctrl-G opens the editor from the prompt; lines starting with / are commands; // sends a literal leading slash`
 
 func (app *App) clock() func() time.Time {
 	if app.Now != nil {
@@ -122,24 +131,13 @@ func (app *App) clock() func() time.Time {
 // with an in-flight turn. It returns 0 on /exit, /quit, or EOF, and
 // ExitInterrupt (130) on a SIGINT exit request. Input is scanned in a helper
 // goroutine so an exit request received while idle at the prompt is acted on
-// immediately rather than blocking on the next line.
+// immediately rather than blocking on the next line. The helper reads one
+// logical prompt at a time so it never competes with an external editor for the
+// terminal after Ctrl-G or /edit.
 func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	if app.Created.IsZero() {
 		app.Created = app.clock()()
 	}
-
-	inputs := make(chan replInput)
-	scanDone := make(chan struct{})
-	// scanErr holds a non-EOF read error from the input reader. It is written
-	// before inputs is closed, so Run reads it only after observing the close
-	// (the channel close establishes the happens-before, no race).
-	var scanErr error
-	go func() {
-		defer close(inputs)
-		scanErr = readREPLInputs(in, inputs, scanDone)
-	}()
-	// Unblock the reader goroutine's pending send on every return path.
-	defer close(scanDone)
 
 	prompt := app.Prompt
 	if prompt == "" {
@@ -149,11 +147,50 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	// Restore a usable terminal before the first prompt (termios sane plus an
 	// emulator soft reset), in case a prior process left it in raw, no-echo,
 	// or mouse-reporting state. Targets /dev/tty directly; no-op without one.
-	_ = term.Reset()
-	_ = term.SetBracketedPaste(true)
-	defer term.SetBracketedPaste(false)
-	fmt.Fprint(app.Errw, prompt)
+	var restoreCtrlG func() error
+	disablePromptTerm := func() {
+		_ = term.SetBracketedPaste(false)
+		if restoreCtrlG != nil {
+			_ = restoreCtrlG()
+			restoreCtrlG = nil
+		}
+	}
+	enablePromptTerm := func() {
+		_ = term.Reset()
+		if cleanup, err := term.EnableCtrlGLineEnd(); err == nil {
+			restoreCtrlG = cleanup
+		}
+		_ = term.SetBracketedPaste(true)
+	}
+	enablePromptTerm()
+	defer disablePromptTerm()
+
+	prevBeforeEditor, prevAfterEditor := app.BeforeEditor, app.AfterEditor
+	app.BeforeEditor = func() {
+		disablePromptTerm()
+		if prevBeforeEditor != nil {
+			prevBeforeEditor()
+		}
+	}
+	app.AfterEditor = func() {
+		if prevAfterEditor != nil {
+			prevAfterEditor()
+		}
+		enablePromptTerm()
+	}
+	defer func() {
+		app.BeforeEditor = prevBeforeEditor
+		app.AfterEditor = prevAfterEditor
+	}()
+
+	reader := newREPLReader(in)
 	for {
+		fmt.Fprint(app.Errw, prompt)
+		inputs := make(chan replReadResult, 1)
+		go func() {
+			input, ok, err := reader.read()
+			inputs <- replReadResult{input: input, ok: ok, err: err}
+		}()
 		select {
 		case <-exit:
 			// SIGINT exit request (design §8.4). Any in-flight turn has already
@@ -161,52 +198,50 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			// no concurrent writer.
 			app.saveOrWarn(app.SessionPath)
 			return ExitInterrupt
-		case input, ok := <-inputs:
-			if !ok {
+		case res := <-inputs:
+			if !res.ok {
 				// Input ended: clean EOF (^D) or a read error. Surface a read
 				// error so it is not mistaken for a deliberate ^D, then save and
 				// exit cleanly either way (design §8.4).
-				if scanErr != nil {
-					fmt.Fprintf(app.Errw, "[input error: %v]\n", scanErr)
+				if res.err != nil {
+					fmt.Fprintf(app.Errw, "[input error: %v]\n", res.err)
 				}
 				app.saveOrWarn(app.SessionPath)
 				return ExitOK
 			}
+			input := res.input
 			line := input.text
-			if line == "" {
-				fmt.Fprint(app.Errw, prompt)
+			if line == "" && !input.edit {
+				continue
+			}
+			if input.edit {
+				app.editAndRun(line)
 				continue
 			}
 			if input.pasted {
 				app.runTurn(line)
-				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
 			if strings.HasPrefix(line, "//") {
 				app.runTurn(line[1:]) // // escapes one literal leading slash
-				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
 			if strings.HasPrefix(line, "/") {
 				if app.command(line) {
 					return ExitOK
 				}
-				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
 			if strings.HasPrefix(line, "$$") && app.Skills != nil {
 				app.runTurn(line[1:]) // $$ escapes one literal leading $
-				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
 			if strings.HasPrefix(line, "$") && app.Skills != nil {
 				if app.invokeSkill(line) {
-					fmt.Fprint(app.Errw, prompt)
 					continue
 				}
 			}
 			app.runTurn(line)
-			fmt.Fprint(app.Errw, prompt)
 		}
 	}
 }
@@ -214,75 +249,104 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 type replInput struct {
 	text   string
 	pasted bool
+	edit   bool
 }
 
-func readREPLInputs(in io.Reader, out chan<- replInput, done <-chan struct{}) error {
-	r := bufio.NewReader(in)
-	var paste strings.Builder
-	inPaste := false
+type replReadResult struct {
+	input replInput
+	ok    bool
+	err   error
+}
+
+type replReader struct {
+	r       *bufio.Reader
+	paste   strings.Builder
+	inPaste bool
+}
+
+func newREPLReader(in io.Reader) *replReader {
+	return &replReader{r: bufio.NewReader(in)}
+}
+
+func (rr *replReader) read() (replInput, bool, error) {
 	for {
-		line, endedByNewline, err := readTerminalLine(r)
-		if line != "" || endedByNewline {
-			if ok := handleREPLLine(line, endedByNewline, &inPaste, &paste, out, done); !ok {
-				return nil
+		line, terminator, err := readTerminalLine(rr.r)
+		if line != "" || terminator != lineTermNone {
+			if input, emit := rr.handleLine(line, terminator); emit {
+				return input, true, nil
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				if inPaste && paste.Len() > 0 {
-					sendREPLInput(out, done, replInput{text: paste.String(), pasted: true})
+				if rr.inPaste && rr.paste.Len() > 0 {
+					input := replInput{text: rr.paste.String(), pasted: true}
+					rr.paste.Reset()
+					rr.inPaste = false
+					return input, true, nil
 				}
-				return nil
+				return replInput{}, false, nil
 			}
-			return err
+			return replInput{}, false, err
 		}
 	}
 }
 
-func readTerminalLine(r *bufio.Reader) (line string, endedByNewline bool, err error) {
-	line, err = r.ReadString('\n')
-	if strings.HasSuffix(line, "\n") {
-		endedByNewline = true
-		line = strings.TrimSuffix(line, "\n")
-		line = strings.TrimSuffix(line, "\r")
+type lineTerminator byte
+
+const (
+	lineTermNone    lineTerminator = 0
+	lineTermNewline lineTerminator = '\n'
+	lineTermEdit    lineTerminator = '\a'
+)
+
+func readTerminalLine(r *bufio.Reader) (line string, terminator lineTerminator, err error) {
+	var b strings.Builder
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			return b.String(), lineTermNone, err
+		}
+		switch c {
+		case '\n':
+			line := b.String()
+			line = strings.TrimSuffix(line, "\r")
+			return line, lineTermNewline, nil
+		case byte(lineTermEdit):
+			return b.String(), lineTermEdit, nil
+		default:
+			b.WriteByte(c)
+		}
 	}
-	return line, endedByNewline, err
 }
 
-func handleREPLLine(line string, endedByNewline bool, inPaste *bool, paste *strings.Builder, out chan<- replInput, done <-chan struct{}) bool {
-	if !*inPaste {
+func (rr *replReader) handleLine(line string, terminator lineTerminator) (replInput, bool) {
+	if !rr.inPaste {
 		start := strings.Index(line, bracketedPasteStart)
 		if start < 0 {
-			return sendREPLInput(out, done, replInput{text: line})
+			return replInput{text: line, edit: terminator == lineTermEdit}, true
 		}
-		*inPaste = true
-		paste.WriteString(line[:start])
+		rr.inPaste = true
+		rr.paste.WriteString(line[:start])
 		line = line[start+len(bracketedPasteStart):]
 	}
 
 	end := strings.Index(line, bracketedPasteEnd)
 	if end >= 0 {
-		paste.WriteString(line[:end])
-		text := paste.String() + line[end+len(bracketedPasteEnd):]
-		paste.Reset()
-		*inPaste = false
-		return sendREPLInput(out, done, replInput{text: text, pasted: true})
+		rr.paste.WriteString(line[:end])
+		text := rr.paste.String() + line[end+len(bracketedPasteEnd):]
+		rr.paste.Reset()
+		rr.inPaste = false
+		return replInput{text: text, pasted: true}, true
 	}
 
-	paste.WriteString(line)
-	if endedByNewline {
-		paste.WriteByte('\n')
+	rr.paste.WriteString(line)
+	switch terminator {
+	case lineTermNewline:
+		rr.paste.WriteByte('\n')
+	case lineTermEdit:
+		rr.paste.WriteByte(byte(lineTermEdit))
 	}
-	return true
-}
-
-func sendREPLInput(out chan<- replInput, done <-chan struct{}, input replInput) bool {
-	select {
-	case out <- input:
-		return true
-	case <-done:
-		return false
-	}
+	return replInput{}, false
 }
 
 // command dispatches a meta-command line. It returns true when the REPL should
@@ -303,6 +367,8 @@ func (app *App) command(line string) (exit bool) {
 		app.compact()
 	case "/usage":
 		fmt.Fprintln(app.Errw, app.usageSummary())
+	case "/edit":
+		app.editAndRun(arg)
 	case "/save":
 		path := app.SessionPath
 		if arg != "" {

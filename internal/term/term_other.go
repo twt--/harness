@@ -11,6 +11,10 @@ func SetBracketedPaste(enabled bool) error {
 	return nil
 }
 
+func EnableCtrlGLineEnd() (func() error, error) {
+	return func() error { return nil }, nil
+}
+
 func Size() (rows, cols int, ok bool) {
 	return 0, 0, false
 }
