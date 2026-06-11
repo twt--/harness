@@ -47,10 +47,11 @@ type Config struct {
 	Session string // -session: explicit save path
 
 	// Loop / model limits.
-	MaxSteps             int // -max-steps, default 50
-	DefaultContextWindow int // -default-context-window, fallback for unknown/unconfigured models
-	ContextWindow        int // -context-window, 0 = registry/default
+	MaxSteps             int    // -max-steps, default 50
+	DefaultContextWindow int    // -default-context-window, fallback for unknown/unconfigured models
+	ContextWindow        int    // -context-window, 0 = registry/default
 	ReasoningEffort      string
+	OnMaxSteps           string // -on-max-steps: "stop" (default) or "continue"
 
 	// Run mode. Empty means "not specified" so main can let a resumed
 	// session supply the mode before falling back to the default.
@@ -96,6 +97,7 @@ type fileConfig struct {
 	DefaultContextWindow *int     `json:"default_context_window"`
 	ContextWindow        *int     `json:"context_window"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
+	OnMaxSteps           string   `json:"on_max_steps"`
 	Verbose              *bool    `json:"verbose"`
 	NoColor              *bool    `json:"no_color"`
 	Prompt               string   `json:"prompt"`
@@ -186,6 +188,11 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_CONTEXT_WINDOW"), fc.ContextWindow, 0)
 	c.ReasoningEffort = strings.ToLower(strings.TrimSpace(resolveString(set["reasoning-effort"], *fReasoningEffort,
 		getenv("HARNESS_REASONING_EFFORT"), fc.ReasoningEffort, "")))
+	c.OnMaxSteps = strings.ToLower(strings.TrimSpace(resolveString(set["on-max-steps"], *f.onMaxSteps,
+		getenv("HARNESS_ON_MAX_STEPS"), fc.OnMaxSteps, "stop")))
+	if c.OnMaxSteps != "stop" && c.OnMaxSteps != "continue" {
+		return Config{}, fmt.Errorf("invalid -on-max-steps %q (valid: stop, continue)", c.OnMaxSteps)
+	}
 	c.Mode = strings.ToLower(strings.TrimSpace(resolveString(set["mode"], *f.mode,
 		getenv("HARNESS_MODE"), fc.Mode, "")))
 	c.Modes = fc.Modes
@@ -239,6 +246,7 @@ type flags struct {
 	defaultContextWindow     *int
 	contextWindow            *int
 	reasoningEffort          *string
+	onMaxSteps               *string
 	mode                     *string
 	prompt                   *string
 	replPrompt               *string
@@ -267,6 +275,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.defaultContextWindow = fs.Int("default-context-window", defaultContextWindow, "default context window for unknown/unconfigured models (tokens)")
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
 	f.reasoningEffort = fs.String("reasoning-effort", "", "reasoning/thinking effort (provider/model dependent)")
+	f.onMaxSteps = fs.String("on-max-steps", "", "when the step budget is hit: stop (default) or continue (up to 3 fresh budgets)")
 	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.noColor = fs.Bool("no-color", false, "disable color output")

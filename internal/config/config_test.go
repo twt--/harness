@@ -664,6 +664,44 @@ func TestModeUnspecifiedIsEmpty(t *testing.T) {
 	}
 }
 
+func TestOnMaxStepsResolution(t *testing.T) {
+	getenv := func(string) string { return "" }
+
+	c, err := Load(nil, getenv, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.OnMaxSteps != "stop" {
+		t.Errorf("default OnMaxSteps = %q, want \"stop\"", c.OnMaxSteps)
+	}
+
+	c, err = Load([]string{"-on-max-steps", "continue"}, getenv, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.OnMaxSteps != "continue" {
+		t.Errorf("flag OnMaxSteps = %q, want \"continue\"", c.OnMaxSteps)
+	}
+
+	env := func(k string) string {
+		if k == "HARNESS_ON_MAX_STEPS" {
+			return "continue"
+		}
+		return ""
+	}
+	c, err = Load(nil, env, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.OnMaxSteps != "continue" {
+		t.Errorf("env OnMaxSteps = %q, want \"continue\"", c.OnMaxSteps)
+	}
+
+	if _, err := Load([]string{"-on-max-steps", "bogus"}, getenv, ""); err == nil {
+		t.Error("invalid on-max-steps value should error")
+	}
+}
+
 func TestModesObjectDecodes(t *testing.T) {
 	cfgPath := writeConfig(t, `{
 		"modes": {
