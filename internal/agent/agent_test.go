@@ -315,6 +315,9 @@ func TestAutoContinuePastMaxSteps(t *testing.T) {
 	if len(fp.Requests) != 8 {
 		t.Errorf("provider called %d times, want 8 (4 budgets of 2)", len(fp.Requests))
 	}
+	if sink.turnUsage[0].Steps != 8 {
+		t.Errorf("TurnComplete steps = %d, want 8", sink.turnUsage[0].Steps)
+	}
 	var continues, stops int
 	for _, n := range sink.notices {
 		if strings.Contains(n, "auto-continuing") {
