@@ -61,6 +61,33 @@ func TestModelPrecedenceFlagBeatsEnvBeatsFileBeatsDefault(t *testing.T) {
 	}
 }
 
+// TestLoadSplitsProviderModel pins SplitProviderModel's contract at the Load
+// call site, including the whitespace trimming the consolidated helper adopted
+// from the REPL-side copy (regression: the two pre-merge copies had drifted).
+func TestLoadSplitsProviderModel(t *testing.T) {
+	cases := []struct {
+		name         string
+		model        string
+		wantProvider string
+		wantModel    string
+	}{
+		{name: "plain split", model: "anthropic:claude-opus-4-8", wantProvider: "anthropic", wantModel: "claude-opus-4-8"},
+		{name: "padded value is trimmed before split", model: " anthropic:claude-opus-4-8 ", wantProvider: "anthropic", wantModel: "claude-opus-4-8"},
+		{name: "colon inside model id is not a provider prefix", model: "org/model:fp16", wantProvider: "openai", wantModel: "org/model:fp16"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{"-model", tc.model}, noEnv, "")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.Provider != tc.wantProvider || c.Model != tc.wantModel {
+				t.Fatalf("got provider=%q model=%q, want provider=%q model=%q", c.Provider, c.Model, tc.wantProvider, tc.wantModel)
+			}
+		})
+	}
+}
+
 func TestProviderPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
 	cfgPath := writeConfig(t, `{"provider":"openai"}`)
 	env := envFrom(map[string]string{"HARNESS_PROVIDER": "anthropic"})
