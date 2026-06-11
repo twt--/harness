@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"harness/internal/agent"
@@ -129,11 +130,11 @@ func (app *App) clock() func() time.Time {
 // Run owns the final save in every exit path — /exit, EOF (^D), and SIGINT — so
 // no second goroutine ever touches the transcript or session file concurrently
 // with an in-flight turn. It returns 0 on /exit, /quit, or EOF, and
-// ExitInterrupt (130) on a SIGINT exit request. Input is scanned in a helper
-// goroutine so an exit request received while idle at the prompt is acted on
-// immediately rather than blocking on the next line. The helper reads one
-// logical prompt at a time so it never competes with an external editor for the
-// terminal after Ctrl-G or /edit.
+// ExitInterrupt (130) on a SIGINT exit request. Input is scanned in an
+// on-demand helper goroutine so an exit request received while idle at the
+// prompt is acted on immediately rather than blocking on the next line. During
+// an active turn the same helper also preserves typeahead and observes Esc-Esc
+// without competing with an external editor launched from the idle prompt.
 func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	if app.Created.IsZero() {
 		app.Created = app.clock()()
@@ -184,64 +185,168 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	}()
 
 	reader := newREPLReader(in)
-	for {
-		fmt.Fprint(app.Errw, prompt)
-		inputs := make(chan replReadResult, 1)
-		go func() {
+	readReq := make(chan struct{})
+	inputs := make(chan replReadResult, 1)
+	go func() {
+		for range readReq {
 			input, ok, err := reader.read()
 			inputs <- replReadResult{input: input, ok: ok, err: err}
+			if !ok {
+				return
+			}
+		}
+	}()
+	defer close(readReq)
+
+	var (
+		promptPrinted   bool
+		readPending     bool
+		inputEnded      bool
+		inputErr        error
+		active          bool
+		activeReadPause bool
+		exitAfterTurn   bool
+		queued          []replInput
+		turnDone        <-chan struct{}
+		restoreEsc      func() error
+		escPresses      escapePresses
+	)
+
+	requestRead := func() {
+		if readPending || inputEnded {
+			return
+		}
+		readPending = true
+		readReq <- struct{}{}
+	}
+	setInputEnded := func(err error) {
+		inputEnded = true
+		inputErr = err
+	}
+	warnInputErr := func() {
+		if inputErr != nil {
+			fmt.Fprintf(app.Errw, "[input error: %v]\n", inputErr)
+			inputErr = nil
+		}
+	}
+	enableTurnTerm := func() {
+		_ = term.SetBracketedPaste(false)
+		if cleanup, err := term.EnableEscLineEnd(); err == nil {
+			restoreEsc = cleanup
+		}
+		reader.setEscapeLineEnd(true)
+	}
+	disableTurnTerm := func() {
+		reader.setEscapeLineEnd(false)
+		if restoreEsc != nil {
+			_ = restoreEsc()
+			restoreEsc = nil
+		}
+		_ = term.SetBracketedPaste(true)
+	}
+	startTurn := func(prompt string) {
+		run := app.prepareTurn(prompt)
+		done := make(chan struct{}, 1)
+		active = true
+		activeReadPause = queuedContainsEditor(queued)
+		exitAfterTurn = false
+		promptPrinted = false
+		escPresses.reset()
+		enableTurnTerm()
+		turnDone = done
+		go func() {
+			run()
+			done <- struct{}{}
 		}()
+	}
+
+	for {
+		if active {
+			if !activeReadPause {
+				requestRead()
+			}
+			select {
+			case <-exit:
+				// SIGINT exit requests during a turn are honored only after the
+				// turn goroutine finishes its own save and usage update.
+				exitAfterTurn = true
+			case <-turnDone:
+				disableTurnTerm()
+				active = false
+				activeReadPause = false
+				turnDone = nil
+				escPresses.reset()
+				if exitAfterTurn {
+					app.saveOrWarn(app.SessionPath)
+					return ExitInterrupt
+				}
+			case res := <-inputs:
+				readPending = false
+				if !res.ok {
+					setInputEnded(res.err)
+					continue
+				}
+				input := res.input
+				if input.escape {
+					if input.text != "" {
+						queued = append(queued, replInput{text: input.text})
+					}
+					if escPresses.press(app.clock()()) && app.Interrupt != nil {
+						app.Interrupt.CancelTurn()
+					}
+					continue
+				}
+				escPresses.reset()
+				queued = append(queued, input)
+				if inputMayOpenEditor(input) {
+					activeReadPause = true
+				}
+			}
+			continue
+		}
+
+		if len(queued) > 0 {
+			input := queued[0]
+			queued = queued[1:]
+			action := app.handlePromptInput(input)
+			promptPrinted = false
+			if action.exit {
+				return ExitOK
+			}
+			if action.run {
+				startTurn(action.prompt)
+			}
+			continue
+		}
+		if inputEnded {
+			warnInputErr()
+			app.saveOrWarn(app.SessionPath)
+			return ExitOK
+		}
+		if !promptPrinted {
+			fmt.Fprint(app.Errw, prompt)
+			promptPrinted = true
+		}
+		requestRead()
 		select {
 		case <-exit:
-			// SIGINT exit request (design §8.4). Any in-flight turn has already
-			// returned (this loop runs turns synchronously), so the save here has
-			// no concurrent writer.
+			// SIGINT exit request at the idle prompt (design §8.4).
 			app.saveOrWarn(app.SessionPath)
 			return ExitInterrupt
 		case res := <-inputs:
+			readPending = false
 			if !res.ok {
-				// Input ended: clean EOF (^D) or a read error. Surface a read
-				// error so it is not mistaken for a deliberate ^D, then save and
-				// exit cleanly either way (design §8.4).
-				if res.err != nil {
-					fmt.Fprintf(app.Errw, "[input error: %v]\n", res.err)
-				}
-				app.saveOrWarn(app.SessionPath)
+				setInputEnded(res.err)
+				continue
+			}
+			action := app.handlePromptInput(res.input)
+			promptPrinted = false
+			if action.exit {
 				return ExitOK
 			}
-			input := res.input
-			line := input.text
-			if line == "" && !input.edit {
-				continue
+			if action.run {
+				startTurn(action.prompt)
 			}
-			if input.edit {
-				app.editAndRun(line)
-				continue
-			}
-			if input.pasted {
-				app.runTurn(line)
-				continue
-			}
-			if strings.HasPrefix(line, "//") {
-				app.runTurn(line[1:]) // // escapes one literal leading slash
-				continue
-			}
-			if strings.HasPrefix(line, "/") {
-				if app.command(line) {
-					return ExitOK
-				}
-				continue
-			}
-			if strings.HasPrefix(line, "$$") && app.Skills != nil {
-				app.runTurn(line[1:]) // $$ escapes one literal leading $
-				continue
-			}
-			if strings.HasPrefix(line, "$") && app.Skills != nil {
-				if app.invokeSkill(line) {
-					continue
-				}
-			}
-			app.runTurn(line)
 		}
 	}
 }
@@ -250,6 +355,7 @@ type replInput struct {
 	text   string
 	pasted bool
 	edit   bool
+	escape bool
 }
 
 type replReadResult struct {
@@ -258,19 +364,122 @@ type replReadResult struct {
 	err   error
 }
 
+type replAction struct {
+	prompt string
+	run    bool
+	exit   bool
+}
+
+type escapePresses struct {
+	last time.Time
+	seen bool
+}
+
+func (p *escapePresses) press(now time.Time) bool {
+	if p.seen && now.Sub(p.last) <= time.Second {
+		p.reset()
+		return true
+	}
+	p.last = now
+	p.seen = true
+	return false
+}
+
+func (p *escapePresses) reset() {
+	p.last = time.Time{}
+	p.seen = false
+}
+
+func (app *App) handlePromptInput(input replInput) replAction {
+	if input.escape {
+		return replAction{}
+	}
+	line := input.text
+	if line == "" && !input.edit {
+		return replAction{}
+	}
+	if input.edit {
+		if prompt, ok := app.editPrompt(line); ok {
+			return replAction{prompt: prompt, run: true}
+		}
+		return replAction{}
+	}
+	if input.pasted {
+		return replAction{prompt: line, run: true}
+	}
+	if strings.HasPrefix(line, "//") {
+		return replAction{prompt: line[1:], run: true} // // escapes one literal leading slash
+	}
+	if strings.HasPrefix(line, "/") {
+		cmd, arg := commandFields(line)
+		if cmd == "/edit" {
+			if prompt, ok := app.editPrompt(arg); ok {
+				return replAction{prompt: prompt, run: true}
+			}
+			return replAction{}
+		}
+		if app.command(line) {
+			return replAction{exit: true}
+		}
+		return replAction{}
+	}
+	if strings.HasPrefix(line, "$$") && app.Skills != nil {
+		return replAction{prompt: line[1:], run: true} // $$ escapes one literal leading $
+	}
+	if strings.HasPrefix(line, "$") && app.Skills != nil {
+		if prompt, handled, ok := app.skillPrompt(line); handled {
+			if ok {
+				return replAction{prompt: prompt, run: true}
+			}
+			return replAction{}
+		}
+	}
+	return replAction{prompt: line, run: true}
+}
+
+func commandFields(line string) (cmd, arg string) {
+	cmd, arg, _ = strings.Cut(strings.TrimSpace(line), " ")
+	return cmd, strings.TrimSpace(arg)
+}
+
+func inputMayOpenEditor(input replInput) bool {
+	if input.edit {
+		return true
+	}
+	if input.pasted {
+		return false
+	}
+	cmd, _ := commandFields(input.text)
+	return cmd == "/edit"
+}
+
+func queuedContainsEditor(inputs []replInput) bool {
+	for _, input := range inputs {
+		if inputMayOpenEditor(input) {
+			return true
+		}
+	}
+	return false
+}
+
 type replReader struct {
-	r       *bufio.Reader
-	paste   strings.Builder
-	inPaste bool
+	r             *bufio.Reader
+	paste         strings.Builder
+	inPaste       bool
+	escapeLineEnd atomic.Bool
 }
 
 func newREPLReader(in io.Reader) *replReader {
 	return &replReader{r: bufio.NewReader(in)}
 }
 
+func (rr *replReader) setEscapeLineEnd(enabled bool) {
+	rr.escapeLineEnd.Store(enabled)
+}
+
 func (rr *replReader) read() (replInput, bool, error) {
 	for {
-		line, terminator, err := readTerminalLine(rr.r)
+		line, terminator, err := readTerminalLine(rr.r, rr.escapeLineEnd.Load())
 		if line != "" || terminator != lineTermNone {
 			if input, emit := rr.handleLine(line, terminator); emit {
 				return input, true, nil
@@ -297,9 +506,10 @@ const (
 	lineTermNone    lineTerminator = 0
 	lineTermNewline lineTerminator = '\n'
 	lineTermEdit    lineTerminator = '\a'
+	lineTermEscape  lineTerminator = '\x1b'
 )
 
-func readTerminalLine(r *bufio.Reader) (line string, terminator lineTerminator, err error) {
+func readTerminalLine(r *bufio.Reader, escapeLineEnd bool) (line string, terminator lineTerminator, err error) {
 	var b strings.Builder
 	for {
 		c, err := r.ReadByte()
@@ -314,6 +524,9 @@ func readTerminalLine(r *bufio.Reader) (line string, terminator lineTerminator, 
 		case byte(lineTermEdit):
 			return b.String(), lineTermEdit, nil
 		default:
+			if escapeLineEnd && c == byte(lineTermEscape) {
+				return b.String(), lineTermEscape, nil
+			}
 			b.WriteByte(c)
 		}
 	}
@@ -323,7 +536,7 @@ func (rr *replReader) handleLine(line string, terminator lineTerminator) (replIn
 	if !rr.inPaste {
 		start := strings.Index(line, bracketedPasteStart)
 		if start < 0 {
-			return replInput{text: line, edit: terminator == lineTermEdit}, true
+			return replInput{text: line, edit: terminator == lineTermEdit, escape: terminator == lineTermEscape}, true
 		}
 		rr.inPaste = true
 		rr.paste.WriteString(line[:start])
@@ -352,8 +565,7 @@ func (rr *replReader) handleLine(line string, terminator lineTerminator) (replIn
 // command dispatches a meta-command line. It returns true when the REPL should
 // exit (/exit, /quit).
 func (app *App) command(line string) (exit bool) {
-	cmd, arg, _ := strings.Cut(strings.TrimSpace(line), " ")
-	arg = strings.TrimSpace(arg)
+	cmd, arg := commandFields(line)
 
 	switch cmd {
 	case "/help":
@@ -368,7 +580,9 @@ func (app *App) command(line string) (exit bool) {
 	case "/usage":
 		fmt.Fprintln(app.Errw, app.usageSummary())
 	case "/edit":
-		app.editAndRun(arg)
+		if prompt, ok := app.editPrompt(arg); ok {
+			app.runTurn(prompt)
+		}
 	case "/save":
 		path := app.SessionPath
 		if arg != "" {
@@ -525,58 +739,76 @@ func (app *App) clear() {
 
 // invokeSkill handles $skillName invocations. It reads the SKILL.md file and
 // sends it as a turn with the skill content embedded. Returns true when the
-// skill was found and invoked; false when the skill name is unknown (caller
-// falls through to a regular turn).
+// line was handled, including an unknown skill diagnostic.
 func (app *App) invokeSkill(line string) bool {
+	prompt, handled, ok := app.skillPrompt(line)
+	if !handled {
+		return false
+	}
+	if ok {
+		app.runTurn(prompt)
+	}
+	return true
+}
+
+func (app *App) skillPrompt(line string) (prompt string, handled bool, ok bool) {
 	words := strings.Fields(line)
 	if len(words) == 0 {
-		return false
+		return "", false, false
 	}
 	skillName := strings.TrimPrefix(words[0], "$")
 	skill, ok := app.Skills[skillName]
 	if !ok {
 		fmt.Fprintf(app.Errw, "unknown skill %q; type /skills\n", skillName)
-		return true
+		return "", true, false
 	}
 	body, err := skill.Read()
 	if err != nil {
 		fmt.Fprintf(app.Errw, "[skill %q read failed: %v]\n", skillName, err)
-		return true
+		return "", true, false
 	}
 	// Build the prompt: skill content + any additional text.
-	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "%s\n\n", body)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", body)
 	if len(words) > 1 {
-		fmt.Fprintf(&prompt, "User: %s", strings.Join(words[1:], " "))
+		fmt.Fprintf(&b, "User: %s", strings.Join(words[1:], " "))
 	} else {
-		fmt.Fprintf(&prompt, "User: invoke skill %q", skillName)
+		fmt.Fprintf(&b, "User: invoke skill %q", skillName)
 	}
-	app.runTurn(prompt.String())
-	return true
+	return b.String(), true, true
 }
 
 // runTurn runs one user turn, accumulates usage, and saves the session. A turn
 // error is reported but does not end the REPL (the next prompt may recover).
 func (app *App) runTurn(prompt string) {
+	app.prepareTurn(prompt)()
+}
+
+func (app *App) prepareTurn(prompt string) func() {
 	turn := app.beginTurn(prompt)
 	ctx := context.Background()
+	var cancel context.CancelFunc
 	if app.Interrupt != nil {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
 		app.Interrupt.BeginTurn(cancel)
-		defer func() {
-			app.Interrupt.EndTurn()
-			cancel()
-		}()
 	}
 
 	app.Renderer.StartTurn()
-	sink := newAccumulatingSink(app.Renderer, app, turn)
-	err := app.Agent.RunTurn(ctx, prompt, sink)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		fmt.Fprintf(app.Errw, "[error: %v]\n", err)
+	return func() {
+		if app.Interrupt != nil {
+			defer func() {
+				app.Interrupt.EndTurn()
+				cancel()
+			}()
+		}
+
+		sink := newAccumulatingSink(app.Renderer, app, turn)
+		err := app.Agent.RunTurn(ctx, prompt, sink)
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(app.Errw, "[error: %v]\n", err)
+		}
+		app.saveOrWarn(app.SessionPath)
 	}
-	app.saveOrWarn(app.SessionPath)
 }
 
 // compact forces compaction now (/compact, design §12). The summary call's usage

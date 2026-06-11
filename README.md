@@ -301,10 +301,10 @@ Turn summaries include an approximate context footprint, for example:
 
 ## Interrupts
 
-- **Ctrl-C during a turn** cancels the turn (aborting the HTTP stream and killing
-  any `run_command` process group); streamed partial text is kept and
-  un-executed tool calls are stripped. Prints `[cancelled]` and returns to the
-  prompt.
+- **Ctrl-C during a turn**, or **Esc twice in short succession during a REPL
+  turn**, cancels the turn (aborting the HTTP stream and killing any
+  `run_command` process group); streamed partial text is kept and un-executed
+  tool calls are stripped. Prints `[cancelled]` and returns to the prompt.
 - **A second Ctrl-C within ~1s, or Ctrl-C at the idle prompt** saves and exits
   130. **Ctrl-D** at the prompt saves and exits 0.
 

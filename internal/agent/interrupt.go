@@ -81,6 +81,24 @@ func (w *InterruptWatcher) EndTurn() {
 	w.mu.Unlock()
 }
 
+// CancelTurn cancels the active turn without requesting process exit. It is
+// used by non-signal interrupt gestures such as Esc-Esc, which should behave
+// like the first ^C during a turn but never like the second ^C exit shortcut.
+func (w *InterruptWatcher) CancelTurn() {
+	w.mu.Lock()
+	if !w.inTurn {
+		w.mu.Unlock()
+		return
+	}
+	cancel := w.cancel
+	w.cancelled = true
+	w.lastCancel = w.now()
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // handle applies one signal to the state machine.
 func (w *InterruptWatcher) handle() {
 	w.mu.Lock()

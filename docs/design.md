@@ -543,6 +543,8 @@ A single SIGINT handler plus a per-turn `context.CancelFunc`:
 - **^C during a turn** → cancel the turn context (aborts the HTTP stream; kills
   `run_command` process groups). Apply the cancel repair rule (§4): keep streamed
   partial text, strip un-executed tool calls. Print `[cancelled]`, return to prompt.
+- **Esc-Esc during a REPL turn** → same turn cancellation as the first ^C, without
+  the second-^C exit behavior.
 - **Second ^C within ~1 s, or ^C at the idle prompt** → save session, exit 130.
 - **^D at the prompt** → save session, exit 0.
 
@@ -879,9 +881,12 @@ than `bufio.Scanner` so long prompt lines are not capped by Scanner's token limi
 
 The REPL also configures Ctrl-G as a canonical-mode line delimiter where termios is
 available. Pressing Ctrl-G opens the external prompt editor immediately while preserving
-normal terminal line editing. Before launching the editor, harness restores the original
-termios and disables bracketed paste so the editor owns a normal TTY; after it exits,
-the REPL reapplies its prompt settings.
+normal terminal line editing. During an active REPL turn, Escape is temporarily configured
+as the second canonical-mode line delimiter so Esc-Esc can cancel the turn without a
+raw-mode prompt reader; typeahead lines are queued for the next prompt. Bracketed paste is
+disabled while Escape is armed, then restored when the prompt returns. Before launching
+the editor, harness restores the original termios and disables bracketed paste so the
+editor owns a normal TTY; after it exits, the REPL reapplies its prompt settings.
 
 External editor prompt files use `$VISUAL`, then `$EDITOR`, then `vi`, attached to
 `/dev/tty`. The temp file contains the visible output from the latest recorded turn,

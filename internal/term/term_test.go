@@ -69,6 +69,25 @@ func TestResetNoTTY(t *testing.T) {
 	}
 }
 
+func TestLineEndHelpersNoTTY(t *testing.T) {
+	if f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0); err == nil {
+		f.Close()
+		t.Skip("controlling terminal present; no-op path not reachable")
+	}
+	for name, fn := range map[string]func() (func() error, error){
+		"ctrl-g": EnableCtrlGLineEnd,
+		"esc":    EnableEscLineEnd,
+	} {
+		cleanup, err := fn()
+		if err != nil {
+			t.Fatalf("%s helper without a controlling terminal = %v, want nil", name, err)
+		}
+		if err := cleanup(); err != nil {
+			t.Fatalf("%s cleanup without a controlling terminal = %v, want nil", name, err)
+		}
+	}
+}
+
 // TestResetOnRealTTY runs only when a controlling terminal is available (e.g.
 // under script(1) or a developer's shell): it deliberately breaks the terminal
 // (echo and canonical mode off), calls Reset, and verifies both are restored.

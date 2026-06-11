@@ -131,3 +131,26 @@ func TestInterruptEndTurnReturnsToIdle(t *testing.T) {
 		t.Fatal("signal after EndTurn did not request exit at the idle prompt")
 	}
 }
+
+func TestInterruptCancelTurnCancelsWithoutExit(t *testing.T) {
+	sig := make(chan os.Signal, 1)
+	now, _ := fakeClock(time.Unix(0, 0))
+	exited := make(chan struct{}, 1)
+
+	w := NewInterruptWatcher(sig, now, func() { exited <- struct{}{} })
+
+	cancelled := make(chan struct{}, 1)
+	w.BeginTurn(func() { cancelled <- struct{}{} })
+	w.CancelTurn()
+
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("CancelTurn did not cancel the active turn")
+	}
+	select {
+	case <-exited:
+		t.Fatal("CancelTurn must not request exit")
+	case <-time.After(50 * time.Millisecond):
+	}
+}

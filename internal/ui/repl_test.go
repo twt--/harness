@@ -2,7 +2,9 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -473,6 +475,109 @@ func TestREPLProviderErrorReported(t *testing.T) {
 	}
 }
 
+func TestREPLEscapeEscapeCancelsActiveTurn(t *testing.T) {
+	var out, errw bytes.Buffer
+	inTurn := make(chan struct{})
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("partial")},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 5, OutputTokens: 1},
+		Block: func(ctx context.Context) {
+			close(inTurn)
+			<-ctx.Done()
+		},
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	exitRequested := make(chan struct{}, 1)
+	app.Interrupt = agent.NewInterruptWatcher(make(chan os.Signal), app.clock(), func() {
+		exitRequested <- struct{}{}
+	})
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- Run(pr, app, nil) }()
+
+	writePipe(t, pw, "first\n")
+	select {
+	case <-inTurn:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not start")
+	}
+	writePipe(t, pw, "\x1b\x1b/exit\n")
+	_ = pw.Close()
+
+	code := waitRun(t, codeCh)
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "[cancelled]") {
+		t.Fatalf("Esc-Esc should render cancellation, errw=%q", errw.String())
+	}
+	select {
+	case <-exitRequested:
+		t.Fatal("Esc-Esc must cancel the turn without requesting process exit")
+	default:
+	}
+}
+
+func TestREPLTypeaheadDuringActiveTurnRunsAfterTurn(t *testing.T) {
+	var out, errw bytes.Buffer
+	inTurn := make(chan struct{})
+	releaseTurn := make(chan struct{})
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("first answer")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 5, OutputTokens: 2},
+			Block: func(ctx context.Context) {
+				close(inTurn)
+				<-releaseTurn
+			},
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("second answer")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 6, OutputTokens: 2},
+		},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- Run(pr, app, nil) }()
+
+	writePipe(t, pw, "first\n")
+	select {
+	case <-inTurn:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not start")
+	}
+	writePipe(t, pw, "second\n/exit\n")
+	_ = pw.Close()
+	close(releaseTurn)
+
+	code := waitRun(t, codeCh)
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 2 {
+		t.Fatalf("typeahead prompt should run after the blocked turn, got %d requests", len(fp.Requests))
+	}
+	var prompts []string
+	for _, msg := range app.Agent.Transcript() {
+		if msg.Role == llm.RoleUser && len(msg.Content) == 1 && msg.Content[0].Kind == llm.BlockText {
+			prompts = append(prompts, msg.Content[0].Text)
+		}
+	}
+	if strings.Join(prompts, "|") != "first|second" {
+		t.Fatalf("user prompts = %q, want first|second", strings.Join(prompts, "|"))
+	}
+}
+
 // TestREPLInputReadErrorWarned covers the lint fix: a non-EOF read error from
 // stdin must be surfaced (warned to errw) rather than silently treated as a clean
 // end of input. The scanner stops on the error; Run reports it and exits 0
@@ -617,6 +722,34 @@ func (r *erroringReader) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	return 0, r.err
+}
+
+func writePipe(t *testing.T, w *io.PipeWriter, s string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Write([]byte(s))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("pipe write %q: %v", s, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("pipe write %q timed out", s)
+	}
+}
+
+func waitRun(t *testing.T, codeCh <-chan int) int {
+	t.Helper()
+	select {
+	case code := <-codeCh:
+		return code
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	return 0
 }
 
 // errContext is a sentinel non-cancellation error for provider-error tests.

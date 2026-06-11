@@ -36,6 +36,7 @@ const (
 	bracketedPasteEnable  = "\x1b[?2004h"
 	bracketedPasteDisable = "\x1b[?2004l"
 	ctrlG                 = 0x07
+	esc                   = 0x1B
 )
 
 // Reset restores the controlling terminal to a usable state: kernel termios
@@ -119,6 +120,44 @@ func EnableCtrlGLineEnd() (func() error, error) {
 		defer f.Close()
 		if err := setTermios(f.Fd(), &orig); err != nil {
 			return fmt.Errorf("term: restore ctrl-g line end: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+// EnableEscLineEnd makes Escape act as a canonical-mode line delimiter. The
+// REPL enables this only while a model turn is active so Esc-Esc can be observed
+// immediately without switching the whole prompt to raw mode. The returned
+// cleanup restores the original termios; both setup and cleanup are silent
+// no-ops when no controlling terminal exists.
+func EnableEscLineEnd() (func() error, error) {
+	f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return func() error { return nil }, nil
+	}
+	defer f.Close()
+
+	orig, err := getTermios(f.Fd())
+	if err != nil {
+		if errors.Is(err, syscall.ENOTTY) {
+			return func() error { return nil }, nil
+		}
+		return nil, fmt.Errorf("term: get termios: %w", err)
+	}
+	next := orig
+	next.Cc[syscall.VEOL2] = esc
+	if err := setTermios(f.Fd(), &next); err != nil {
+		return nil, fmt.Errorf("term: set esc line end: %w", err)
+	}
+
+	return func() error {
+		f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		if err := setTermios(f.Fd(), &orig); err != nil {
+			return fmt.Errorf("term: restore esc line end: %w", err)
 		}
 		return nil
 	}, nil
