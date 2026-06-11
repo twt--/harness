@@ -670,7 +670,7 @@ func resolveProvider(cfg config.Config, providers []llm.ProviderConfig, getenv f
 
 func resolveSwitchProvider(input string, cfg config.Config, providers []llm.ProviderConfig, getenv func(string) string) (provider, apiType, baseURL, apiKey, model, registryKey string, err error) {
 	model = input
-	if requestedProvider, requestedModel, ok := splitProviderModel(input); ok {
+	if requestedProvider, requestedModel, ok := config.SplitProviderModel(input); ok {
 		model = requestedModel
 		pc, found := providerConfigByName(providers, requestedProvider)
 		if !found {
@@ -721,24 +721,6 @@ func registryModelKey(registry *llm.Registry, provider, model string) string {
 		}
 	}
 	return model
-}
-
-func splitProviderModel(model string) (provider, bareModel string, ok bool) {
-	provider, bareModel, ok = strings.Cut(strings.TrimSpace(model), ":")
-	if !ok || provider == "" || bareModel == "" {
-		return "", "", false
-	}
-	for _, r := range provider {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '-' || r == '_' || r == '.':
-		default:
-			return "", "", false
-		}
-	}
-	return strings.ToLower(provider), bareModel, true
 }
 
 func runtimeProviderConfig(pc llm.ProviderConfig, cfg config.Config, getenv func(string) string) (provider, apiType, baseURL, apiKey string) {

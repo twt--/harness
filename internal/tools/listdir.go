@@ -135,13 +135,13 @@ func entrySize(dir string, e os.DirEntry, isDir bool) string {
 		if err != nil {
 			return "?"
 		}
-		return humanBytes(int(fi.Size()))
+		return HumanBytes(int(fi.Size()))
 	}
 	fi, err := e.Info()
 	if err != nil {
 		return "?"
 	}
-	return humanBytes(int(fi.Size()))
+	return HumanBytes(int(fi.Size()))
 }
 
 // fileTypeChar returns a single character classifying a directory entry, in the

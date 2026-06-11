@@ -218,7 +218,7 @@ func (r *Registry) Cost(model string, u Usage) (usd float64, known bool) {
 	}
 	const perMillion = 1_000_000.0
 	p := info.Price
-	if p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0 {
+	if priceZero(p) {
 		return 0, false
 	}
 	usd = float64(u.InputTokens)/perMillion*p.Input +

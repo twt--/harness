@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -229,10 +230,10 @@ func updatedSetupConfig(path, providerFile, providerName, modelName string, forc
 	if err != nil {
 		return nil, err
 	}
-	if containsString(configs, providerFile) && !force {
+	if slices.Contains(configs, providerFile) && !force {
 		return nil, fmt.Errorf("%s already references provider config %s", path, providerFile)
 	}
-	if !containsString(configs, providerFile) {
+	if !slices.Contains(configs, providerFile) {
 		configs = append(configs, providerFile)
 	}
 	if err := setJSONField(cfg, "provider_configs", configs); err != nil {
@@ -289,7 +290,7 @@ func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Ca
 	filter := ""
 	page := 0
 	for {
-		filtered := filterProviders(providers, filter)
+		filtered := filterEntries(providers, filter)
 		if len(filtered) == 0 {
 			fmt.Fprintf(w, "No providers match %q\n", filter)
 			filter = ""
@@ -326,13 +327,13 @@ func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Ca
 		if n, ok := parseSelectionNumber(input, len(filtered)); ok {
 			return filtered[n-1], nil
 		}
-		if provider, matches, ok := resolveProviderSelection(providers, input); ok {
+		if provider, matches, ok := resolveSelection(providers, input); ok {
 			if provider.ID != input {
 				fmt.Fprintf(w, "Using provider %s%s\n", provider.ID, displayNameSuffix(provider.Name, provider.ID))
 			}
 			return provider, nil
 		} else if len(matches) > 1 {
-			fmt.Fprintf(w, "Matches: %s\n", providerMatches(matches, 8))
+			fmt.Fprintf(w, "Matches: %s\n", matchSummary(matches, 8))
 			continue
 		}
 		filter = input
@@ -348,7 +349,7 @@ func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provi
 	filter := ""
 	page := 0
 	for {
-		filtered := filterModels(models, filter)
+		filtered := filterEntries(models, filter)
 		if len(filtered) == 0 {
 			fmt.Fprintf(w, "No models match %q\n", filter)
 			filter = ""
@@ -385,13 +386,13 @@ func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provi
 		if n, ok := parseSelectionNumber(input, len(filtered)); ok {
 			return filtered[n-1], nil
 		}
-		if model, matches, ok := resolveModelSelection(models, input); ok {
+		if model, matches, ok := resolveSelection(models, input); ok {
 			if model.ID != input {
 				fmt.Fprintf(w, "Using model %s%s\n", model.ID, displayNameSuffix(model.Name, model.ID))
 			}
 			return model, nil
 		} else if len(matches) > 1 {
-			fmt.Fprintf(w, "Matches: %s\n", modelMatches(matches, 8))
+			fmt.Fprintf(w, "Matches: %s\n", matchSummary(matches, 8))
 			continue
 		}
 		filter = input
@@ -416,70 +417,60 @@ func supportedSetupProviders(catalog *modelsdev.Catalog) []modelsdev.Provider {
 	return providers
 }
 
-func filterProviders(providers []modelsdev.Provider, filter string) []modelsdev.Provider {
+// pickEntry abstracts the two models.dev list element types the picker pages
+// through; both expose an id and a display name, which entryIDName extracts.
+type pickEntry interface {
+	modelsdev.Provider | modelsdev.Model
+}
+
+func entryIDName[T pickEntry](v T) (id, name string) {
+	switch e := any(v).(type) {
+	case modelsdev.Provider:
+		return e.ID, e.Name
+	case modelsdev.Model:
+		return e.ID, e.Name
+	}
+	return "", ""
+}
+
+// filterEntries keeps the entries whose id or display name contains filter,
+// case-insensitively. An empty filter keeps everything.
+func filterEntries[T pickEntry](items []T, filter string) []T {
 	filter = strings.ToLower(strings.TrimSpace(filter))
 	if filter == "" {
-		return providers
+		return items
 	}
-	var out []modelsdev.Provider
-	for _, provider := range providers {
-		if strings.Contains(strings.ToLower(provider.ID), filter) || strings.Contains(strings.ToLower(provider.Name), filter) {
-			out = append(out, provider)
+	var out []T
+	for _, item := range items {
+		id, name := entryIDName(item)
+		if strings.Contains(strings.ToLower(id), filter) || strings.Contains(strings.ToLower(name), filter) {
+			out = append(out, item)
 		}
 	}
 	return out
 }
 
-func filterModels(models []modelsdev.Model, filter string) []modelsdev.Model {
-	filter = strings.ToLower(strings.TrimSpace(filter))
-	if filter == "" {
-		return models
-	}
-	var out []modelsdev.Model
-	for _, model := range models {
-		if strings.Contains(strings.ToLower(model.ID), filter) || strings.Contains(strings.ToLower(model.Name), filter) {
-			out = append(out, model)
-		}
-	}
-	return out
-}
-
-func resolveProviderSelection(providers []modelsdev.Provider, input string) (modelsdev.Provider, []modelsdev.Provider, bool) {
+// resolveSelection resolves exact id/name matches first, then unique prefixes.
+// An ambiguous prefix returns the candidates in matches.
+func resolveSelection[T pickEntry](items []T, input string) (selected T, matches []T, ok bool) {
 	input = strings.ToLower(strings.TrimSpace(input))
-	var prefix []modelsdev.Provider
-	for _, provider := range providers {
-		id := strings.ToLower(provider.ID)
-		name := strings.ToLower(provider.Name)
+	var prefix []T
+	for _, item := range items {
+		id, name := entryIDName(item)
+		id = strings.ToLower(id)
+		name = strings.ToLower(name)
 		if id == input || name == input {
-			return provider, nil, true
+			return item, nil, true
 		}
 		if strings.HasPrefix(id, input) || strings.HasPrefix(name, input) {
-			prefix = append(prefix, provider)
+			prefix = append(prefix, item)
 		}
 	}
 	if len(prefix) == 1 {
 		return prefix[0], nil, true
 	}
-	return modelsdev.Provider{}, prefix, false
-}
-
-func resolveModelSelection(models []modelsdev.Model, input string) (modelsdev.Model, []modelsdev.Model, bool) {
-	input = strings.ToLower(strings.TrimSpace(input))
-	var prefix []modelsdev.Model
-	for _, model := range models {
-		id := strings.ToLower(model.ID)
-		name := strings.ToLower(model.Name)
-		if id == input || name == input {
-			return model, nil, true
-		}
-		if strings.HasPrefix(id, input) || strings.HasPrefix(name, input) {
-			prefix = append(prefix, model)
-		}
-	}
-	if len(prefix) == 1 {
-		return prefix[0], nil, true
-	}
-	return modelsdev.Model{}, prefix, false
+	var zero T
+	return zero, prefix, false
 }
 
 func printProviderPage(w io.Writer, providers []modelsdev.Provider, page, pageSize int, filter string) {
@@ -594,12 +585,21 @@ func writeSetupProviderConfig(path string, provider setupProviderConfig, force b
 	return writeJSONFileExclusive(path, provider)
 }
 
-func writeJSONFileAtomic(path string, v any) error {
+// marshalJSONLine renders v as indented JSON with a trailing newline, the
+// on-disk form both config writers share.
+func marshalJSONLine(v any) ([]byte, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func writeJSONFileAtomic(path string, v any) error {
+	data, err := marshalJSONLine(v)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -625,15 +625,6 @@ func writeJSONFileAtomic(path string, v any) error {
 		return err
 	}
 	return nil
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func setupCatalog(env environment) (*modelsdev.Catalog, error) {
@@ -667,24 +658,16 @@ func setupModelFromModelsDev(model modelsdev.Model) setupModelConfig {
 	return cfg
 }
 
-func providerMatches(matches []modelsdev.Provider, limit int) string {
-	if len(matches) > limit {
-		matches = matches[:limit]
-	}
-	parts := make([]string, 0, len(matches))
-	for _, p := range matches {
-		parts = append(parts, p.ID+displayNameSuffix(p.Name, p.ID))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func modelMatches(matches []modelsdev.Model, limit int) string {
+// matchSummary renders up to limit ambiguous-match candidates as "id (Name)"
+// for the picker's "Matches: ..." hint line.
+func matchSummary[T pickEntry](matches []T, limit int) string {
 	if len(matches) > limit {
 		matches = matches[:limit]
 	}
 	parts := make([]string, 0, len(matches))
 	for _, m := range matches {
-		parts = append(parts, m.ID+displayNameSuffix(m.Name, m.ID))
+		id, name := entryIDName(m)
+		parts = append(parts, id+displayNameSuffix(name, id))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -722,11 +705,10 @@ func promptLine(r *bufio.Reader, w io.Writer, label string) (string, error) {
 }
 
 func writeJSONFileExclusive(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
+	data, err := marshalJSONLine(v)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

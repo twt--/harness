@@ -96,7 +96,7 @@ func capBytes(s string, origBytes, maxBytes int) (string, truncationInfo) {
 	if len(s) <= maxBytes {
 		return s, info
 	}
-	marker := fmt.Sprintf("\n[truncated: showing first %s of %s; use read_file offset/limit or grep to narrow]", humanBytes(maxBytes), humanBytes(origBytes))
+	marker := fmt.Sprintf("\n[truncated: showing first %s of %s; use read_file offset/limit or grep to narrow]", HumanBytes(maxBytes), HumanBytes(origBytes))
 	keep := maxBytes - len(marker)
 	if keep < 0 {
 		keep = 0
@@ -107,8 +107,9 @@ func capBytes(s string, origBytes, maxBytes int) (string, truncationInfo) {
 	return out, info
 }
 
-// humanBytes renders a byte count as a short human-readable size.
-func humanBytes(n int) string {
+// HumanBytes renders a byte count as a short human-readable size: 2150 -> "2.1KB".
+// Exported for the ui renderer, which formats the same truncation notices.
+func HumanBytes(n int) string {
 	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%dB", n)

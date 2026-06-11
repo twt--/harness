@@ -223,10 +223,7 @@ type stepResult struct {
 // mid-stream applies the §4 cancel repair and returns ctx.Err(); the transcript
 // is left valid (re-sendable) in every exit path.
 func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) error {
-	a.transcript = append(a.transcript, llm.Message{
-		Role:    llm.RoleUser,
-		Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: userText}},
-	})
+	a.transcript = append(a.transcript, textMessage(llm.RoleUser, userText))
 
 	var total llm.Usage
 	var lastInput int // input tokens the final step reported (drives the trigger)
@@ -236,15 +233,17 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 	continues := 0
 
 	for steps < budget {
+		lastContext = a.EstimateContext()
 		// Proactive trigger (spec §4): a turn whose tool results balloon the
 		// context compacts before the next request, not after the turn. The
 		// estimate catches growth the last reported count knows nothing about.
-		if trigger := max(lastInput, a.EstimateContext().Total); trigger*100 >= a.window()*compactThresholdPct {
+		if a.overThreshold(max(lastInput, lastContext.Total)) {
 			if compUsage, err := a.Compact(ctx, sink); err == nil {
 				total = add(total, compUsage)
 				// The old reported count no longer describes the compacted
 				// transcript and would re-trigger every step.
 				lastInput = 0
+				lastContext = a.EstimateContext()
 			}
 		}
 
@@ -255,7 +254,6 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Tools:     a.tools.Specs(),
 			Reasoning: a.reasoning,
 		}
-		lastContext = estimateRequest(req, a.window())
 
 		res, wasted, err := a.streamWithRetry(ctx, req, sink, steps+1, lastContext)
 		steps++
@@ -268,10 +266,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			// assistant message; drop the message entirely if nothing streamed.
 			// Un-executed tool calls are never appended.
 			if res.text != "" {
-				a.transcript = append(a.transcript, llm.Message{
-					Role:    llm.RoleAssistant,
-					Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: res.text}},
-				})
+				a.transcript = append(a.transcript, textMessage(llm.RoleAssistant, res.text))
 			}
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				sink.Notice("[cancelled]")
@@ -446,6 +441,12 @@ func (a *Agent) stream(ctx context.Context, req llm.Request, sink EventSink) (st
 
 	res.text = string(text)
 	return res, nil
+}
+
+// textMessage builds the single-text-block message shape shared by user
+// prompts, cancel repair, and compaction summaries.
+func textMessage(role llm.Role, text string) llm.Message {
+	return llm.Message{Role: role, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: text}}}
 }
 
 // assistantMessage builds the assistant message for a completed step: the text

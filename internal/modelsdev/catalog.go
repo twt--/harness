@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -188,7 +189,7 @@ func (p Provider) BaseURL() string {
 
 // APIType returns the harness dialect to use for this provider when it is known.
 func (p Provider) APIType() string {
-	if p.ID == "anthropic" || strings.Contains(strings.ToLower(p.NPM), "anthropic") || containsString(p.Env, "ANTHROPIC_API_KEY") {
+	if p.ID == "anthropic" || strings.Contains(strings.ToLower(p.NPM), "anthropic") || slices.Contains(p.Env, "ANTHROPIC_API_KEY") {
 		return "anthropic"
 	}
 	if p.ID == "openai" {
@@ -296,13 +297,4 @@ func sortProviders(providers []Provider) {
 
 func normalizeURL(s string) string {
 	return strings.TrimRight(strings.ToLower(strings.TrimSpace(s)), "/")
-}
-
-func containsString(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }

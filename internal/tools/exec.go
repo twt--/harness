@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 )
@@ -60,14 +59,8 @@ func (execTool) Run(ctx context.Context, input json.RawMessage) (string, error) 
 	if args.TimeoutSeconds < 0 {
 		return "", badArgs("timeout_seconds must be >= 0")
 	}
-	if args.Cwd != "" {
-		info, err := os.Stat(args.Cwd)
-		if err != nil {
-			return "", err
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("cwd %s is not a directory", args.Cwd)
-		}
+	if err := validateCwd(args.Cwd); err != nil {
+		return "", err
 	}
 
 	// Running an arbitrary user-supplied program is exec's documented purpose

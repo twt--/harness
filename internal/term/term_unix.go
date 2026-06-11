@@ -93,35 +93,7 @@ func SetBracketedPaste(enabled bool) error {
 // line editing. The returned cleanup restores the original termios; both setup
 // and cleanup are silent no-ops when no controlling terminal exists.
 func EnableCtrlGLineEnd() (func() error, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0)
-	if err != nil {
-		return func() error { return nil }, nil
-	}
-	defer f.Close()
-
-	orig, err := getTermios(f.Fd())
-	if err != nil {
-		if errors.Is(err, syscall.ENOTTY) {
-			return func() error { return nil }, nil
-		}
-		return nil, fmt.Errorf("term: get termios: %w", err)
-	}
-	next := ctrlGLineEndTermios(orig)
-	if err := setTermios(f.Fd(), &next); err != nil {
-		return nil, fmt.Errorf("term: set ctrl-g line end: %w", err)
-	}
-
-	return func() error {
-		f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0)
-		if err != nil {
-			return nil
-		}
-		defer f.Close()
-		if err := setTermios(f.Fd(), &orig); err != nil {
-			return fmt.Errorf("term: restore ctrl-g line end: %w", err)
-		}
-		return nil
-	}, nil
+	return withTTYTermios(ctrlGLineEndTermios, "ctrl-g line end")
 }
 
 func ctrlGLineEndTermios(t syscall.Termios) syscall.Termios {
@@ -136,6 +108,17 @@ func ctrlGLineEndTermios(t syscall.Termios) syscall.Termios {
 // cleanup restores the original termios; both setup and cleanup are silent
 // no-ops when no controlling terminal exists.
 func EnableEscLineEnd() (func() error, error) {
+	return withTTYTermios(func(t syscall.Termios) syscall.Termios {
+		t.Cc[syscall.VEOL2] = esc
+		return t
+	}, "esc line end")
+}
+
+// withTTYTermios applies mutate to the controlling terminal's termios and
+// returns a cleanup that restores the original. Setup and cleanup are silent
+// no-ops when no controlling terminal exists (open failure or ENOTTY); label
+// names the key binding in error messages.
+func withTTYTermios(mutate func(syscall.Termios) syscall.Termios, label string) (func() error, error) {
 	f, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return func() error { return nil }, nil
@@ -149,10 +132,9 @@ func EnableEscLineEnd() (func() error, error) {
 		}
 		return nil, fmt.Errorf("term: get termios: %w", err)
 	}
-	next := orig
-	next.Cc[syscall.VEOL2] = esc
+	next := mutate(orig)
 	if err := setTermios(f.Fd(), &next); err != nil {
-		return nil, fmt.Errorf("term: set esc line end: %w", err)
+		return nil, fmt.Errorf("term: set %s: %w", label, err)
 	}
 
 	return func() error {
@@ -162,7 +144,7 @@ func EnableEscLineEnd() (func() error, error) {
 		}
 		defer f.Close()
 		if err := setTermios(f.Fd(), &orig); err != nil {
-			return fmt.Errorf("term: restore esc line end: %w", err)
+			return fmt.Errorf("term: restore %s: %w", label, err)
 		}
 		return nil
 	}, nil

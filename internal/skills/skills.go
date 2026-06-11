@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -375,11 +376,7 @@ func sortedNames(m map[string]Skill) []string {
 	for k := range m {
 		names = append(names, k)
 	}
-	for i := 1; i < len(names); i++ {
-		for j := i; j > 0 && names[j-1] > names[j]; j-- {
-			names[j-1], names[j] = names[j], names[j-1]
-		}
-	}
+	sort.Strings(names)
 	return names
 }
 

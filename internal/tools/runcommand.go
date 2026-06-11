@@ -57,14 +57,8 @@ func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error
 	if args.TimeoutSeconds < 0 {
 		return "", badArgs("timeout_seconds must be >= 0")
 	}
-	if args.Cwd != "" {
-		info, err := os.Stat(args.Cwd)
-		if err != nil {
-			return "", err
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("cwd %s is not a directory", args.Cwd)
-		}
+	if err := validateCwd(args.Cwd); err != nil {
+		return "", err
 	}
 
 	cmd := shellCommand(args.Command)
@@ -82,6 +76,23 @@ func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error
 		return "", fmt.Errorf("failed to start shell: %w", err)
 	}
 	return out, nil
+}
+
+// validateCwd checks the optional cwd argument the exec-style tools share: an
+// empty value is fine (inherit the process cwd); a non-empty value must name an
+// existing directory.
+func validateCwd(cwd string) error {
+	if cwd == "" {
+		return nil
+	}
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cwd %s is not a directory", cwd)
+	}
+	return nil
 }
 
 // runProcess starts cmd in its own process group, enforces the timeout (0 means

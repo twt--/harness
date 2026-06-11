@@ -176,7 +176,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_MODEL"), fc.Model, "")
 	c.Provider = resolveString(set["provider"], *fProvider,
 		getenv("HARNESS_PROVIDER"), fc.Provider, "")
-	if provider, model, ok := splitProviderModel(c.Model); ok {
+	if provider, model, ok := SplitProviderModel(c.Model); ok {
 		if c.Provider == "" {
 			c.Provider = provider
 		}
@@ -434,8 +434,12 @@ func inferProvider(model string) string {
 	return "openai"
 }
 
-func splitProviderModel(model string) (provider, bareModel string, ok bool) {
-	provider, bareModel, ok = strings.Cut(model, ":")
+// SplitProviderModel splits a "provider:model" string into its parts. The
+// provider half must look like a provider name ([a-zA-Z0-9._-]); anything else
+// (e.g. a model id with a colon in it) is returned as not-ok. Shared with the
+// REPL /model switch in cmd/harness.
+func SplitProviderModel(model string) (provider, bareModel string, ok bool) {
+	provider, bareModel, ok = strings.Cut(strings.TrimSpace(model), ":")
 	if !ok || provider == "" || bareModel == "" {
 		return "", "", false
 	}

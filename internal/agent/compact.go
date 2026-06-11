@@ -17,6 +17,17 @@ const defaultKeepTurns = 4
 // summary call plus the next turn (design §12).
 const compactThresholdPct = 78
 
+// overThreshold reports whether tokens crosses the compaction trigger for the
+// current window. compactBudget is the same fraction expressed as a token
+// budget; together they keep the threshold arithmetic in one place.
+func (a *Agent) overThreshold(tokens int) bool {
+	return tokens*100 >= a.window()*compactThresholdPct
+}
+
+func (a *Agent) compactBudget() int {
+	return a.window() * compactThresholdPct / 100
+}
+
 // bytesPerToken is a coarse token estimate used only by the degradation ladder,
 // which must decide whether a compacted transcript still overflows without a
 // tokenizer or another model round-trip (design §12).
@@ -57,8 +68,7 @@ const summaryHeader = "=== Summary of earlier conversation ===\n"
 // (design §12, §8.1). It returns the summary call's usage (zero when no
 // compaction ran) so the caller can fold it into the session totals.
 func (a *Agent) MaybeCompact(ctx context.Context, lastInputTokens int, sink EventSink) (llm.Usage, error) {
-	window := a.window()
-	if lastInputTokens*100 < window*compactThresholdPct {
+	if !a.overThreshold(lastInputTokens) {
 		return llm.Usage{}, nil
 	}
 	return a.Compact(ctx, sink)
@@ -135,13 +145,7 @@ func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm
 			return "", llm.Usage{}, err
 		}
 		total = add(total, usage)
-		summaries = append(summaries, llm.Message{
-			Role: llm.RoleUser,
-			Content: []llm.ContentBlock{{
-				Kind: llm.BlockText,
-				Text: fmt.Sprintf("Chunk %d summary:\n%s", i+1, summary),
-			}},
-		})
+		summaries = append(summaries, textMessage(llm.RoleUser, fmt.Sprintf("Chunk %d summary:\n%s", i+1, summary)))
 	}
 	final, usage, err := a.summarizeOne(ctx, summaries)
 	if err != nil {
@@ -205,7 +209,7 @@ func (a *Agent) summaryToolResultMaxBytes() int {
 }
 
 func (a *Agent) summaryChunkBudget() int {
-	budget := a.window() * compactThresholdPct / 100
+	budget := a.compactBudget()
 	if budget <= 0 {
 		return llm.DefaultContextWindow * compactThresholdPct / 100
 	}
@@ -267,7 +271,7 @@ func splitSummaryChunks(msgs []llm.Message, budget int) [][]llm.Message {
 // [summary, ...keptTurns]; starts indexes the pre-compaction transcript so the
 // last turn's start can be located.
 func (a *Agent) degrade(compacted []llm.Message, starts []int) []llm.Message {
-	budget := a.window() * compactThresholdPct / 100
+	budget := a.compactBudget()
 	if estimateTokens(compacted) <= budget {
 		return compacted
 	}
@@ -317,10 +321,7 @@ func hasNonResult(m llm.Message) bool {
 }
 
 func summaryMessage(summary string) llm.Message {
-	return llm.Message{
-		Role:    llm.RoleUser,
-		Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: summaryHeader + summary}},
-	}
+	return textMessage(llm.RoleUser, summaryHeader+summary)
 }
 
 // minTruncResult is the smallest tool_result worth shrinking; below it the saving

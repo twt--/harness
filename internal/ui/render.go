@@ -13,6 +13,7 @@ import (
 
 	"harness/internal/agent"
 	"harness/internal/llm"
+	"harness/internal/tools"
 )
 
 // dim/reset are the only ANSI codes used; rendering is legible without color
@@ -200,11 +201,11 @@ func resultSummary(result llm.ToolResult) string {
 	}
 	n := len(result.Text)
 	lines := countLines(result.Text)
-	size := humanBytes(n)
+	size := tools.HumanBytes(n)
 	prefix := ""
 	if result.Truncated {
 		if result.OriginalBytes > 0 {
-			prefix = fmt.Sprintf("truncated %s of %s, ", humanBytes(result.ShownBytes), humanBytes(result.OriginalBytes))
+			prefix = fmt.Sprintf("truncated %s of %s, ", tools.HumanBytes(result.ShownBytes), tools.HumanBytes(result.OriginalBytes))
 		} else {
 			prefix = "truncated, "
 		}
@@ -292,20 +293,6 @@ func humanTokens(n int) string {
 		return fmt.Sprintf("%d", n)
 	}
 	return fmt.Sprintf("%.1fk", float64(n)/1000)
-}
-
-// humanBytes renders a byte count as a short size: 2150 -> "2.1KB".
-func humanBytes(n int) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%dB", n)
-	}
-	div, exp := int64(unit), 0
-	for v := int64(n) / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // humanDuration renders an elapsed turn duration: "4.3s" or "850ms".

@@ -276,31 +276,14 @@ func normalizeUsage(u *wireUsage) llm.Usage {
 	}
 }
 
+// parseErrorResponse maps a non-2xx HTTP response onto an *llm.APIError via the
+// shared envelope parser; the Responses dialect prefers the envelope's code
+// field over its type.
 func parseErrorResponse(resp *http.Response) *llm.APIError {
-	apiErr := &llm.APIError{
-		StatusCode: resp.StatusCode,
-		Retryable:  retry.RetryableStatus(resp.StatusCode),
-		RetryAfter: retry.ParseRetryAfter(resp.Header.Get("Retry-After")),
-	}
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	var env struct {
-		Error *struct {
-			Type    string `json:"type"`
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &env) == nil && env.Error != nil {
-		if env.Error.Code != "" {
-			apiErr.Code = env.Error.Code
-		} else {
-			apiErr.Code = env.Error.Type
-		}
-		apiErr.Message = env.Error.Message
-	}
-	if apiErr.Message == "" {
-		apiErr.Message = strings.TrimSpace(string(body))
+	apiErr, errType, errCode := llm.ParseErrorResponse(resp)
+	apiErr.Code = errType
+	if errCode != "" {
+		apiErr.Code = errCode
 	}
 	return apiErr
 }

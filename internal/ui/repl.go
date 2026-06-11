@@ -260,6 +260,23 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			done <- struct{}{}
 		}()
 	}
+	// applyAction dispatches one input at the idle prompt — both the queued-
+	// typeahead drain and the fresh read use it — and reports whether the REPL
+	// should exit.
+	applyAction := func(input replInput) (exit bool) {
+		action := app.handlePromptInput(input)
+		promptPrinted = false
+		if action.exit {
+			return true
+		}
+		if action.run {
+			if action.echoEditedPrompt {
+				app.echoEditedPrompt(prompt, action.prompt)
+			}
+			startTurn(action.prompt)
+		}
+		return false
+	}
 
 	for {
 		if active {
@@ -309,16 +326,8 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		if len(queued) > 0 {
 			input := queued[0]
 			queued = queued[1:]
-			action := app.handlePromptInput(input)
-			promptPrinted = false
-			if action.exit {
+			if applyAction(input) {
 				return ExitOK
-			}
-			if action.run {
-				if action.echoEditedPrompt {
-					app.echoEditedPrompt(prompt, action.prompt)
-				}
-				startTurn(action.prompt)
 			}
 			continue
 		}
@@ -343,16 +352,8 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				setInputEnded(res.err)
 				continue
 			}
-			action := app.handlePromptInput(res.input)
-			promptPrinted = false
-			if action.exit {
+			if applyAction(res.input) {
 				return ExitOK
-			}
-			if action.run {
-				if action.echoEditedPrompt {
-					app.echoEditedPrompt(prompt, action.prompt)
-				}
-				startTurn(action.prompt)
 			}
 		}
 	}
@@ -1016,7 +1017,7 @@ func (s *accumulatingSink) ToolResult(res llm.ToolResult) {
 			s.Notice(fmt.Sprintf("[tool result truncated; full output archive failed: %v]", err))
 			return
 		}
-		msg := fmt.Sprintf("[tool result truncated: showing %s of %s", humanBytes(res.ShownBytes), humanBytes(res.OriginalBytes))
+		msg := fmt.Sprintf("[tool result truncated: showing %s of %s", tools.HumanBytes(res.ShownBytes), tools.HumanBytes(res.OriginalBytes))
 		if ref != "" {
 			msg += "; full output: " + ref
 		}

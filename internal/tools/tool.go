@@ -314,9 +314,7 @@ func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.
 		// timeout with the wrong duration (spec §6).
 		if ctx.Err() == context.DeadlineExceeded && parent.Err() == nil {
 			res.Text = fmt.Sprintf("error: tool timed out after %s", timeout)
-		} else if _, bad := err.(*invalidArgsError); bad {
-			res.Text = "error: invalid arguments: " + err.Error()
-		} else if isJSONError(err) {
+		} else if _, bad := err.(*invalidArgsError); bad || isJSONError(err) {
 			res.Text = "error: invalid arguments: " + err.Error()
 		} else {
 			res.Text = "error: " + err.Error()

@@ -285,30 +285,11 @@ func (p *Provider) decode(ctx context.Context, r io.Reader, yield func(llm.Strea
 	}
 }
 
-// parseErrorResponse maps a non-2xx HTTP response onto an *llm.APIError,
-// extracting the provider error type/message and the Retry-After floor, and
-// classifying retryability by status (design §5.5).
+// parseErrorResponse maps a non-2xx HTTP response onto an *llm.APIError via the
+// shared envelope parser; Anthropic's error code is the envelope's type field.
 func parseErrorResponse(resp *http.Response) *llm.APIError {
-	apiErr := &llm.APIError{
-		StatusCode: resp.StatusCode,
-		Retryable:  retry.RetryableStatus(resp.StatusCode),
-		RetryAfter: retry.ParseRetryAfter(resp.Header.Get("Retry-After")),
-	}
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	var env struct {
-		Error *struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &env) == nil && env.Error != nil {
-		apiErr.Code = env.Error.Type
-		apiErr.Message = env.Error.Message
-	}
-	if apiErr.Message == "" {
-		apiErr.Message = strings.TrimSpace(string(body))
-	}
+	apiErr, errType, _ := llm.ParseErrorResponse(resp)
+	apiErr.Code = errType
 	return apiErr
 }
 
