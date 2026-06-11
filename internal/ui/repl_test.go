@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,6 +283,93 @@ func TestREPLModelCommandSwitchesNextTurn(t *testing.T) {
 	}
 	if !strings.Contains(errw.String(), "model switched") {
 		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
+	}
+}
+
+func TestREPLModeCommandLists(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.Mode = "plan"
+	app.AvailableModes = []string{"auto", "independent", "plan"}
+
+	in := strings.NewReader("/mode\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := errw.String()
+	for _, name := range []string{"auto", "independent", "plan"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("/mode should list %q, errw=%q", name, got)
+		}
+	}
+	if !strings.Contains(got, "plan (current)") {
+		t.Errorf("/mode should mark the current mode, errw=%q", got)
+	}
+}
+
+func TestREPLModeCommandSwitchesNextTurn(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("ok")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	planTools, err := tools.Catalog().Subset([]string{"read_file", "grep"})
+	if err != nil {
+		t.Fatalf("subset: %v", err)
+	}
+	app.SwitchMode = func(name string) (ModeSelection, error) {
+		if name != "plan" {
+			t.Fatalf("switch mode = %q, want plan", name)
+		}
+		return ModeSelection{Name: "plan", Tools: planTools, System: "PLAN MODE PROMPT"}, nil
+	}
+
+	in := strings.NewReader("/mode plan\nhello\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if app.Mode != "plan" {
+		t.Errorf("app.Mode = %q, want plan", app.Mode)
+	}
+	if app.System != "PLAN MODE PROMPT" {
+		t.Errorf("app.System should update so saves capture it, got %q", app.System)
+	}
+	if !strings.Contains(errw.String(), "mode switched: plan") {
+		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
+	}
+	// The post-switch turn must advertise only the plan tool set.
+	if len(fp.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(fp.Requests))
+	}
+	names := make([]string, len(fp.Requests[0].Tools))
+	for i, s := range fp.Requests[0].Tools {
+		names[i] = s.Name
+	}
+	if len(names) != 2 || names[0] != "read_file" || names[1] != "grep" {
+		t.Errorf("post-switch request should advertise [read_file grep], got %v", names)
+	}
+}
+
+func TestREPLModeCommandUnknownReportsError(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.Mode = "auto"
+	app.SwitchMode = func(name string) (ModeSelection, error) {
+		return ModeSelection{}, errors.New(`unknown mode "bogus" (available: auto, plan)`)
+	}
+
+	in := strings.NewReader("/mode bogus\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(errw.String(), "mode switch failed") {
+		t.Errorf("unknown mode should report failure, errw=%q", errw.String())
+	}
+	if app.Mode != "auto" {
+		t.Errorf("failed switch should not change the mode, got %q", app.Mode)
 	}
 }
 
