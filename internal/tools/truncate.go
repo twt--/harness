@@ -21,8 +21,6 @@ type truncationInfo struct {
 	truncated     bool
 	originalBytes int
 	shownBytes    int
-	originalLines int
-	shownLines    int
 }
 
 func (l resultLimits) withDefaults() resultLimits {
@@ -45,8 +43,6 @@ func truncate(s string, limits resultLimits) (string, truncationInfo) {
 	info := truncationInfo{
 		originalBytes: len(s),
 		shownBytes:    len(s),
-		originalLines: countResultLines(s),
-		shownLines:    countResultLines(s),
 	}
 	totalLines := strings.Count(s, "\n")
 	if !strings.HasSuffix(s, "\n") && len(s) > 0 {
@@ -76,10 +72,8 @@ func truncate(s string, limits resultLimits) (string, truncationInfo) {
 		out, byteTrunc := capBytes(kept+marker, len(s), limits.maxBytes)
 		info.truncated = true
 		info.shownBytes = len(out)
-		info.shownLines = countResultLines(out)
 		if byteTrunc.truncated {
 			info.shownBytes = byteTrunc.shownBytes
-			info.shownLines = byteTrunc.shownLines
 		}
 		return out, info
 	}
@@ -98,8 +92,6 @@ func capBytes(s string, origBytes, maxBytes int) (string, truncationInfo) {
 	info := truncationInfo{
 		originalBytes: origBytes,
 		shownBytes:    len(s),
-		originalLines: countResultLines(s),
-		shownLines:    countResultLines(s),
 	}
 	if len(s) <= maxBytes {
 		return s, info
@@ -112,19 +104,7 @@ func capBytes(s string, origBytes, maxBytes int) (string, truncationInfo) {
 	out := s[:keep] + marker
 	info.truncated = true
 	info.shownBytes = len(out)
-	info.shownLines = countResultLines(out)
 	return out, info
-}
-
-func countResultLines(s string) int {
-	if s == "" {
-		return 0
-	}
-	n := strings.Count(s, "\n")
-	if !strings.HasSuffix(s, "\n") {
-		n++
-	}
-	return n
 }
 
 // humanBytes renders a byte count as a short human-readable size.

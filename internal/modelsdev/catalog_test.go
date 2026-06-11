@@ -111,33 +111,6 @@ func TestFirstPartyProviderFallbacks(t *testing.T) {
 	}
 }
 
-func TestResolveProviderPrefix(t *testing.T) {
-	c, err := Decode(strings.NewReader(testCatalog))
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-	p, matches, ok := c.ResolveProvider("openr")
-	if !ok || len(matches) != 0 || p.ID != "openrouter" {
-		t.Fatalf("ResolveProvider(openr) = provider=%+v matches=%v ok=%v", p, matches, ok)
-	}
-	_, matches, ok = c.ResolveProvider("open")
-	if ok || len(matches) != 2 {
-		t.Fatalf("ResolveProvider(open) ok=%v matches=%v, want ambiguous openai/openrouter", ok, matches)
-	}
-}
-
-func TestResolveModelPrefix(t *testing.T) {
-	c, err := Decode(strings.NewReader(testCatalog))
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
-	}
-	p, _ := c.Provider("openrouter")
-	m, matches, ok := p.ResolveModel("openai/gpt-5")
-	if !ok || len(matches) != 0 || m.ID != "openai/gpt-5.5" {
-		t.Fatalf("ResolveModel = model=%+v matches=%v ok=%v", m, matches, ok)
-	}
-}
-
 func TestDecodeCatalogWrapper(t *testing.T) {
 	c, err := Decode(strings.NewReader(`{"providers":` + testCatalog + `,"models":{}}`))
 	if err != nil {

@@ -157,45 +157,6 @@ func (c *Catalog) ProviderByAPI(baseURL string) (Provider, bool) {
 	return Provider{}, false
 }
 
-// ResolveProvider resolves exact ids/names first, then unique prefixes over ids
-// and display names. If the prefix is ambiguous, matches contains the candidates.
-func (c *Catalog) ResolveProvider(input string) (Provider, []Provider, bool) {
-	matches := c.MatchProviders(input)
-	if len(matches) == 0 {
-		return Provider{}, nil, false
-	}
-	input = strings.ToLower(strings.TrimSpace(input))
-	for _, p := range matches {
-		if strings.ToLower(p.ID) == input || strings.ToLower(p.Name) == input {
-			return p, nil, true
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0], nil, true
-	}
-	return Provider{}, matches, false
-}
-
-// MatchProviders returns provider candidates whose id or display name has input
-// as a case-insensitive prefix.
-func (c *Catalog) MatchProviders(input string) []Provider {
-	if c == nil {
-		return nil
-	}
-	input = strings.ToLower(strings.TrimSpace(input))
-	if input == "" {
-		return nil
-	}
-	var matches []Provider
-	for _, p := range c.Providers {
-		if strings.HasPrefix(strings.ToLower(p.ID), input) || strings.HasPrefix(strings.ToLower(p.Name), input) {
-			matches = append(matches, p)
-		}
-	}
-	sortProviders(matches)
-	return matches
-}
-
 // ProvidersList returns provider entries sorted by id.
 func (c *Catalog) ProvidersList() []Provider {
 	if c == nil {
@@ -237,42 +198,6 @@ func (p Provider) APIType() string {
 		return "openai"
 	}
 	return ""
-}
-
-// ResolveModel resolves exact model ids/names first, then unique id prefixes.
-// Ambiguous prefixes are returned in matches.
-func (p Provider) ResolveModel(input string) (Model, []Model, bool) {
-	matches := p.MatchModels(input)
-	if len(matches) == 0 {
-		return Model{}, nil, false
-	}
-	input = strings.ToLower(strings.TrimSpace(input))
-	for _, m := range matches {
-		if strings.ToLower(m.ID) == input || strings.ToLower(m.Name) == input {
-			return m, nil, true
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0], nil, true
-	}
-	return Model{}, matches, false
-}
-
-// MatchModels returns model candidates whose id or display name has input as a
-// case-insensitive prefix.
-func (p Provider) MatchModels(input string) []Model {
-	input = strings.ToLower(strings.TrimSpace(input))
-	if input == "" {
-		return nil
-	}
-	var matches []Model
-	for _, m := range p.Models {
-		if strings.HasPrefix(strings.ToLower(m.ID), input) || strings.HasPrefix(strings.ToLower(m.Name), input) {
-			matches = append(matches, m)
-		}
-	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
-	return matches
 }
 
 // ModelsByID returns model entries sorted by provider-local model id.

@@ -1276,74 +1276,6 @@ func setupCatalog(env environment) (*modelsdev.Catalog, error) {
 	return modelsdev.Fallback()
 }
 
-func promptProviderName(r *bufio.Reader, w io.Writer, catalog *modelsdev.Catalog) (string, *modelsdev.Provider, error) {
-	if catalog == nil {
-		value, err := promptRequired(r, w, "Provider name: ", "provider name")
-		return value, nil, err
-	}
-	for {
-		value, err := promptRequired(r, w, "Provider name: ", "provider name")
-		if err != nil {
-			return "", nil, err
-		}
-		provider, matches, ok := catalog.ResolveProvider(value)
-		if ok {
-			if provider.ID != value {
-				fmt.Fprintf(w, "Using provider %s%s\n", provider.ID, displayNameSuffix(provider.Name, provider.ID))
-			}
-			return provider.ID, &provider, nil
-		}
-		if len(matches) > 0 {
-			fmt.Fprintf(w, "Matches: %s\n", providerMatches(matches, 8))
-			continue
-		}
-		return value, nil, nil
-	}
-}
-
-func promptModelName(r *bufio.Reader, w io.Writer, provider *modelsdev.Provider) (setupModelConfig, error) {
-	if provider == nil || len(provider.Models) == 0 {
-		value, err := promptRequired(r, w, "Model name: ", "model name")
-		return setupModelConfig{Name: value}, err
-	}
-	for {
-		value, err := promptRequired(r, w, "Model name: ", "model name")
-		if err != nil {
-			return setupModelConfig{}, err
-		}
-		model, matches, ok := provider.ResolveModel(value)
-		if ok {
-			if model.ID != value {
-				fmt.Fprintf(w, "Using model %s%s\n", model.ID, displayNameSuffix(model.Name, model.ID))
-			}
-			return setupModelFromModelsDev(model), nil
-		}
-		if len(matches) > 0 {
-			fmt.Fprintf(w, "Matches: %s\n", modelMatches(matches, 8))
-			continue
-		}
-		return setupModelConfig{Name: value}, nil
-	}
-}
-
-func promptWithDefault(r *bufio.Reader, w io.Writer, label, def string, required bool) (string, error) {
-	prompt := label + ": "
-	if def != "" {
-		prompt = fmt.Sprintf("%s [%s]: ", label, def)
-	}
-	value, err := promptLine(r, w, prompt)
-	if err != nil {
-		return "", err
-	}
-	if value == "" {
-		value = def
-	}
-	if required && value == "" {
-		return "", fmt.Errorf("%s is required", strings.ToLower(label))
-	}
-	return value, nil
-}
-
 func setupModelFromModelsDev(model modelsdev.Model) setupModelConfig {
 	cfg := setupModelConfig{
 		Name:             model.ID,
@@ -1400,17 +1332,6 @@ func clipSetup(s string, n int) string {
 
 func setupPriceKnown(p llm.Price) bool {
 	return p.Input != 0 || p.Output != 0 || p.CacheRead != 0 || p.CacheWrite != 0
-}
-
-func promptRequired(r *bufio.Reader, w io.Writer, label, field string) (string, error) {
-	value, err := promptLine(r, w, label)
-	if err != nil {
-		return "", err
-	}
-	if value == "" {
-		return "", fmt.Errorf("%s is required", field)
-	}
-	return value, nil
 }
 
 func promptLine(r *bufio.Reader, w io.Writer, label string) (string, error) {

@@ -753,20 +753,6 @@ func (app *App) clear() {
 	fmt.Fprintf(app.Errw, "[cleared; new session %s]\n", app.SessionPath)
 }
 
-// invokeSkill handles $skillName invocations. It reads the SKILL.md file and
-// sends it as a turn with the skill content embedded. Returns true when the
-// line was handled, including an unknown skill diagnostic.
-func (app *App) invokeSkill(line string) bool {
-	prompt, handled, ok := app.skillPrompt(line)
-	if !handled {
-		return false
-	}
-	if ok {
-		app.runTurn(prompt)
-	}
-	return true
-}
-
 func (app *App) skillPrompt(line string) (prompt string, handled bool, ok bool) {
 	words := strings.Fields(line)
 	if len(words) == 0 {
@@ -951,13 +937,10 @@ func (app *App) skillsSummary() string {
 
 	var b strings.Builder
 
-	// Build directory label
+	// Build directory label (only user-scope sections render one)
 	dirLabel := func(scope skills.Scope) string {
 		if path, ok := scopePath[scope]; ok {
 			return path
-		}
-		if scope == skills.ScopeProject {
-			return "project"
 		}
 		return "user"
 	}

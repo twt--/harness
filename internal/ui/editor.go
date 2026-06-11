@@ -17,14 +17,6 @@ const editorDelimiterPrefix = "--- HARNESS EDIT "
 
 var errEditorDelimiterMissing = errors.New("editor delimiter missing")
 
-func (app *App) editAndRun(draft string) {
-	prompt, ok := app.editPrompt(draft)
-	if !ok {
-		return
-	}
-	app.runTurn(prompt)
-}
-
 func (app *App) editPrompt(draft string) (string, bool) {
 	lastOutput, err := session.LatestTurnOutput(app.SessionPath)
 	if err != nil {
