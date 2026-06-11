@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -314,6 +315,9 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				return ExitOK
 			}
 			if action.run {
+				if action.echoEditedPrompt {
+					app.echoEditedPrompt(prompt, action.prompt)
+				}
 				startTurn(action.prompt)
 			}
 			continue
@@ -345,6 +349,9 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				return ExitOK
 			}
 			if action.run {
+				if action.echoEditedPrompt {
+					app.echoEditedPrompt(prompt, action.prompt)
+				}
 				startTurn(action.prompt)
 			}
 		}
@@ -365,9 +372,10 @@ type replReadResult struct {
 }
 
 type replAction struct {
-	prompt string
-	run    bool
-	exit   bool
+	prompt           string
+	run              bool
+	exit             bool
+	echoEditedPrompt bool
 }
 
 type escapePresses struct {
@@ -400,7 +408,7 @@ func (app *App) handlePromptInput(input replInput) replAction {
 	}
 	if input.edit {
 		if prompt, ok := app.editPrompt(line); ok {
-			return replAction{prompt: prompt, run: true}
+			return replAction{prompt: prompt, run: true, echoEditedPrompt: true}
 		}
 		return replAction{}
 	}
@@ -435,6 +443,14 @@ func (app *App) handlePromptInput(input replInput) replAction {
 		}
 	}
 	return replAction{prompt: line, run: true}
+}
+
+func (app *App) echoEditedPrompt(replPrompt, submitted string) {
+	if f, ok := app.Errw.(*os.File); ok && term.IsTerminal(f) {
+		fmt.Fprintf(app.Errw, "\r\x1b[2K%s%s\n", replPrompt, submitted)
+		return
+	}
+	fmt.Fprintln(app.Errw, submitted)
 }
 
 func commandFields(line string) (cmd, arg string) {

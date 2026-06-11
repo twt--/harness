@@ -136,6 +136,37 @@ func TestREPLCtrlGOpensEditorWithDraft(t *testing.T) {
 	}
 }
 
+func TestREPLCtrlGDisplaysEditedPromptBeforeModelStatus(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("ok")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	app.OpenEditor = func(path string) error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		delimiter := editorDelimiterFromContent(t, string(data))
+		return os.WriteFile(path, []byte(delimiter+"\nfrom editor\nsecond line\n"), 0o600)
+	}
+
+	in := strings.NewReader("\a/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+
+	got := errw.String()
+	if strings.Contains(got, "\a") || strings.Contains(got, "^G") {
+		t.Fatalf("Ctrl-G should not be replayed to the REPL view, errw=%q", got)
+	}
+	want := "> from editor\nsecond line\n[model: step 1 waiting]"
+	if !strings.Contains(got, want) {
+		t.Fatalf("edited prompt should be replayed before model status; missing %q in %q", want, got)
+	}
+}
+
 func TestREPLEditedSlashTextIsPromptNotCommand(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake", llmtest.Step{

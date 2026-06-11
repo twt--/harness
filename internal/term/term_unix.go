@@ -106,8 +106,7 @@ func EnableCtrlGLineEnd() (func() error, error) {
 		}
 		return nil, fmt.Errorf("term: get termios: %w", err)
 	}
-	next := orig
-	next.Cc[syscall.VEOL] = ctrlG
+	next := ctrlGLineEndTermios(orig)
 	if err := setTermios(f.Fd(), &next); err != nil {
 		return nil, fmt.Errorf("term: set ctrl-g line end: %w", err)
 	}
@@ -123,6 +122,12 @@ func EnableCtrlGLineEnd() (func() error, error) {
 		}
 		return nil
 	}, nil
+}
+
+func ctrlGLineEndTermios(t syscall.Termios) syscall.Termios {
+	t.Cc[syscall.VEOL] = ctrlG
+	t.Lflag &^= syscall.ECHOCTL
+	return t
 }
 
 // EnableEscLineEnd makes Escape act as a canonical-mode line delimiter. The
@@ -172,6 +177,14 @@ func Size() (rows, cols int, ok bool) {
 	}
 	defer f.Close()
 	return sizeFromFD(f.Fd())
+}
+
+func IsTerminal(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	_, err := getTermios(f.Fd())
+	return err == nil
 }
 
 func sizeFromFD(fd uintptr) (rows, cols int, ok bool) {

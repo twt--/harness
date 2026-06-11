@@ -2,6 +2,8 @@
 
 package term
 
+import "os"
+
 // Reset is a no-op on platforms without termios support.
 func Reset() error {
 	return nil
@@ -21,4 +23,8 @@ func EnableEscLineEnd() (func() error, error) {
 
 func Size() (rows, cols int, ok bool) {
 	return 0, 0, false
+}
+
+func IsTerminal(f *os.File) bool {
+	return false
 }

@@ -88,6 +88,22 @@ func TestLineEndHelpersNoTTY(t *testing.T) {
 	}
 }
 
+func TestCtrlGLineEndSuppressesControlEcho(t *testing.T) {
+	var tio syscall.Termios
+	tio.Lflag = syscall.ECHO | syscall.ECHOCTL
+
+	got := ctrlGLineEndTermios(tio)
+	if got.Cc[syscall.VEOL] != ctrlG {
+		t.Fatalf("VEOL = %#x, want Ctrl-G", got.Cc[syscall.VEOL])
+	}
+	if got.Lflag&syscall.ECHO == 0 {
+		t.Fatal("Ctrl-G line-end setup should preserve ordinary input echo")
+	}
+	if got.Lflag&syscall.ECHOCTL != 0 {
+		t.Fatal("Ctrl-G line-end setup should suppress ^G control echo")
+	}
+}
+
 // TestResetOnRealTTY runs only when a controlling terminal is available (e.g.
 // under script(1) or a developer's shell): it deliberately breaks the terminal
 // (echo and canonical mode off), calls Reset, and verifies both are restored.
