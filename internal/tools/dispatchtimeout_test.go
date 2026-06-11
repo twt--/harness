@@ -32,6 +32,17 @@ func (s *stuckTool) Run(_ context.Context, _ json.RawMessage) (string, error) {
 	return "released", nil
 }
 
+// internalDeadlineTool returns context.DeadlineExceeded from its own internal
+// limit (e.g. http.Client.Timeout) without the dispatch ceiling having fired.
+type internalDeadlineTool struct{}
+
+func (internalDeadlineTool) Name() string            { return "internal_deadline_tool" }
+func (internalDeadlineTool) Description() string     { return "hits its own deadline" }
+func (internalDeadlineTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (internalDeadlineTool) Run(_ context.Context, _ json.RawMessage) (string, error) {
+	return "", context.DeadlineExceeded
+}
+
 func TestDispatchTimeoutCeiling(t *testing.T) {
 	r := &Registry{}
 	r.Register(ctxTool{})
@@ -79,5 +90,27 @@ func TestDispatchOuterCancellationIsNotATimeout(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, context.Canceled.Error()) {
 		t.Errorf("want cancellation error in result, got %q", res.Text)
+	}
+}
+
+// A tool's own internal deadline (e.g. http.Client.Timeout, which yields an
+// error satisfying errors.Is(err, context.DeadlineExceeded)) must surface as a
+// plain tool error, not as a dispatch-ceiling timeout — the ceiling never
+// fired, so reporting "timed out after 1m0s" would be wrong semantics and the
+// wrong duration (spec §6: only the ceiling's own expiry becomes a timeout).
+func TestDispatchInternalDeadlineIsNotDispatchTimeout(t *testing.T) {
+	r := &Registry{}
+	r.Register(internalDeadlineTool{})
+	r.SetDispatchTimeout(time.Minute) // generous; the ceiling must not fire
+
+	res := r.Dispatch(context.Background(), llm.ToolCall{ID: "1", Name: "internal_deadline_tool", Input: json.RawMessage(`{}`)})
+	if !res.IsError {
+		t.Fatalf("want is_error result, got %+v", res)
+	}
+	if strings.Contains(res.Text, "timed out after") {
+		t.Errorf("tool-internal deadline must not be reported as a dispatch timeout: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, context.DeadlineExceeded.Error()) {
+		t.Errorf("want the tool's deadline error in result, got %q", res.Text)
 	}
 }

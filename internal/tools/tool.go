@@ -8,7 +8,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -198,7 +197,11 @@ func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.
 		out, err = o.out, o.err
 	case <-ctx.Done():
 		// The Run goroutine is abandoned (standard cost of a timeout shim);
-		// its eventual send lands in the buffered channel and is dropped.
+		// its eventual send lands in the buffered channel and is dropped. The
+		// abandoned Run may still mutate external state (write files, leave a
+		// subprocess running) after we return — acceptable for the built-in
+		// tools, which either finish fast or self-terminate on ctx (exec uses
+		// CommandContext, web_fetch caps itself well under the ceiling).
 		if parent.Err() != nil {
 			res.Text = "error: " + parent.Err().Error()
 		} else {
@@ -209,9 +212,13 @@ func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.
 	}
 
 	if err != nil {
-		// A well-behaved tool returning because the ceiling expired reports a
-		// timeout, not a bare context error; outer cancellation stays as-is.
-		if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
+		// Report a timeout only when the ceiling itself expired (the derived
+		// context's deadline fired) and it was not an outer cancellation. A
+		// tool's own internal deadline (e.g. http.Client.Timeout) also yields
+		// a DeadlineExceeded error, but with the ceiling unfired it must pass
+		// through as a plain tool error — not be relabeled as a dispatch
+		// timeout with the wrong duration (spec §6).
+		if ctx.Err() == context.DeadlineExceeded && parent.Err() == nil {
 			res.Text = fmt.Sprintf("error: tool timed out after %s", timeout)
 		} else if _, bad := err.(*invalidArgsError); bad {
 			res.Text = "error: invalid arguments: " + err.Error()
