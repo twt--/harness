@@ -74,7 +74,9 @@ path (`/chat/completions` or `/messages`).
 `-model` is primary. The provider is **inferred** from the model name: anything
 starting with `claude` uses the Anthropic dialect, everything else uses the
 OpenAI-compatible dialect (the right fallback for arbitrary local model names).
-An explicit `-provider` overrides the inference.
+An explicit `-provider` overrides the inference. A model value like
+`openrouter:openai/gpt-5.5` selects the configured `openrouter` provider while
+sending `openai/gpt-5.5` as the provider-local model id.
 
 ### One-shot mode
 
@@ -112,6 +114,7 @@ interrupted.
 -config <file>    alternate config path
 --setup           create or update config in ~/.config/harness
 --force           with --setup, overwrite existing provider files and defaults
+--refresh-models  fetch models.dev and update configured provider model metadata
 -h, --help        print this usage screen and exit 0
 ```
 
@@ -140,13 +143,19 @@ Precedence is **flags > environment > config file > built-in defaults**.
 - If a model is missing context-window, pricing, or needed reasoning metadata locally,
   harness makes a best-effort lookup against `https://models.dev/api.json` and uses
   the discovered model metadata when available. Localhost base URLs skip this lookup.
-- Run `./harness --setup` to create a basic default config and provider config,
-  or append a new provider config to an existing default config without changing
-  existing defaults.
-  It uses models.dev when reachable so provider/model prefixes can resolve to full
-  ids, and provider URL, API type, key env vars, context windows, and prices can be
-  filled in automatically. Existing provider config files and existing default
-  provider/model settings are not overwritten unless `--force` is set.
+- Run `./harness --setup` to create a default config and a provider config from
+  models.dev, or append a new provider config to an existing default config
+  without changing existing defaults. Setup lists harness-supported providers,
+  prompts for the API key, pages the provider's models newest-first, and asks
+  which model should be the default. The provider file includes all models known
+  for that provider: URL, API type, key env vars, context windows, prices, and
+  reasoning metadata come from models.dev. If the live catalog is unreachable,
+  setup uses a vendored models.dev snapshot. Existing provider config files and
+  existing default provider/model settings are not overwritten unless `--force`
+  is set.
+- Run `./harness --refresh-models` to fetch the latest live `models.dev` catalog
+  and regenerate every provider config referenced by the config file, preserving
+  stored API keys. Unlike setup, refresh fails if models.dev is inaccessible.
 
 ## Meta-commands (REPL)
 
@@ -162,6 +171,7 @@ Lines starting with `/` are commands; `//` sends a literal leading slash.
 | `/save [file]` | force save (optionally elsewhere) |
 | `/model` | show current provider/model/base URL and configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
+| `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
 
 ## Sessions
 

@@ -36,6 +36,8 @@ type Provider struct {
 type Model struct {
 	ID               string                `json:"id"`
 	Name             string                `json:"name"`
+	ReleaseDate      string                `json:"release_date"`
+	LastUpdated      string                `json:"last_updated"`
 	Reasoning        bool                  `json:"reasoning"`
 	ReasoningOptions []llm.ReasoningOption `json:"reasoning_options"`
 	Limit            Limit                 `json:"limit"`
@@ -75,10 +77,26 @@ func Fetch(ctx context.Context, client *http.Client, url string) (*Catalog, erro
 
 // Decode parses a models.dev API catalog.
 func Decode(r io.Reader) (*Catalog, error) {
-	var providers map[string]Provider
-	if err := json.NewDecoder(r).Decode(&providers); err != nil {
+	var raw json.RawMessage
+	if err := json.NewDecoder(r).Decode(&raw); err != nil {
 		return nil, err
 	}
+
+	var wrapper struct {
+		Providers map[string]Provider `json:"providers"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err == nil && wrapper.Providers != nil {
+		return normalizeProviders(wrapper.Providers), nil
+	}
+
+	var providers map[string]Provider
+	if err := json.Unmarshal(raw, &providers); err != nil {
+		return nil, err
+	}
+	return normalizeProviders(providers), nil
+}
+
+func normalizeProviders(providers map[string]Provider) *Catalog {
 	if providers == nil {
 		providers = map[string]Provider{}
 	}
@@ -97,7 +115,7 @@ func Decode(r io.Reader) (*Catalog, error) {
 		}
 		providers[key] = p
 	}
-	return &Catalog{Providers: providers}, nil
+	return &Catalog{Providers: providers}
 }
 
 // Provider returns the provider with id, matching case-insensitively against the
@@ -178,6 +196,19 @@ func (c *Catalog) MatchProviders(input string) []Provider {
 	return matches
 }
 
+// ProvidersList returns provider entries sorted by id.
+func (c *Catalog) ProvidersList() []Provider {
+	if c == nil {
+		return nil
+	}
+	providers := make([]Provider, 0, len(c.Providers))
+	for _, p := range c.Providers {
+		providers = append(providers, p)
+	}
+	sortProviders(providers)
+	return providers
+}
+
 // BaseURL returns the provider API base URL known to models.dev, falling back to
 // harness's built-in defaults for first-party providers.
 func (p Provider) BaseURL() string {
@@ -241,6 +272,31 @@ func (p Provider) MatchModels(input string) []Model {
 	return matches
 }
 
+// ModelsByID returns model entries sorted by provider-local model id.
+func (p Provider) ModelsByID() []Model {
+	models := make([]Model, 0, len(p.Models))
+	for _, m := range p.Models {
+		models = append(models, m)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models
+}
+
+// ModelsByReleaseDate returns model entries sorted newest first, falling back
+// to last_updated and then id for stable ordering.
+func (p Provider) ModelsByReleaseDate() []Model {
+	models := p.ModelsByID()
+	sort.SliceStable(models, func(i, j int) bool {
+		di := modelSortDate(models[i])
+		dj := modelSortDate(models[j])
+		if di != dj {
+			return di > dj
+		}
+		return models[i].ID < models[j].ID
+	})
+	return models
+}
+
 // ModelInfo returns harness registry metadata for modelID.
 func (p Provider) ModelInfo(modelID string) (llm.ModelInfo, bool) {
 	if p.Models == nil {
@@ -257,6 +313,34 @@ func (p Provider) ModelInfo(modelID string) (llm.ModelInfo, bool) {
 	return llm.ModelInfo{}, false
 }
 
+// ProviderConfig converts this models.dev provider entry into a harness
+// provider config. The supplied apiKey is the only user-specific field; all
+// other connection and model metadata comes from models.dev plus harness's
+// first-party URL defaults.
+func (p Provider) ProviderConfig(apiKey string) llm.ProviderConfig {
+	models := p.ModelsByID()
+	entries := make([]llm.ModelEntry, 0, len(models))
+	for _, m := range models {
+		entry := llm.ModelEntry{
+			Name:             m.ID,
+			ContextWindow:    m.Limit.Context,
+			Price:            m.Cost,
+			ReasoningOptions: append([]llm.ReasoningOption(nil), m.ReasoningOptions...),
+		}
+		reasoning := m.Reasoning
+		entry.Reasoning = &reasoning
+		entries = append(entries, entry)
+	}
+	return llm.ProviderConfig{
+		Name:      p.ID,
+		APIType:   p.APIType(),
+		BaseURL:   p.BaseURL(),
+		APIKey:    apiKey,
+		APIKeyEnv: append([]string(nil), p.Env...),
+		Models:    entries,
+	}
+}
+
 // ModelInfo converts one models.dev model into a harness registry entry.
 func (m Model) ModelInfo() llm.ModelInfo {
 	return llm.ModelInfo{
@@ -267,6 +351,13 @@ func (m Model) ModelInfo() llm.ModelInfo {
 			Options:   append([]llm.ReasoningOption(nil), m.ReasoningOptions...),
 		},
 	}
+}
+
+func modelSortDate(m Model) string {
+	if m.ReleaseDate != "" {
+		return m.ReleaseDate
+	}
+	return m.LastUpdated
 }
 
 func sortProviders(providers []Provider) {

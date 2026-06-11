@@ -21,6 +21,7 @@ import (
 type ModelSelection struct {
 	Provider      string
 	Model         string
+	RegistryModel string
 	BaseURL       string
 	Runtime       llm.Provider
 	ContextWindow int // agent override; 0 means use the registry
@@ -36,11 +37,12 @@ type App struct {
 	Out      io.Writer
 	Errw     io.Writer
 
-	Provider string
-	Model    string
-	BaseURL  string
-	Registry *llm.Registry
-	System   string
+	Provider      string
+	Model         string
+	RegistryModel string
+	BaseURL       string
+	Registry      *llm.Registry
+	System        string
 
 	AvailableModels []string
 	SwitchModel     func(model string) (ModelSelection, error)
@@ -296,9 +298,13 @@ func (app *App) switchModel(model string) {
 	}
 	app.Agent.SetProvider(selection.Runtime)
 	app.Agent.SetModel(selection.Model, selection.ContextWindow)
-	app.Renderer.SetModel(selection.Model)
+	if selection.RegistryModel == "" {
+		selection.RegistryModel = selection.Model
+	}
+	app.Renderer.SetModel(selection.RegistryModel)
 	app.Provider = selection.Provider
 	app.Model = selection.Model
+	app.RegistryModel = selection.RegistryModel
 	app.BaseURL = selection.BaseURL
 	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s base-url=%s]\n", app.Provider, app.Model, app.BaseURL)
 }
@@ -394,7 +400,11 @@ func (app *App) addUsage(u agent.TurnUsage) {
 	app.usage.CacheReadTokens += u.Usage.CacheReadTokens
 	app.usage.CacheWriteTokens += u.Usage.CacheWriteTokens
 	if app.Registry != nil {
-		if usd, known := app.Registry.Cost(app.Model, u.Usage); known {
+		model := app.RegistryModel
+		if model == "" {
+			model = app.Model
+		}
+		if usd, known := app.Registry.Cost(model, u.Usage); known {
 			app.usage.CostUSD += usd
 		}
 	}

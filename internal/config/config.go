@@ -27,8 +27,9 @@ var ErrHelp = flag.ErrHelp
 
 // Config is the fully resolved, provider-neutral configuration.
 type Config struct {
-	Setup      bool // -setup: create or update config in the default config directory
-	SetupForce bool // -force: allow setup to overwrite existing setup-managed files/fields
+	Setup         bool // -setup: create or update config in the default config directory
+	SetupForce    bool // -force: allow setup to overwrite existing setup-managed files/fields
+	RefreshModels bool // -refresh-models: update configured provider model metadata from models.dev
 
 	// Provider selection.
 	Provider string // provider config name or api type; resolved after inference
@@ -128,6 +129,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	var c Config
+	c.RefreshModels = *f.refreshModels
 
 	// Each resolution goes default -> file -> env -> flag, last writer wins.
 
@@ -135,6 +137,12 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_MODEL"), fc.Model, "")
 	c.Provider = resolveString(set["provider"], *fProvider,
 		getenv("HARNESS_PROVIDER"), fc.Provider, "")
+	if provider, model, ok := splitProviderModel(c.Model); ok {
+		if c.Provider == "" {
+			c.Provider = provider
+		}
+		c.Model = model
+	}
 	c.System = resolveString(set["system"], *fSystem,
 		getenv("HARNESS_SYSTEM"), fc.System, "")
 
@@ -184,7 +192,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 
 	// Provider inference (design §7): -model is primary; claude* -> anthropic,
 	// else openai. An explicit provider (flag/env/file, resolved above) wins.
-	if c.Provider == "" {
+	if c.Provider == "" && c.Model != "" {
 		c.Provider = inferProvider(c.Model)
 	}
 
@@ -218,6 +226,7 @@ type flags struct {
 	config                   *string
 	setup                    *bool
 	force                    *bool
+	refreshModels            *bool
 }
 
 // newFlagSet defines every design §10 flag on a fresh FlagSet, used by both Load
@@ -246,6 +255,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.config = fs.String("config", "", "alternate config path")
 	f.setup = fs.Bool("setup", false, "create or update config in the default config directory")
 	f.force = fs.Bool("force", false, "with -setup, allow overwriting existing provider files and default provider/model fields")
+	f.refreshModels = fs.Bool("refresh-models", false, "fetch models.dev and update configured provider model metadata")
 	return fs, f
 }
 
@@ -339,6 +349,24 @@ func inferProvider(model string) string {
 		return "anthropic"
 	}
 	return "openai"
+}
+
+func splitProviderModel(model string) (provider, bareModel string, ok bool) {
+	provider, bareModel, ok = strings.Cut(model, ":")
+	if !ok || provider == "" || bareModel == "" {
+		return "", "", false
+	}
+	for _, r := range provider {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return "", "", false
+		}
+	}
+	return strings.ToLower(provider), bareModel, true
 }
 
 // providerBaseURLEnv returns the provider-specific base-url env var value, or "".

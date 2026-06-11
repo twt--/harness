@@ -428,19 +428,24 @@ Precedence: **flags > environment > config file > built-in defaults.**
   provider_configs, and flag defaults. Provider config paths are resolved relative to
   the config file and may define api_type, base_url, api_key, api_key_env, models,
   context windows, reasoning metadata, and pricing.
-- `--setup` creates a basic config in the default directory, or appends a new provider
-  config to an existing default config. It prompts for provider name and model name,
-  resolving unique models.dev prefixes when available. It fills provider URL from the
-  models.dev `api` field, falls back to first-party defaults for OpenAI and Anthropic,
-  infers api_type/key env vars, and writes context/pricing for the selected model when
-  known. Without `--force`, setup refuses to overwrite existing provider files and
-  preserves existing default provider/model fields; `--force` opts into those
-  overwrites.
-- **Selection rule:** `-model` is primary. Provider is inferred — model names starting
-  with `claude` → Anthropic, everything else → OpenAI-compatible (the right fallback for
-  arbitrary local model names). Explicit `-provider` overrides inference and may name a
-  provider config whose `api_type` selects the OpenAI or Anthropic dialect. An empty API
-  key is allowed when the base URL is non-default (local servers need none).
+- `--setup` creates a config in the default directory, or appends a new provider config
+  to an existing default config. It fetches models.dev provider metadata, falls back to a
+  vendored models.dev snapshot when the live catalog is unreachable, lists
+  harness-supported providers, prompts for the API key, pages the selected provider's
+  models newest-first, and asks which model should be the default. The provider config
+  is generated from models.dev with all known models for that provider: base URL,
+  api_type, key env vars, context windows, pricing, and reasoning metadata. Without
+  `--force`, setup refuses to overwrite existing provider files and preserves existing
+  default provider/model fields; `--force` opts into those overwrites.
+- `--refresh-models` fetches the latest live models.dev catalog and regenerates each
+  configured provider file, preserving stored API keys. It errors if models.dev is
+  inaccessible or a configured provider is missing/unsupported.
+- **Selection rule:** `-model` is primary. A `provider:model` value sets the provider and
+  strips the prefix before sending requests. Otherwise provider is inferred — model names
+  starting with `claude` → Anthropic, everything else → OpenAI-compatible (the right
+  fallback for arbitrary local model names). Explicit `-provider` overrides inference and
+  may name a provider config whose `api_type` selects the OpenAI or Anthropic dialect. An
+  empty API key is allowed when the base URL is non-default (local servers need none).
 - A custom base URL supplies scheme/host/prefix only; the dialect appends its standard
   path (`/chat/completions`, `/messages`) — so `-base-url http://localhost:11434/v1`
   works for Ollama.
@@ -758,6 +763,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 | `/save [file]` | force save (optionally elsewhere) |
 | `/model` | show current provider/model/base-url and configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
+| `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
 
 ### Flags
 
@@ -780,6 +786,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 -config <file>    alternate config path
 --setup           create or update config in ~/.config/harness
 --force           with --setup, overwrite existing provider files and defaults
+--refresh-models  fetch models.dev and update configured provider model metadata
 ```
 
 ### One-shot mode (`-p`)

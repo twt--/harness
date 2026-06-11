@@ -1,6 +1,10 @@
 package llm
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func testRegistry() *Registry {
 	return NewRegistry(map[string]ModelInfo{
@@ -90,6 +94,28 @@ func TestModelsSorted(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("Models = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestLoadProviderConfigsAddsQualifiedLookupWithoutListingDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.json")
+	if err := os.WriteFile(path, []byte(`[
+  {"name":"openai","models":[{"name":"gpt-5.5","context_window":400000}]},
+  {"name":"openrouter","models":[{"name":"gpt-5.5","context_window":1050000}]}
+]`), 0o644); err != nil {
+		t.Fatalf("write providers: %v", err)
+	}
+	r, _, err := LoadProviderConfigs(dir, []string{"providers.json"}, nil)
+	if err != nil {
+		t.Fatalf("LoadProviderConfigs: %v", err)
+	}
+	if got := r.ContextWindow("openrouter:gpt-5.5"); got != 1_050_000 {
+		t.Fatalf("qualified context = %d, want 1050000", got)
+	}
+	models := r.Models()
+	if len(models) != 1 || models[0] != "gpt-5.5" {
+		t.Fatalf("listed models = %v, want only unqualified gpt-5.5", models)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"unsafe"
 )
 
 // softReset undoes the terminal-emulator modes a crashed full-screen program
@@ -58,4 +59,34 @@ func Reset() error {
 		return fmt.Errorf("term: write soft reset: %w", err)
 	}
 	return nil
+}
+
+// Size reports the controlling terminal's rows and columns. It returns ok=false
+// when there is no controlling terminal or the size cannot be determined.
+func Size() (rows, cols int, ok bool) {
+	f, err := os.OpenFile("/dev/tty", os.O_RDONLY|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer f.Close()
+	return sizeFromFD(f.Fd())
+}
+
+func sizeFromFD(fd uintptr) (rows, cols int, ok bool) {
+	var ws windowSize
+	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, syscall.TIOCGWINSZ,
+		uintptr(unsafe.Pointer(&ws)), 0, 0, 0); errno != 0 {
+		return 0, 0, false
+	}
+	if ws.Rows == 0 || ws.Cols == 0 {
+		return 0, 0, false
+	}
+	return int(ws.Rows), int(ws.Cols), true
+}
+
+type windowSize struct {
+	Rows uint16
+	Cols uint16
+	X    uint16
+	Y    uint16
 }

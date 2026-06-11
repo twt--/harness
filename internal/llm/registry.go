@@ -51,6 +51,7 @@ const DefaultContextWindow = 256_000
 // Registry holds model info loaded from provider config files.
 type Registry struct {
 	models               map[string]ModelInfo
+	qualified            map[string]ModelInfo
 	defaultContextWindow int
 }
 
@@ -62,6 +63,7 @@ func NewRegistry(models map[string]ModelInfo) *Registry {
 	}
 	return &Registry{
 		models:               models,
+		qualified:            map[string]ModelInfo{},
 		defaultContextWindow: DefaultContextWindow,
 	}
 }
@@ -71,6 +73,7 @@ func NewRegistry(models map[string]ModelInfo) *Registry {
 // Paths are resolved relative to configDir.
 func LoadProviderConfigs(configDir string, files []string, warn func(string)) (*Registry, []ProviderConfig, error) {
 	models := map[string]ModelInfo{}
+	qualified := map[string]ModelInfo{}
 	var providers []ProviderConfig
 	for _, f := range files {
 		path := f
@@ -84,7 +87,7 @@ func LoadProviderConfigs(configDir string, files []string, warn func(string)) (*
 			}
 			continue
 		}
-		pcs, err := decodeProviderConfigs(data)
+		pcs, err := DecodeProviderConfigs(data)
 		if err != nil {
 			if warn != nil {
 				warn(fmt.Sprintf("warning: skipping provider config %s: %v", f, err))
@@ -94,15 +97,21 @@ func LoadProviderConfigs(configDir string, files []string, warn func(string)) (*
 		for _, pc := range pcs {
 			providers = append(providers, pc)
 			for _, m := range pc.Models {
-				models[m.Name] = ModelInfo{
+				info := ModelInfo{
 					ContextWindow: m.ContextWindow,
 					Price:         m.Price,
 					Reasoning:     modelEntryReasoning(m),
 				}
+				models[m.Name] = info
+				if pc.Name != "" {
+					qualified[pc.Name+":"+m.Name] = info
+				}
 			}
 		}
 	}
-	return NewRegistry(models), providers, nil
+	registry := NewRegistry(models)
+	registry.qualified = qualified
+	return registry, providers, nil
 }
 
 // Lookup returns the configured info for model, if any. The returned bool only
@@ -112,6 +121,10 @@ func (r *Registry) Lookup(model string) (ModelInfo, bool) {
 		return ModelInfo{}, false
 	}
 	info, ok := r.models[model]
+	if ok {
+		return info, true
+	}
+	info, ok = r.qualified[model]
 	return info, ok
 }
 
@@ -141,7 +154,11 @@ func (r *Registry) MergeModel(model string, info ModelInfo) {
 	if r == nil || model == "" {
 		return
 	}
-	current := r.models[model]
+	target := r.models
+	if _, ok := r.qualified[model]; ok {
+		target = r.qualified
+	}
+	current := target[model]
 	if current.ContextWindow <= 0 && info.ContextWindow > 0 {
 		current.ContextWindow = info.ContextWindow
 	}
@@ -153,7 +170,7 @@ func (r *Registry) MergeModel(model string, info ModelInfo) {
 	} else if current.Reasoning != nil && len(current.Reasoning.Options) == 0 && info.Reasoning != nil && len(info.Reasoning.Options) > 0 {
 		current.Reasoning.Options = info.Reasoning.Clone().Options
 	}
-	r.models[model] = current
+	target[model] = current
 }
 
 // SetDefaultContextWindow sets the fallback window used when a model has no
@@ -168,7 +185,7 @@ func (r *Registry) SetDefaultContextWindow(window int) {
 	r.defaultContextWindow = window
 }
 
-func decodeProviderConfigs(data []byte) ([]ProviderConfig, error) {
+func DecodeProviderConfigs(data []byte) ([]ProviderConfig, error) {
 	var many []ProviderConfig
 	if err := json.Unmarshal(data, &many); err == nil {
 		return many, nil
@@ -195,7 +212,7 @@ func (r *Registry) Cost(model string, u Usage) (usd float64, known bool) {
 	if r == nil {
 		return 0, false
 	}
-	info, ok := r.models[model]
+	info, ok := r.Lookup(model)
 	if !ok {
 		return 0, false
 	}
@@ -235,7 +252,7 @@ func (r *Registry) ContextWindow(model string) int {
 	if r == nil {
 		return DefaultContextWindow
 	}
-	if info, ok := r.models[model]; ok && info.ContextWindow > 0 {
+	if info, ok := r.Lookup(model); ok && info.ContextWindow > 0 {
 		return info.ContextWindow
 	}
 	if r.defaultContextWindow > 0 {

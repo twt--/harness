@@ -512,7 +512,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-	"-reasoning-effort", "-v", "-no-color", "-config", "-setup", "-force", "-prompt",
+	"-reasoning-effort", "-v", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the
@@ -546,6 +546,42 @@ func TestSetupForceFlag(t *testing.T) {
 	}
 	if !c.Setup || !c.SetupForce {
 		t.Fatalf("setup force flags = Setup:%v SetupForce:%v, want both true", c.Setup, c.SetupForce)
+	}
+}
+
+func TestRefreshModelsFlag(t *testing.T) {
+	c, err := Load([]string{"--refresh-models"}, noEnv, filepath.Join(t.TempDir(), "missing.json"))
+	if err == nil {
+		t.Fatalf("Load --refresh-models should still read explicit config")
+	}
+
+	cfgPath := writeConfig(t, `{"provider_configs":["openai.json"]}`)
+	c, err = Load([]string{"--refresh-models"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load --refresh-models: %v", err)
+	}
+	if !c.RefreshModels {
+		t.Fatalf("RefreshModels = false, want true")
+	}
+}
+
+func TestProviderQualifiedModelSetsProviderAndStripsModel(t *testing.T) {
+	c, err := Load([]string{"-model", "openrouter:openai/gpt-5.5"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load provider-qualified model: %v", err)
+	}
+	if c.Provider != "openrouter" || c.Model != "openai/gpt-5.5" {
+		t.Fatalf("provider/model = %q/%q, want openrouter/openai/gpt-5.5", c.Provider, c.Model)
+	}
+}
+
+func TestModelColonWithoutProviderQualifierStaysModel(t *testing.T) {
+	c, err := Load([]string{"-model", "qwen/qwen3-coder:free"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load colon model: %v", err)
+	}
+	if c.Provider != "openai" || c.Model != "qwen/qwen3-coder:free" {
+		t.Fatalf("provider/model = %q/%q, want inferred openai and unchanged model", c.Provider, c.Model)
 	}
 }
 

@@ -16,6 +16,7 @@ const testCatalog = `{
       "openai/gpt-5.5": {
         "id": "openai/gpt-5.5",
         "name": "GPT-5.5",
+        "release_date": "2026-06-01",
         "reasoning": true,
         "reasoning_options": [{"type":"effort","values":["low","medium","high"]}],
         "limit": {"context": 1050000},
@@ -32,6 +33,7 @@ const testCatalog = `{
       "gpt-5.5": {
         "id": "gpt-5.5",
         "name": "GPT-5.5",
+        "release_date": "2026-06-01",
         "reasoning": true,
         "reasoning_options": [{"type":"effort","values":["none","low","medium","high","xhigh"]}],
         "limit": {"context": 1050000},
@@ -48,6 +50,7 @@ const testCatalog = `{
       "claude-opus-4-8": {
         "id": "claude-opus-4-8",
         "name": "Claude Opus 4.8",
+        "release_date": "2026-05-01",
         "reasoning": true,
         "reasoning_options": [{"type":"effort","values":["low","medium","high","xhigh","max"]}],
         "limit": {"context": 1000000},
@@ -129,5 +132,37 @@ func TestResolveModelPrefix(t *testing.T) {
 	m, matches, ok := p.ResolveModel("openai/gpt-5")
 	if !ok || len(matches) != 0 || m.ID != "openai/gpt-5.5" {
 		t.Fatalf("ResolveModel = model=%+v matches=%v ok=%v", m, matches, ok)
+	}
+}
+
+func TestDecodeCatalogWrapper(t *testing.T) {
+	c, err := Decode(strings.NewReader(`{"providers":` + testCatalog + `,"models":{}}`))
+	if err != nil {
+		t.Fatalf("Decode wrapper: %v", err)
+	}
+	if _, ok := c.Provider("openai"); !ok {
+		t.Fatal("openai provider not found in wrapper catalog")
+	}
+}
+
+func TestModelsByReleaseDateNewestFirst(t *testing.T) {
+	c, err := Decode(strings.NewReader(`{
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "old": {"id":"old","name":"Old","release_date":"2024-01-01"},
+      "new": {"id":"new","name":"New","release_date":"2026-01-01"},
+      "updated": {"id":"updated","name":"Updated","last_updated":"2025-01-01"}
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	p, _ := c.Provider("openai")
+	models := p.ModelsByReleaseDate()
+	if got := []string{models[0].ID, models[1].ID, models[2].ID}; got[0] != "new" || got[1] != "updated" || got[2] != "old" {
+		t.Fatalf("release sort = %v", got)
 	}
 }
