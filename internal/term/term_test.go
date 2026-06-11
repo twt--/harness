@@ -23,7 +23,6 @@ func TestSoftResetDisablesLeftoverModes(t *testing.T) {
 		"\x1b[?1015l", // mouse: urxvt coords off
 		"\x1b[?1004l", // focus in/out reporting off (ESC[I / ESC[O junk)
 		"\x1b[?2004l", // bracketed paste off
-		"\x1b[?1049l", // leave alternate screen
 		"\x1b[?25h",   // show cursor
 		"\x1b(B\x0f",  // G0 = ASCII, shift in (undo line-drawing charset)
 		"\x1b[0m",     // SGR reset
@@ -37,6 +36,23 @@ func TestSoftResetDisablesLeftoverModes(t *testing.T) {
 		if strings.Contains(softReset, seq) {
 			t.Errorf("softReset contains screen-destroying sequence %q", seq)
 		}
+	}
+
+	// Leaving the alternate screen (?1049l) performs a DECRC cursor-restore
+	// even when the alternate screen is not active; without a DECSC (ESC 7)
+	// immediately before it, the cursor jumps to the never-saved default —
+	// home — and the prompt prints over the top of the scrollback. The pair
+	// must also precede DECSTR, which resets the saved-cursor slot in some
+	// emulators and would defeat the restore after a crashed 1049h app.
+	guarded := strings.Index(softReset, "\x1b7\x1b[?1049l")
+	if guarded == -1 {
+		t.Fatal("softReset must exit the alt screen as \\x1b7\\x1b[?1049l (DECSC immediately before DECRST 1049)")
+	}
+	if decstr := strings.Index(softReset, "\x1b[!p"); decstr < guarded {
+		t.Error("DECSC+1049l must come before DECSTR")
+	}
+	if n := strings.Count(softReset, "\x1b[?1049l"); n != 1 {
+		t.Errorf("softReset contains %d copies of ?1049l, want exactly 1 (guarded)", n)
 	}
 }
 
