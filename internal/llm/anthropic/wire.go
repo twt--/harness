@@ -127,8 +127,9 @@ type wireEvent struct {
 
 // buildRequest maps a provider-neutral llm.Request onto the Anthropic Messages
 // wire body. contextWindow drives the default max_tokens policy when MaxTokens
-// is unset. cache_control breakpoints are placed on the system block and the
-// last content block of the final message, refreshed every call (design §5.4).
+// is unset. cache_control breakpoints are placed on the last tool-schema entry
+// (when tools are present), the system block, and the last content block of the
+// final message, refreshed every call (design §5.4, §7).
 func buildRequest(req llm.Request, contextWindow int) wireRequest {
 	w := wireRequest{
 		Model:       req.Model,
@@ -158,6 +159,13 @@ func buildRequest(req llm.Request, contextWindow int) wireRequest {
 			Description: t.Description,
 			InputSchema: t.Parameters,
 		})
+	}
+
+	// Third breakpoint (of the 4 allowed): the tool-schema array is the static
+	// prefix; caching it separately survives system-prompt changes such as a
+	// run-mode switch (spec §7).
+	if n := len(w.Tools); n > 0 {
+		w.Tools[n-1].CacheControl = ephemeral
 	}
 
 	for _, m := range req.Messages {

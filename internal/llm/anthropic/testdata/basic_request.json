@@ -92,6 +92,9 @@
             "type": "string"
           }
         }
+      },
+      "cache_control": {
+        "type": "ephemeral"
       }
     }
   ],

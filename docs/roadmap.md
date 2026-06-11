@@ -23,6 +23,9 @@ line-level claims before starting one.
 4. **Per-tool-call timeout ceiling in `Dispatch`.** Every tool call gets an
    11-minute ceiling (largest self-limit + grace); Dispatch unblocks even for
    tools that ignore ctx, returning a timed-out is_error result.
+5. **Anthropic cache-breakpoint tuning.** A third breakpoint after the static
+   tool-schema array preserves the cached tools segment across system-prompt
+   changes (e.g. run-mode switches).
 
 ## High value — loop reliability
 
@@ -37,17 +40,14 @@ line-level claims before starting one.
 2. **`maxSteps` auto-continue.** Exhausting the 50-step cap stops with a "say
    continue" notice. Optionally summarize-and-continue, or make the behavior
    configurable.
-3. **Anthropic cache-breakpoint tuning.** Only two breakpoints today (system
-   block + last message, `anthropic/wire.go`). A breakpoint after the static
-   tool-schema array could improve cache hit rates in long sessions.
 
 ## Flagged — conflicts with documented v1 non-goals
 
 Deliberate non-goals (AGENTS.md, design §1). Revisit the stance explicitly
 before implementing; do not slip these in as incidental changes.
 
-4. **Parallel dispatch of read-only tool calls.** The loop serializes
+3. **Parallel dispatch of read-only tool calls.** The loop serializes
    parallel tool calls emitted in one step; independent reads (grep,
    read_file, list_dir) are the obvious latency win.
-5. **`.gitignore`-aware grep.** The fixed denylist is predictable and
+4. **`.gitignore`-aware grep.** The fixed denylist is predictable and
    stdlib-trivial; a correct `.gitignore` parser is a real subsystem.
