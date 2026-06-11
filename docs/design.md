@@ -375,9 +375,12 @@ type APIError struct {
   `Retry-After` (seconds or HTTP-date) is honored as a floor. The policy is a pure
   function (`retry.Next(attempt, retryAfter) time.Duration`); the retry loop lives in
   each provider, which injects a `sleep` function so tests run instantly.
-- **Retries apply only before the first response byte.** Once tokens have streamed,
-  failure is turn-fatal — retrying mid-stream would duplicate partial output and
-  double-charge. Mid-stream Anthropic `error` frames and truncated bodies fail the turn.
+- **Provider retries apply only before the first response byte.** Once tokens have
+  streamed, the provider treats failure as terminal — mid-stream Anthropic `error`
+  frames and truncated bodies fail the provider call. The agent loop re-requests the
+  step from scratch when such a failure is retryable (§8.1; spec
+  `docs/superpowers/specs/2026-06-11-roadmap-items-design.md` §2), so a transient
+  mid-stream failure no longer ends the turn.
 - **Cancellation wins:** `ctx.Err()` is checked before every attempt and every backoff
   sleep, and is distinguished from `APIError` so the UI renders "cancelled" vs "failed".
 
@@ -973,4 +976,5 @@ worker, or the wide-open default without separate binaries.
 - OpenAI Responses API dialect.
 - Markdown rendering.
 - MCP client support; sub-agent spawning.
-- Smarter prompt-cache breakpoint placement.
+- Smarter prompt-cache breakpoint placement (the fourth allowed breakpoint is still
+  unused; dynamic placement could help compaction-heavy sessions).
