@@ -52,7 +52,6 @@ type Renderer struct {
 
 	turnStart         time.Time
 	assistantLineOpen bool
-	toolArgsLineOpen  bool
 	pending           map[string]llm.ToolCall // tool_use id -> call, awaiting its result
 }
 
@@ -86,7 +85,6 @@ func (r *Renderer) TextDelta(text string) {
 	if text == "" {
 		return
 	}
-	r.finishToolArgsLine()
 	io.WriteString(r.out, text)
 	r.assistantLineOpen = !strings.HasSuffix(text, "\n")
 }
@@ -106,21 +104,7 @@ func (r *Renderer) ToolUseStart(call llm.ToolCall) {
 	r.dimLine(fmt.Sprintf("[tool-call: %s id=%s]", call.Name, call.ID))
 }
 
-func (r *Renderer) ToolUseDelta(_ int, delta string) {
-	if !r.toolStream || delta == "" {
-		return
-	}
-	r.finishAssistantLine()
-	if !r.toolArgsLineOpen {
-		if r.color {
-			fmt.Fprintf(r.errw, "%s[tool-call args] ", ansiDim)
-		} else {
-			io.WriteString(r.errw, "[tool-call args] ")
-		}
-		r.toolArgsLineOpen = true
-	}
-	io.WriteString(r.errw, delta)
-}
+func (r *Renderer) ToolUseDelta(_ int, _ string) {}
 
 // ToolStart stashes the call so ToolResult can render name+args+summary on one
 // line once the result is known.
@@ -154,7 +138,6 @@ func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
 // enabled.
 func (r *Renderer) dimLine(s string) {
 	r.finishAssistantLine()
-	r.finishToolArgsLine()
 	if r.color {
 		fmt.Fprintf(r.errw, "%s%s%s\n", ansiDim, s, ansiReset)
 		return
@@ -170,21 +153,10 @@ func (r *Renderer) finishAssistantLine() {
 	r.assistantLineOpen = false
 }
 
-func (r *Renderer) finishToolArgsLine() {
-	if !r.toolArgsLineOpen {
-		return
-	}
-	if r.color {
-		io.WriteString(r.errw, ansiReset)
-	}
-	fmt.Fprintln(r.errw)
-	r.toolArgsLineOpen = false
-}
-
 // formatArgs renders a tool call's input object as space-prefixed key=value
 // pairs in a stable (sorted) order. String values are quoted when they contain
-// spaces; non-scalar values (objects, arrays) are summarized by their JSON so
-// the line stays one row.
+// whitespace; non-scalar values (objects, arrays) are summarized by their JSON
+// so the line stays one row.
 func formatArgs(input json.RawMessage) string {
 	if len(input) == 0 {
 		return ""
@@ -207,12 +179,12 @@ func formatArgs(input json.RawMessage) string {
 }
 
 // formatValue renders one JSON value compactly for an args line. Strings with
-// spaces are quoted; long strings are clipped.
+// whitespace are quoted; long strings are clipped.
 func formatValue(raw json.RawMessage) string {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		s = clip(s, 60)
-		if strings.ContainsAny(s, " \t") {
+		if strings.ContainsAny(s, " \t\r\n") {
 			return fmt.Sprintf("%q", s)
 		}
 		return s

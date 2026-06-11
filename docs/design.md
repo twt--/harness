@@ -844,11 +844,10 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 - Assistant text streams raw as deltas arrive. No markdown rendering.
 - Model progress renders as plain stderr lines, e.g. `[model: step 1 waiting]`.
-- Live tool-call construction renders to stderr by default: `[tool-call: name id=...]`
-  followed by a raw `[tool-call args] ...` line as argument fragments arrive. Disable
-  with `-tool-stream=false`, `HARNESS_TOOL_STREAM=false`, or `"tool_stream": false`.
-  These fragments are live feedback only; session replay keeps completed tool calls and
-  results, not partial argument deltas.
+- Live tool-call construction renders progress to stderr by default:
+  `[tool-call: name id=...]`. Disable with `-tool-stream=false`,
+  `HARNESS_TOOL_STREAM=false`, or `"tool_stream": false`. Partial argument deltas
+  are not printed; session replay keeps completed tool calls and results.
 - Tool calls render as one-liners:
   `[grep] args=["-R","-n","func main","."] → 14 lines, 2.1KB`
   built from the tool name, key args, and a result summary. `-v` adds the first ~5 lines
@@ -930,7 +929,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 -context-window <n>
 -reasoning-effort <level>
 -v                show tool result snippets
--tool-stream      show live tool-call argument streaming (default true)
+-tool-stream      show live tool-call progress (default true)
 -q, --quiet       suppress informational diagnostics
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color
@@ -944,7 +943,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 
 - Prompt from the flag value; `-p -` or piped stdin reads stdin (both → flag text, then
   stdin — enables `harness -p "summarize:" < notes.txt`).
-- **Assistant text → stdout; model progress, live tool-call arguments, tool summaries,
+- **Assistant text → stdout; model progress, tool-call progress, tool summaries,
   usage, errors → stderr.** So
   `harness -p "…" > answer.txt` captures exactly the model's answer.
 - Exit codes: `0` completed, `1` runtime error, `2` usage error, `130` interrupted.

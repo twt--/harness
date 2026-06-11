@@ -73,7 +73,7 @@ type Config struct {
 
 	// UI.
 	Verbose    bool   // -v
-	ToolStream bool   // -tool-stream: show live tool-call argument fragments
+	ToolStream bool   // -tool-stream: show live tool-call progress
 	Quiet      bool   // -q / --quiet: suppress slog-backed diagnostics
 	LogLevel   string // --log-level / LOG_LEVEL: debug, info, warn, error
 	NoColor    bool   // -no-color or NO_COLOR
@@ -319,7 +319,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.onMaxSteps = fs.String("on-max-steps", "", "when the step budget is hit: stop (default) or continue (up to 3 fresh budgets)")
 	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
-	f.toolStream = fs.Bool("tool-stream", true, "show live tool-call argument streaming")
+	f.toolStream = fs.Bool("tool-stream", true, "show live tool-call progress")
 	f.quietShort = fs.Bool("q", false, "suppress informational diagnostics")
 	f.quiet = fs.Bool("quiet", false, "suppress informational diagnostics")
 	f.logLevel = fs.String("log-level", logging.LevelInfo, "diagnostic log level: debug, info, warn, error (also LOG_LEVEL)")

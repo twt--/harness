@@ -92,8 +92,8 @@ sending `openai/gpt-5.5` as the provider-local model id.
 ### One-shot mode
 
 In one-shot mode (`-p`) the **assistant's text goes to stdout** while model
-progress, live tool-call arguments, tool summaries, the usage line, notices, and
-errors go to stderr — so you can capture exactly the answer:
+progress, tool-call progress, tool summaries, the usage line, notices, and errors
+go to stderr — so you can capture exactly the answer:
 
 ```sh
 ./harness -model gpt-5.5 -p "explain this repo in one paragraph" > answer.txt
@@ -123,7 +123,7 @@ interrupted.
 -reasoning-effort <level>   reasoning/thinking effort when supported
 -mode <name>      run mode: auto (default), plan, independent, or a config-defined mode
 -v                show tool result snippets (first ~5 lines, dimmed)
--tool-stream      show live tool-call argument streaming (default true; use -tool-stream=false to disable)
+-tool-stream      show live tool-call progress (default true; use -tool-stream=false to disable)
 -q, --quiet       suppress informational diagnostics
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)

@@ -243,7 +243,7 @@ func TestModelStepStartGoesToStderr(t *testing.T) {
 	}
 }
 
-func TestToolUseStreamEnabledWritesRawArgsToStderr(t *testing.T) {
+func TestToolUseStreamEnabledWritesProgressOnlyToStderr(t *testing.T) {
 	var out, errw bytes.Buffer
 	r := NewRenderer(&out, &errw, RenderOptions{ToolStream: true})
 
@@ -259,8 +259,48 @@ func TestToolUseStreamEnabledWritesRawArgsToStderr(t *testing.T) {
 	if !strings.Contains(got, "[tool-call: read_file id=call_1]") {
 		t.Errorf("missing tool-call start line, got %q", got)
 	}
-	if !strings.Contains(got, "[tool-call args] {\"path\":\"a.go\"}\n[done]") {
-		t.Errorf("tool-call args should be streamed and newline-closed before notices, got %q", got)
+	if strings.Contains(got, "[tool-call args]") || strings.Contains(got, `{"path"`) {
+		t.Errorf("tool-call args should not dump raw JSON, got %q", got)
+	}
+	if !strings.Contains(got, "[done]") {
+		t.Errorf("notice should still render after ignored argument deltas, got %q", got)
+	}
+}
+
+func TestEditToolCallDoesNotDumpLargeJSONArgs(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{ToolStream: true})
+
+	input := json.RawMessage(`{"path":"internal/ui/repl.go","old_string":"line1\nline2\nline3","new_string":"line1\nline two changed\nline3"}`)
+	r.ToolUseStart(llm.ToolCall{ID: "call_edit", Name: "edit"})
+	r.ToolUseDelta(0, `{"path":"internal/ui/repl.go","old_string":"line1\nline2\nline3",`)
+	r.ToolUseDelta(0, `"new_string":"line1\nline two changed\nline3"}`)
+	r.ToolStart(llm.ToolCall{ID: "call_edit", Name: "edit", Input: input})
+	r.ToolResult(llm.ToolResult{
+		ForID:   "call_edit",
+		Text:    "error: old_string not found in internal/ui/repl.go",
+		IsError: true,
+	})
+
+	got := errw.String()
+	if out.Len() != 0 {
+		t.Errorf("tool-call stream must not touch stdout, got %q", out.String())
+	}
+	if strings.Contains(got, "[tool-call args]") || strings.Contains(got, `{"path":"internal/ui/repl.go"`) {
+		t.Errorf("large edit args should not be dumped as raw JSON, got %q", got)
+	}
+	for _, want := range []string{
+		"[tool-call: edit id=call_edit]",
+		"[tool: edit started",
+		"path=internal/ui/repl.go",
+		`old_string="line1\nline2\nline3"`,
+		`new_string="line1\nline two changed\nline3"`,
+		"[edit]",
+		"error: error: old_string not found in internal/ui/repl.go",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stderr missing %q:\n%s", want, got)
+		}
 	}
 }
 

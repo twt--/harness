@@ -93,13 +93,15 @@ func TestOneShotShowsToolCallProgressOnStderrOnly(t *testing.T) {
 	for _, want := range []string{
 		"[model: step 1 waiting]",
 		"[tool-call: list_dir id=call_1]",
-		`[tool-call args] {"path":"."}`,
 		"[tool: list_dir started path=.]",
 		"[list_dir] path=.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stderr missing %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "[tool-call args]") {
+		t.Errorf("stderr should not dump raw tool-call args:\n%s", got)
 	}
 }
 
