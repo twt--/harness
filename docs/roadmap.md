@@ -13,6 +13,9 @@ line-level claims before starting one.
    command line. `exec` (argv array, no shell — design §9.8) eliminates the
    failure class for arguments; `stdin` on both tools eliminates it for
    documents (`git commit -F -`, `python -`, `tee file`).
+5. **Anthropic cache-breakpoint tuning.** A third breakpoint after the static
+   tool-schema array preserves the cached tools segment across system-prompt
+   changes (e.g. run-mode switches).
 
 ## High value — loop reliability
 
@@ -41,9 +44,6 @@ line-level claims before starting one.
    `EventUsage`, trusting providers to send cumulative numbers. Correct for
    both current dialects; brittle for new OpenAI-compatible servers that send
    deltas. Accumulate defensively or normalize per dialect.
-7. **Anthropic cache-breakpoint tuning.** Only two breakpoints today (system
-   block + last message, `anthropic/wire.go`). A breakpoint after the static
-   tool-schema array could improve cache hit rates in long sessions.
 
 ## Flagged — conflicts with documented v1 non-goals
 
