@@ -338,3 +338,70 @@ func TestGrepGitListingHonorsGlob(t *testing.T) {
 		t.Errorf("glob filter wrong:\n%s", out)
 	}
 }
+
+// Grepping AT an ignored directory expresses intent to search it: an empty git
+// listing for an ignored root must fall back to the walker, not silently hide
+// the real files inside.
+func TestGrepIgnoredRootFallsBackToWalker(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "secretdir/\n")
+	mkWrite(t, filepath.Join(dir, "secretdir", "a.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "secretdir", "b.txt"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+filepath.Join(dir, "secretdir")+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	for _, want := range []string{"secretdir/a.txt:1:needle here", "secretdir/b.txt:1:needle here"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A non-ignored root whose listing is empty only because every file is
+// individually ignored must trust the empty result — gitignore working as
+// intended, not a hidden-root false positive.
+func TestGrepNonIgnoredRootTrustsEmptyListing(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "*.log\n")
+	mkWrite(t, filepath.Join(dir, "only.log"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+dir+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if strings.Contains(out, "only.log") {
+		t.Errorf("individually-ignored file leaked via walker fallback:\n%s", out)
+	}
+	if out != "(no matches)" {
+		t.Errorf("want (no matches) for fully-filtered non-ignored root, got:\n%s", out)
+	}
+}
+
+// Grepping a path INSIDE a repo: display paths compose from the subdir root,
+// and gitignore rules declared at the repo root still apply to the subdir
+// listing. This pins the fragile filepath.Base(root)+git-relative composition.
+func TestGrepSubdirRootHonorsRepoIgnore(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "sub/skip.txt\n")
+	mkWrite(t, filepath.Join(dir, "sub", "keep.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "sub", "skip.txt"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+filepath.Join(dir, "sub")+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if !strings.Contains(out, "sub/keep.txt:1:needle here") {
+		t.Errorf("display path should start with subdir root:\n%s", out)
+	}
+	if strings.Contains(out, "skip.txt") {
+		t.Errorf("repo-root gitignore should hide sub/skip.txt:\n%s", out)
+	}
+}

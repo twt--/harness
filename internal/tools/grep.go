@@ -164,9 +164,14 @@ func (grep) Run(ctx context.Context, input json.RawMessage) (string, error) {
 
 // gitListFiles lists tracked plus untracked-but-not-ignored files under root
 // (git grep --untracked semantics), paths relative to root, sorted. ok is
-// false when root is not in a git work tree or git is unavailable; the caller
-// falls back to the denylist walk. Ignore semantics — nesting, negation,
-// global excludes — are git's own, which is the point (spec §9).
+// false when root is not in a git work tree, git is unavailable, or the root
+// itself is git-ignored; the caller falls back to the denylist walk. Ignore
+// semantics — nesting, negation, global excludes — are git's own, which is the
+// point (spec §9).
+//
+// The listing is buffered and sorted rather than streamed: a deliberate
+// trade-off of one exec's worth of memory for a deterministic file order,
+// versus the walker's streaming, lexically-ordered traversal.
 func gitListFiles(ctx context.Context, root string) ([]string, bool) {
 	cmd := exec.CommandContext(ctx, "git", "-C", root,
 		"ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ".")
@@ -180,8 +185,22 @@ func gitListFiles(ctx context.Context, root string) ([]string, bool) {
 			files = append(files, string(f))
 		}
 	}
+	// An empty listing for a root that is itself ignored hides every file under
+	// it; a user targeting that directory has expressed intent to search it, so
+	// fall back to the walker. The check runs only in the empty case, keeping
+	// the common path to a single subprocess.
+	if len(files) == 0 && gitRootIgnored(ctx, root) {
+		return nil, false
+	}
 	slices.Sort(files)
 	return files, true
+}
+
+// gitRootIgnored reports whether root itself is git-ignored: check-ignore -q .
+// exits 0 when the directory matches an ignore rule, 1 when it does not.
+func gitRootIgnored(ctx context.Context, root string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "check-ignore", "-q", ".")
+	return cmd.Run() == nil
 }
 
 // walkGrep is the denylist walk used outside git repos or with no_ignore.

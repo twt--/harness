@@ -618,7 +618,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
   semantics — nesting, negation, global excludes — to git. The **fixed denylist** walk
   (`filepath.WalkDir` skipping `.git`, `node_modules`, `vendor`, `dist`, `build`,
   `target`, `.venv`, `__pycache__`, `.svn`, `.hg`) remains the fallback outside repos, on
-  git failure, or with `no_ignore: true`.
+  git failure, when the search root itself is ignored, or with `no_ignore: true`.
 - Skips binary files (NUL sniff) and files >5 MB.
 - Output `relpath:lineno:text`, line text capped at 300 chars; `[truncated at N
   matches]` when capped; `(no matches)` on zero.
