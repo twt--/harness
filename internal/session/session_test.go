@@ -68,6 +68,24 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// The run mode round-trips so a resumed session can restore its restricted
+// tool set, not just its saved system prompt.
+func TestSaveLoadPreservesMode(t *testing.T) {
+	s := sampleSession()
+	s.Mode = "plan"
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := s.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Mode != "plan" {
+		t.Errorf("Mode = %q, want plan", got.Mode)
+	}
+}
+
 // A second save over the same path (the after-every-turn case) round-trips too.
 func TestSaveLoadSaveRoundTrip(t *testing.T) {
 	s := sampleSession()
