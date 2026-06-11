@@ -54,7 +54,7 @@ type Config struct {
 	ContextWindow             int // -context-window, 0 = registry/default
 	ReasoningEffort           string
 	OnMaxSteps                string // -on-max-steps: "stop" (default) or "continue"
-	AgentsMDWarnBytes         int    // config-only warning threshold; 0 disables
+	AgentsMDWarnBytes         int    // config-only warning threshold in bytes; default 8192, explicit 0 disables
 	ToolResultMaxBytes        int    // config-only; 0 = tool default
 	ToolResultMaxLines        int    // config-only; 0 = tool default
 	ReadFileDefaultLimit      int    // config-only; 0 = tool default
