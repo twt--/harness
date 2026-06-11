@@ -472,7 +472,7 @@ for step := 0; step < maxSteps; step++ {           // -max-steps, default 50
                 capture usage + stop reason
     append assistant message (text blocks + tool_use blocks, emission order)
     if stopReason != tool_use { break }
-    for each tool call, in order:                  // sequential, never parallel
+    for each tool call, in order:                  // concurrent iff all read-only, else sequential
         result := registry.Dispatch(ctx, call)     // always returns a result
         print one-line tool summary
     append ONE user message carrying all tool_result blocks, in call order
@@ -480,8 +480,10 @@ for step := 0; step < maxSteps; step++ {           // -max-steps, default 50
 print turn usage line; save session
 ```
 
-- **Sequential tool execution.** Coding tools mutate a shared filesystem; deterministic
-  ordering matching the model's emission order is worth far more than parallelism.
+- **Mostly-sequential tool execution.** Coding tools mutate a shared filesystem; deterministic
+  ordering matching the model's emission order is worth far more than parallelism. A step
+  whose calls are all read-only (2+ of them) dispatches concurrently, bounded at 8; results,
+  sink events, and transcript blocks stay in emission order. Mixed steps stay sequential.
 - **One result per call, always.** Required by both APIs (§4 invariant). `Dispatch`
   produces a result even on panic.
 - **Max-steps guard:** on hit, print
@@ -969,6 +971,6 @@ worker, or the wide-open default without separate binaries.
 
 - CLI-subprocess backends (codex / claude) behind a separate "delegate" abstraction.
 - OpenAI Responses API dialect.
-- `.gitignore`-aware grep; markdown rendering; parallel tool execution where safe.
+- Markdown rendering.
 - MCP client support; sub-agent spawning.
 - Smarter prompt-cache breakpoint placement.
