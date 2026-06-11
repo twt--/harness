@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"harness/internal/agent"
 	"harness/internal/llm"
@@ -23,6 +24,7 @@ func newTestApp(t *testing.T, out, errw *bytes.Buffer, fp *llmtest.FakeProvider)
 	stateDir := t.TempDir()
 	a := agent.New(fp, tools.Default(), agent.Options{Model: "claude-opus-4-8"})
 	a.SetSystem("you are a test")
+	a.SetSleep(func(time.Duration) {}) // no real time in tests
 	r := NewRenderer(out, errw, RenderOptions{Model: "claude-opus-4-8"})
 	return &App{
 		Agent:       a,
@@ -411,7 +413,10 @@ func TestREPLEOFSavesAndExitsZero(t *testing.T) {
 
 func TestREPLProviderErrorReported(t *testing.T) {
 	var out, errw bytes.Buffer
-	fp := llmtest.New("fake", llmtest.Step{Err: errContext("boom")})
+	// A plain (non-API, non-cancel) error is retryable, so it must persist
+	// across the whole per-step budget (1 + 2 retries) to surface to errw.
+	fail := llmtest.Step{Err: errContext("boom")}
+	fp := llmtest.New("fake", fail, fail, fail)
 	app := newTestApp(t, &out, &errw, fp)
 
 	in := strings.NewReader("hello\n/exit\n")

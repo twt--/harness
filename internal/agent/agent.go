@@ -140,6 +140,14 @@ func (a *Agent) SetModel(model string, contextWindow int) {
 // SetTranscript replaces the running transcript (used when resuming a session).
 func (a *Agent) SetTranscript(msgs []llm.Message) { a.transcript = msgs }
 
+// SetSleep replaces the mid-stream retry backoff function. Tests inject a no-op
+// to keep the loop free of real time; a nil argument is ignored.
+func (a *Agent) SetSleep(sleep func(time.Duration)) {
+	if sleep != nil {
+		a.sleep = sleep
+	}
+}
+
 // Transcript returns the current transcript. The slice is owned by the Agent;
 // callers must not mutate it.
 func (a *Agent) Transcript() []llm.Message { return a.transcript }

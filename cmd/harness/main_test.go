@@ -1101,7 +1101,11 @@ func TestRunBadFlagUsageError(t *testing.T) {
 }
 
 func TestRunOneShotProviderErrorExit1(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{Err: &runtimeErr{"upstream"}})
+	// A plain (non-API, non-cancel) provider error is retryable, so it must
+	// recur through the whole per-step budget (1 + 2 retries) to surface as the
+	// turn-fatal exit-1 it models.
+	fail := llmtest.Step{Err: &runtimeErr{"upstream"}}
+	fp := llmtest.New("fake", fail, fail, fail)
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-p", "go"}, fp, "")
 	if code := run(env); code != ui.ExitRuntime {
 		t.Errorf("provider error should exit 1, got %d; errw=%q", code, errw.String())
