@@ -44,7 +44,7 @@ func TestBuiltins(t *testing.T) {
 	if plan.Prompt == "" {
 		t.Error("plan must carry a prompt")
 	}
-	wantPlan := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	wantPlan := planTools()
 	if !slices.Equal(plan.AllowedTools, wantPlan) {
 		t.Errorf("plan tools = %v, want %v", plan.AllowedTools, wantPlan)
 	}

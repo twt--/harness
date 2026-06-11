@@ -19,6 +19,7 @@ import (
 	"harness/internal/llm/llmtest"
 	"harness/internal/modelsdev"
 	"harness/internal/session"
+	"harness/internal/tools"
 	"harness/internal/ui"
 )
 
@@ -1405,7 +1406,7 @@ func toolNames(req llm.Request) []string {
 	return names
 }
 
-// Default (auto) mode must advertise exactly today's ten tools and carry no
+// Default (auto) mode must advertise the current default tool set and carry no
 // mode section — a regression guard that run modes don't change the default.
 func TestRunDefaultModeUnchanged(t *testing.T) {
 	fp := llmtest.New("fake", llmtest.Step{
@@ -1418,7 +1419,7 @@ func TestRunDefaultModeUnchanged(t *testing.T) {
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	want := []string{"read_file", "list_dir", "grep", "edit", "write_file", "apply_patch", "run_command", "exec", "git", "web_fetch"}
+	want := tools.DefaultNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
 		t.Errorf("default mode tools = %v, want %v", got, want)
 	}
@@ -1439,7 +1440,7 @@ func TestRunPlanModeRestrictsToolsAndAddsPrompt(t *testing.T) {
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	want := expectedPlanToolNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
 		t.Errorf("plan mode tools = %v, want %v", got, want)
 	}
@@ -1482,7 +1483,7 @@ func TestRunConfigModePromptOverrideKeepsTools(t *testing.T) {
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	want := expectedPlanToolNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
 		t.Errorf("plan tools should be preserved by a prompt-only override = %v, want %v", got, want)
 	}
@@ -1509,7 +1510,7 @@ func TestRunREPLModeCommandSwitchesTools(t *testing.T) {
 	if len(fp.Requests) != 1 {
 		t.Fatalf("want 1 post-switch request, got %d", len(fp.Requests))
 	}
-	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	want := expectedPlanToolNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
 		t.Errorf("post-/mode tools = %v, want plan set %v", got, want)
 	}
@@ -1548,8 +1549,16 @@ func TestRunResumeRestoresMode(t *testing.T) {
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	want := expectedPlanToolNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
 		t.Errorf("resumed plan session tools = %v, want %v", got, want)
 	}
+}
+
+func expectedPlanToolNames() []string {
+	names := []string{"read_file", "list_dir", "grep"}
+	if tools.RipgrepAvailable() {
+		names = append(names, "rg")
+	}
+	return append(names, "web_fetch", "git_readonly", "write_tmp_file")
 }

@@ -3,10 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -20,388 +19,146 @@ func runGrep(t *testing.T, args map[string]any) (string, error) {
 	return grep{}.Run(context.Background(), b)
 }
 
-func TestGrepBasicMatch(t *testing.T) {
+func TestGrepRunsHostGrep(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "a.txt"), "hello\nfunc main\nworld\n")
-	out, err := runGrep(t, map[string]any{"pattern": "func main", "path": dir})
+	p := filepath.Join(dir, "a.txt")
+	mustWrite(t, p, "hello\nneedle here\n")
+
+	out, err := runGrep(t, map[string]any{"args": []string{"-n", "needle", p}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// path:line:text
-	if !strings.Contains(out, "a.txt:2:func main") {
-		t.Errorf("expected path:line:text format: %q", out)
+	if !strings.Contains(out, "2:needle here") {
+		t.Errorf("grep output missing match line: %q", out)
+	}
+	if !strings.Contains(out, "[exit code: 0]") {
+		t.Errorf("grep output missing exit code: %q", out)
 	}
 }
 
-func TestGrepIgnoreCase(t *testing.T) {
+func TestGrepArgsPassedLiterally(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "a.txt"), "Hello World\n")
-	out, err := runGrep(t, map[string]any{"pattern": "hello", "path": dir, "ignore_case": true})
+	p := filepath.Join(dir, "a.txt")
+	mustWrite(t, p, "$HOME\na*b\n")
+
+	out, err := runGrep(t, map[string]any{"args": []string{"-F", "-n", "$HOME", p}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out, "a.txt:1:Hello World") {
-		t.Errorf("ignore_case match missing: %q", out)
+	if !strings.Contains(out, "1:$HOME") {
+		t.Errorf("argument should reach grep without shell expansion: %q", out)
 	}
-	// Without ignore_case, lowercase pattern should not match.
-	out2, _ := runGrep(t, map[string]any{"pattern": "hello", "path": dir})
-	if out2 != "(no matches)" {
-		t.Errorf("case-sensitive should not match: %q", out2)
+	if strings.Contains(out, os.Getenv("HOME")) && os.Getenv("HOME") != "$HOME" {
+		t.Errorf("argument appears to have expanded through a shell: %q", out)
 	}
 }
 
-func TestGrepGlob(t *testing.T) {
+func TestGrepCwdAndStdin(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "a.go"), "target\n")
-	mustWrite(t, filepath.Join(dir, "b.txt"), "target\n")
-	out, err := runGrep(t, map[string]any{"pattern": "target", "path": dir, "glob": "*.go"})
+	mustWrite(t, filepath.Join(dir, "a.txt"), "needle in file\n")
+
+	out, err := runGrep(t, map[string]any{
+		"args": []string{"-n", "needle", "a.txt"},
+		"cwd":  dir,
+	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("unexpected cwd error: %v", err)
 	}
-	if strings.Contains(out, "b.txt") {
-		t.Errorf("glob should exclude b.txt: %q", out)
+	if !strings.Contains(out, "1:needle in file") {
+		t.Errorf("grep did not run in cwd: %q", out)
 	}
-	if !strings.Contains(out, "a.go") {
-		t.Errorf("glob should include a.go: %q", out)
-	}
-}
 
-func TestGrepMaxMatches(t *testing.T) {
-	dir := t.TempDir()
-	var b strings.Builder
-	for i := 0; i < 50; i++ {
-		fmt.Fprintf(&b, "match %d\n", i)
-	}
-	mustWrite(t, filepath.Join(dir, "a.txt"), b.String())
-	out, err := runGrep(t, map[string]any{"pattern": "match", "path": dir, "max_matches": 10})
+	out, err = runGrep(t, map[string]any{
+		"args":  []string{"-n", "stdin"},
+		"stdin": "stdin match\n",
+	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("unexpected stdin error: %v", err)
 	}
-	if !strings.Contains(out, "[truncated at 10 matches]") {
-		t.Errorf("expected max-matches marker: %q", out)
-	}
-	matchLines := 0
-	for _, ln := range strings.Split(out, "\n") {
-		if strings.HasPrefix(ln, "[") {
-			continue
-		}
-		matchLines++
-	}
-	if matchLines != 10 {
-		t.Errorf("want 10 match lines, got %d", matchLines)
+	if !strings.Contains(out, "1:stdin match") {
+		t.Errorf("stdin was not passed to grep: %q", out)
 	}
 }
 
-func TestGrepDenylistDirsSkipped(t *testing.T) {
+func TestGrepNonZeroExitNotToolError(t *testing.T) {
 	dir := t.TempDir()
-	for _, d := range []string{".git", "node_modules"} {
-		sub := filepath.Join(dir, d)
-		if err := os.MkdirAll(sub, 0755); err != nil {
-			t.Fatal(err)
-		}
-		mustWrite(t, filepath.Join(sub, "x.txt"), "needle\n")
-	}
-	mustWrite(t, filepath.Join(dir, "keep.txt"), "needle\n")
-	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": dir})
+	p := filepath.Join(dir, "a.txt")
+	mustWrite(t, p, "nothing here\n")
+
+	out, err := runGrep(t, map[string]any{"args": []string{"absent", p}})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("grep exit 1 must not be a tool error: %v", err)
 	}
-	if strings.Contains(out, ".git") || strings.Contains(out, "node_modules") {
-		t.Errorf("denylisted dirs should be skipped: %q", out)
-	}
-	if !strings.Contains(out, "keep.txt") {
-		t.Errorf("non-denylisted file should match: %q", out)
+	if !strings.Contains(out, "[exit code: 1]") {
+		t.Errorf("grep no-match should report exit 1: %q", out)
 	}
 }
 
-func TestGrepBinarySkipped(t *testing.T) {
+func TestGrepValidatesArgs(t *testing.T) {
+	if _, err := runGrep(t, map[string]any{}); err == nil {
+		t.Fatal("expected error for missing args")
+	}
+	if _, err := runGrep(t, map[string]any{"args": []string{}}); err == nil {
+		t.Fatal("expected error for empty args")
+	}
+	if _, err := runGrep(t, map[string]any{"args": []string{"x"}, "timeout_seconds": -1}); err == nil {
+		t.Fatal("expected error for negative timeout")
+	}
+}
+
+func TestRipgrepNotRegisteredWhenMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	if RipgrepAvailable() {
+		t.Fatal("rg should not be available from an empty PATH")
+	}
+	r := &Registry{}
+	RegisterFileTools(r)
+	if slices.Contains(r.Names(), "rg") {
+		t.Errorf("RegisterFileTools registered rg even though it is missing: %v", r.Names())
+	}
+}
+
+func TestRipgrepRegisteredAndRunsWhenPresent(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "bin"), "needle\x00needle\n")
-	mustWrite(t, filepath.Join(dir, "text.txt"), "needle\n")
-	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": dir})
+	makeExecutable(t, filepath.Join(dir, "rg"), `#!/bin/sh
+printf 'fake rg:'
+for arg in "$@"; do
+  printf ' <%s>' "$arg"
+done
+printf '\n'
+`)
+	t.Setenv("PATH", dir)
+
+	rg, ok := newRipgrep()
+	if !ok {
+		t.Fatal("expected fake rg to be found on PATH")
+	}
+	out, err := rg.Run(context.Background(), json.RawMessage(`{"args":["--json","needle with space"]}`))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("rg wrapper returned error: %v", err)
 	}
-	if strings.Contains(out, "bin:") {
-		t.Errorf("binary file should be skipped: %q", out)
+	if !strings.Contains(out, "fake rg: <--json> <needle with space>") {
+		t.Errorf("rg args not passed literally: %q", out)
 	}
-	if !strings.Contains(out, "text.txt") {
-		t.Errorf("text file should match: %q", out)
+
+	r := &Registry{}
+	RegisterFileTools(r)
+	names := r.Names()
+	grepIndex := slices.Index(names, "grep")
+	rgIndex := slices.Index(names, "rg")
+	editIndex := slices.Index(names, "edit")
+	if rgIndex < 0 {
+		t.Fatalf("RegisterFileTools did not include rg: %v", names)
+	}
+	if !(grepIndex < rgIndex && rgIndex < editIndex) {
+		t.Errorf("rg should be registered between grep and edit: %v", names)
 	}
 }
 
-// Regression: the NUL sniff must scan the full 8KB head (design §9.1), not just
-// the first 4KB. A binary file whose first NUL is at ~byte 6300 lies past
-// bufio.Reader's default 4096-byte buffer, so Peek(8192) returns only 4096 bytes
-// and the file would be scanned/emitted as text (review issue: grep.go grepFile).
-func TestGrepBinaryDeepNULSkipped(t *testing.T) {
-	dir := t.TempDir()
-	deep := strings.Repeat("a", 6300) + "needle\x00needle" + strings.Repeat("a", 100)
-	mustWrite(t, filepath.Join(dir, "deep.bin"), deep+"\n")
-	mustWrite(t, filepath.Join(dir, "text.txt"), "needle\n")
-	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Contains(out, "deep.bin:") {
-		t.Errorf("binary file with deep NUL should be skipped: %q", out)
-	}
-	if !strings.Contains(out, "text.txt") {
-		t.Errorf("text file should match: %q", out)
-	}
-}
-
-func TestGrepSingleFile(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "only.txt")
-	mustWrite(t, p, "one\ntwo needle\nthree\n")
-	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": p})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "only.txt:2:two needle") {
-		t.Errorf("single-file path should work: %q", out)
-	}
-}
-
-func TestGrepInvalidPattern(t *testing.T) {
-	dir := t.TempDir()
-	_, err := runGrep(t, map[string]any{"pattern": "(unclosed", "path": dir})
-	if err == nil {
-		t.Fatal("expected invalid pattern error")
-	}
-	if !strings.Contains(err.Error(), "invalid pattern:") {
-		t.Errorf("error text wrong: %v", err)
-	}
-}
-
-func TestGrepLongLineCap(t *testing.T) {
-	dir := t.TempDir()
-	long := "needle" + strings.Repeat("y", 400)
-	mustWrite(t, filepath.Join(dir, "a.txt"), long+"\n")
-	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// The line text after "path:line:" should be capped to 300 chars.
-	idx := strings.Index(out, ":1:")
-	if idx < 0 {
-		t.Fatalf("no match line: %q", out)
-	}
-	text := strings.TrimRight(out[idx+3:], "\n")
-	if len(text) > 300 {
-		t.Errorf("line text not capped to 300: got %d chars", len(text))
-	}
-}
-
-func TestGrepNoMatches(t *testing.T) {
-	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "a.txt"), "nothing here\n")
-	out, err := runGrep(t, map[string]any{"pattern": "absent", "path": dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out != "(no matches)" {
-		t.Errorf("want (no matches), got %q", out)
-	}
-}
-
-func TestGrepMissingPatternArg(t *testing.T) {
-	_, err := runGrep(t, map[string]any{"path": "."})
-	if err == nil {
-		t.Fatal("expected error for missing pattern")
-	}
-}
-
-// Regression: a file under the 5MB cap with a single line longer than the
-// scanner's 1MB token limit must still be matched, not silently dropped when
-// bufio.Scanner stops with ErrTooLong (review issue: grep.go grepFile).
-func TestGrepLongSingleLineNotDropped(t *testing.T) {
-	dir := t.TempDir()
-	// 2MB single line containing the pattern, well over the 1MB scan token.
-	long := strings.Repeat("a", 2*1024*1024) + "needle"
-	mustWrite(t, filepath.Join(dir, "big.txt"), long+"\n")
-	out, err := runGrep(t, map[string]any{"pattern": "needle", "path": dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out == "(no matches)" {
-		t.Fatalf("long line silently dropped: got %q", out)
-	}
-	if !strings.Contains(out, "big.txt:1:") {
-		t.Errorf("expected match on big.txt line 1: %q", out)
-	}
-}
-
-// initGitRepo turns dir into a git repo; skips the test when git is missing.
-func initGitRepo(t *testing.T, dir string) {
+func makeExecutable(t *testing.T, path, content string) {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
-	for _, args := range [][]string{
-		{"init", "-q"},
-		{"config", "user.email", "t@example.com"},
-		{"config", "user.name", "t"},
-	} {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-}
-
-// mkWrite writes content to path, creating parent directories first. It wraps
-// mustWrite (which does not mkdir) so the git tests can populate subdirs.
-func mkWrite(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mustWrite(t, path, content)
-}
-
-func TestGrepRespectsGitignore(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-	mkWrite(t, filepath.Join(dir, ".gitignore"), "secret.txt\nbuildout/\n")
-	mkWrite(t, filepath.Join(dir, "kept.txt"), "needle here\n")
-	mkWrite(t, filepath.Join(dir, "secret.txt"), "needle here\n")
-	mkWrite(t, filepath.Join(dir, "buildout", "gen.txt"), "needle here\n")
-	mkWrite(t, filepath.Join(dir, "sub", ".gitignore"), "local.txt\n")
-	mkWrite(t, filepath.Join(dir, "sub", "local.txt"), "needle here\n")
-	mkWrite(t, filepath.Join(dir, "sub", "kept.txt"), "needle here\n")
-
-	out, err := grep{}.Run(context.Background(),
-		json.RawMessage(`{"pattern":"needle","path":"`+dir+`"}`))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	for _, want := range []string{"kept.txt:1:needle here", "sub/kept.txt:1:"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
-		}
-	}
-	for _, banned := range []string{"secret.txt", "buildout", "local.txt"} {
-		if strings.Contains(out, banned) {
-			t.Errorf("ignored file %q leaked into output:\n%s", banned, out)
-		}
-	}
-}
-
-func TestGrepNoIgnoreSearchesEverything(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-	mkWrite(t, filepath.Join(dir, ".gitignore"), "secret.txt\n")
-	mkWrite(t, filepath.Join(dir, "secret.txt"), "needle here\n")
-
-	out, err := grep{}.Run(context.Background(),
-		json.RawMessage(`{"pattern":"needle","path":"`+dir+`","no_ignore":true}`))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out, "secret.txt:1:needle here") {
-		t.Errorf("no_ignore should search ignored files:\n%s", out)
-	}
-}
-
-func TestGrepNonRepoFallsBackToDenylist(t *testing.T) {
-	dir := t.TempDir() // no git repo here
-	mkWrite(t, filepath.Join(dir, "a.txt"), "needle here\n")
-	mkWrite(t, filepath.Join(dir, "node_modules", "dep.js"), "needle here\n")
-
-	out, err := grep{}.Run(context.Background(),
-		json.RawMessage(`{"pattern":"needle","path":"`+dir+`"}`))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out, "a.txt:1:needle here") {
-		t.Errorf("missing a.txt match:\n%s", out)
-	}
-	if strings.Contains(out, "node_modules") {
-		t.Errorf("denylist not applied in fallback:\n%s", out)
-	}
-}
-
-func TestGrepGitListingHonorsGlob(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-	mkWrite(t, filepath.Join(dir, "a.go"), "needle\n")
-	mkWrite(t, filepath.Join(dir, "a.txt"), "needle\n")
-
-	out, err := grep{}.Run(context.Background(),
-		json.RawMessage(`{"pattern":"needle","path":"`+dir+`","glob":"*.go"}`))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out, "a.go:1:needle") || strings.Contains(out, "a.txt") {
-		t.Errorf("glob filter wrong:\n%s", out)
-	}
-}
-
-// Grepping AT an ignored directory expresses intent to search it: an empty git
-// listing for an ignored root must fall back to the walker, not silently hide
-// the real files inside.
-func TestGrepIgnoredRootFallsBackToWalker(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-	mkWrite(t, filepath.Join(dir, ".gitignore"), "secretdir/\n")
-	mkWrite(t, filepath.Join(dir, "secretdir", "a.txt"), "needle here\n")
-	mkWrite(t, filepath.Join(dir, "secretdir", "b.txt"), "needle here\n")
-
-	out, err := grep{}.Run(context.Background(),
-		json.RawMessage(`{"pattern":"needle","path":"`+filepath.Join(dir, "secretdir")+`"}`))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	for _, want := range []string{"secretdir/a.txt:1:needle here", "secretdir/b.txt:1:needle here"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
-		}
-	}
-}
-
-// A non-ignored root whose listing is empty only because every file is
-// individually ignored must trust the empty result — gitignore working as
-// intended, not a hidden-root false positive.
-func TestGrepNonIgnoredRootTrustsEmptyListing(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-	mkWrite(t, filepath.Join(dir, ".gitignore"), "*.log\n")
-	mkWrite(t, filepath.Join(dir, "only.log"), "needle here\n")
-
-	out, err := grep{}.Run(context.Background(),
-		json.RawMessage(`{"pattern":"needle","path":"`+dir+`"}`))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if strings.Contains(out, "only.log") {
-		t.Errorf("individually-ignored file leaked via walker fallback:\n%s", out)
-	}
-	if out != "(no matches)" {
-		t.Errorf("want (no matches) for fully-filtered non-ignored root, got:\n%s", out)
-	}
-}
-
-// Grepping a path INSIDE a repo: display paths compose from the subdir root,
-// and gitignore rules declared at the repo root still apply to the subdir
-// listing. This pins the fragile filepath.Base(root)+git-relative composition.
-func TestGrepSubdirRootHonorsRepoIgnore(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-	mkWrite(t, filepath.Join(dir, ".gitignore"), "sub/skip.txt\n")
-	mkWrite(t, filepath.Join(dir, "sub", "keep.txt"), "needle here\n")
-	mkWrite(t, filepath.Join(dir, "sub", "skip.txt"), "needle here\n")
-
-	out, err := grep{}.Run(context.Background(),
-		json.RawMessage(`{"pattern":"needle","path":"`+filepath.Join(dir, "sub")+`"}`))
-	if err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out, "sub/keep.txt:1:needle here") {
-		t.Errorf("display path should start with subdir root:\n%s", out)
-	}
-	if strings.Contains(out, "skip.txt") {
-		t.Errorf("repo-root gitignore should hide sub/skip.txt:\n%s", out)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
 	}
 }

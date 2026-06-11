@@ -33,7 +33,7 @@ func TestToolSummaryLine(t *testing.T) {
 	r.ToolStart(llm.ToolCall{
 		ID:    "c1",
 		Name:  "grep",
-		Input: json.RawMessage(`{"pattern":"func main","path":"."}`),
+		Input: json.RawMessage(`{"args":["-R","-n","func main","."]}`),
 	})
 	r.ToolResult(llm.ToolResult{
 		ForID: "c1",
@@ -47,11 +47,8 @@ func TestToolSummaryLine(t *testing.T) {
 	if !strings.HasPrefix(got, "[grep]") {
 		t.Errorf("summary should start with [grep], got %q", got)
 	}
-	if !strings.Contains(got, `pattern="func main"`) {
-		t.Errorf("summary should quote the pattern arg, got %q", got)
-	}
-	if !strings.Contains(got, "path=.") {
-		t.Errorf("summary should show path arg, got %q", got)
+	if !strings.Contains(got, `args=["-R","-n","func main","."]`) {
+		t.Errorf("summary should show argv-style args, got %q", got)
 	}
 	if !strings.Contains(got, "→") {
 		t.Errorf("summary should show the arrow separator, got %q", got)

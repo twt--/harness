@@ -5,7 +5,8 @@ An agentic coding harness in Go: plain-text, line-oriented CLI that drives a too
 ## Project philosophy
 
 - **Small and legible.** The whole system should be readable in an afternoon. One purpose per package, no framework.
-- **Zero third-party dependencies.** Go stdlib only. SSE parsing, diff application, HTML-to-text reduction, and retries are all small enough to own.
+- **Zero third-party Go dependencies.** Go stdlib only. SSE parsing, diff application, HTML-to-text reduction, and retries are all small enough to own.
+- **Unix philosophy for tools.** When a capability is already a mature host CLI (`grep`, `rg`, `git`, shell commands), prefer a thin argv wrapper over reimplementing it in Go.
 - **Provider-agnostic.** Two HTTP dialects (Anthropic Messages + OpenAI Chat Completions), same internal model.
 - **No sandbox, no permission prompts.** Tools run with process privileges, immediately. Assume the harness itself runs sandboxed.
 - **First-class git.** Dedicated `git` tool plus git summary in the system prompt.
@@ -36,7 +37,7 @@ internal/llm/anthropic       Messages wire structs, request builder, stream deco
 internal/sse                 generic SSE frame reader
 internal/retry               backoff + jitter + Retry-After parsing
 internal/agent               turn loop, interrupt state machine, compaction
-internal/tools               Tool interface, registry, dispatch, the 10 tools
+internal/tools               Tool interface, registry, dispatch, built-in tools
 internal/session             transcript persistence (atomic save/load)
 internal/config              flags > env > config-file resolution
 internal/ui                  REPL, streaming renderer, tool summaries, usage line
@@ -70,6 +71,8 @@ Tools live in `internal/tools`. Each tool:
 
 The dispatch layer adds context recovery and a central truncation pass over long results — tools return the full result and let the framework trim.
 
+Prefer delegating to battle-tested host executables for generic Unix capabilities. Keep Go implementations for harness-specific contracts such as `edit`, `apply_patch`, transcript/session handling, provider streaming, and narrow safety wrappers.
+
 ## Adding a provider dialect
 
 A new provider follows the OpenAI / Anthropic structure:
@@ -99,8 +102,8 @@ Keep provider state in the dialect package; the loop imports only `internal/llm`
 
 ## What not to do
 
-- Do not add a dependency. If stdlib is missing something, we've probably written it already — check sibling packages first.
-- Do not add sub-agents, MCP, or markdown rendering. Explicit non-goals (see `docs/design.md` §1). Parallel read-only tool dispatch and gitignore-aware grep (via `git ls-files`) were adopted in v1.1 — see `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`.
+- Do not add a Go module dependency. If stdlib is missing something for harness-specific logic, check sibling packages first; if a mature host CLI already owns the job, wrap it instead of reimplementing it.
+- Do not add sub-agents, MCP, or markdown rendering. Explicit non-goals (see `docs/design.md` §1). Parallel read-only tool dispatch was adopted in v1.1 — see `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`.
 - Do not sandbox or permission-prompt. If the caller wants safety, they sandbox the process.
 - Do not let `internal/llm` import a dialect or the factory. That direction would create a cycle and break the provider-agnostic loop.
 

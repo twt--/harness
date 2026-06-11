@@ -49,12 +49,15 @@ const defaultDispatchTimeout = 11 * time.Minute
 func (r *Registry) SetDispatchTimeout(d time.Duration) { r.dispatchTimeout = d }
 
 // RegisterFileTools registers the built-in file tools (read_file, list_dir,
-// grep, edit, write_file, apply_patch) on r, in that order. It is the only
-// exported path to these tools; their types are unexported by design.
+// grep, optional rg, edit, write_file, apply_patch) on r, in that order. It is
+// the only exported path to these tools; their types are unexported by design.
 func RegisterFileTools(r *Registry) {
 	r.Register(readFile{})
 	r.Register(listDir{})
 	r.Register(grep{})
+	if rg, ok := newRipgrep(); ok {
+		r.Register(rg)
+	}
 	r.Register(edit{})
 	r.Register(writeFile{})
 	r.Register(applyPatch{})

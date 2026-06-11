@@ -53,10 +53,18 @@ func Builtins() map[string]Mode {
 		},
 		"plan": {
 			Name:         "plan",
-			AllowedTools: []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"},
+			AllowedTools: planTools(),
 			Prompt:       planPrompt,
 		},
 	}
+}
+
+func planTools() []string {
+	names := []string{"read_file", "list_dir", "grep"}
+	if tools.RipgrepAvailable() {
+		names = append(names, "rg")
+	}
+	return append(names, "web_fetch", "git_readonly", "write_tmp_file")
 }
 
 // Resolve merges config-file mode entries onto the built-ins and returns the

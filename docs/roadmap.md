@@ -26,10 +26,11 @@ line-level claims before starting one.
 5. **Anthropic cache-breakpoint tuning.** A third breakpoint after the static
    tool-schema array preserves the cached tools segment across system-prompt
    changes (e.g. run-mode switches).
-6. **gitignore-aware grep.** Inside git repos, grep's candidate files come
-   from `git ls-files --cached --others --exclude-standard`, delegating all
-   ignore semantics to git; the denylist walk remains the non-repo /
-   `no_ignore` fallback. The RE2 contract and output caps are unchanged.
+6. **CLI-backed search tools.** The `grep` tool delegates directly to the host
+   `grep` binary with argv-style arguments, and `rg` is added to the tool set
+   only when ripgrep is installed. Search semantics, ignore behavior, binary
+   handling, and output format are owned by the host tools rather than an
+   in-tree matcher.
 7. **Proactive compaction.** The step loop estimates the transcript before
    every request and compacts mid-turn at the same 78% threshold; the
    reported-tokens signal now counts cached tokens too.

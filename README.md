@@ -7,8 +7,10 @@ drives a tool-using LLM loop against local files, shell commands, and git.
 
 - **Small and legible.** The whole system is meant to be readable in an
   afternoon — one purpose per package, no framework.
-- **Zero third-party dependencies.** Go standard library only. SSE parsing, diff
-  application, HTML-to-text reduction, and retries are all small enough to own.
+- **Zero third-party Go dependencies.** Go standard library only. SSE parsing,
+  diff application, HTML-to-text reduction, and retries are all small enough to
+  own; generic Unix capabilities are delegated to host CLIs where that is the
+  simpler, battle-tested path.
 - **Generic over providers.** One internal message/streaming model with two HTTP
   dialects: **Anthropic Messages** and **OpenAI Chat Completions**. The
   OpenAI-style path is the ecosystem standard — the same code works against
@@ -190,7 +192,7 @@ Three modes are built in:
 | mode | tools | behavior |
 |---|---|---|
 | `auto` | all tools | the default — the model decides what to do (unchanged behavior) |
-| `plan` | read-only (`read_file`, `list_dir`, `grep`, `web_fetch`, `git_readonly`, `write_tmp_file`) | collaborate on a plan without modifying the project |
+| `plan` | read-only (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, `git_readonly`, `write_tmp_file`) | collaborate on a plan without modifying the project |
 | `independent` | all tools | complete the task end-to-end without pausing for input; stop only on a hard blocker or the step limit |
 
 Define new modes or override built-ins in the config file under `modes`. Entries
@@ -258,9 +260,11 @@ so a visible context-length error is preferred over silent data loss.
 
 ## Tools
 
-`read_file`, `list_dir`, `grep`, `edit`, `write_file`, `apply_patch`,
-`run_command`, `exec`, `git`, `web_fetch`, plus two used by restricted modes:
-`git_readonly` (read-only git subcommands — `status`, `log`, `diff`, `show`,
-`grep`, `blame`, `bisect`) and `write_tmp_file` (write scratch files under a
-private per-run temp directory). See [`docs/design.md`](docs/design.md)
-§9 for each tool's schema and exact behavior.
+`read_file`, `list_dir`, `grep`, optional `rg` when ripgrep is installed,
+`edit`, `write_file`, `apply_patch`, `run_command`, `exec`, `git`,
+`web_fetch`, plus two used by restricted modes: `git_readonly` (read-only git
+subcommands — `status`, `log`, `diff`, `show`, `grep`, `blame`, `bisect`) and
+`write_tmp_file` (write scratch files under a private per-run temp directory).
+`grep` and `rg` are thin argv wrappers around the host CLIs. See
+[`docs/design.md`](docs/design.md) §9 for each tool's schema and exact
+behavior.

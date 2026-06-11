@@ -63,9 +63,9 @@ func TestRegistrySpecsOrdered(t *testing.T) {
 	}
 }
 
-// The five file tools must be reachable from outside the package; consumers
-// (e.g. internal/agent) cannot register unexported tool types. Default()
-// exposes a registry with all of them so they are not dead code (review issue).
+// The file tools must be reachable from outside the package; consumers (e.g.
+// internal/agent) cannot register unexported tool types. Default() exposes a
+// registry with all available built-ins so they are not dead code.
 func TestDefaultRegistersFileTools(t *testing.T) {
 	r := Default()
 	if r == nil {
@@ -78,13 +78,14 @@ func TestDefaultRegistersFileTools(t *testing.T) {
 			t.Errorf("tool %q has empty schema", s.Name)
 		}
 	}
-	for _, name := range []string{"read_file", "list_dir", "grep", "edit", "write_file", "apply_patch", "run_command", "exec", "git", "web_fetch"} {
+	want := expectedDefaultNames()
+	for _, name := range want {
 		if !got[name] {
 			t.Errorf("Default() missing tool %q", name)
 		}
 	}
-	if len(r.Specs()) != 10 {
-		t.Errorf("Default() should register exactly 10 tools, got %d", len(r.Specs()))
+	if len(r.Specs()) != len(want) {
+		t.Errorf("Default() should register exactly %d tools, got %d", len(want), len(r.Specs()))
 	}
 }
 
@@ -97,8 +98,12 @@ func TestRegisterFileTools(t *testing.T) {
 	if specs[0].Name != "existing" {
 		t.Errorf("registration order not preserved: %q", specs[0].Name)
 	}
-	if len(specs) != 7 {
-		t.Errorf("want 7 tools after registration, got %d", len(specs))
+	want := 7
+	if RipgrepAvailable() {
+		want = 8
+	}
+	if len(specs) != want {
+		t.Errorf("want %d tools after registration, got %d", want, len(specs))
 	}
 }
 
@@ -302,13 +307,21 @@ func TestDispatchTruncateLinesStillRespectsBytes(t *testing.T) {
 }
 
 func TestDefaultNamesMatchDefaultRegistry(t *testing.T) {
-	want := []string{"read_file", "list_dir", "grep", "edit", "write_file", "apply_patch", "run_command", "exec", "git", "web_fetch"}
+	want := expectedDefaultNames()
 	if got := DefaultNames(); !slices.Equal(got, want) {
 		t.Errorf("DefaultNames() = %v, want %v", got, want)
 	}
 	if got := Default().Names(); !slices.Equal(got, DefaultNames()) {
 		t.Errorf("Default().Names() = %v, want DefaultNames() %v", got, DefaultNames())
 	}
+}
+
+func expectedDefaultNames() []string {
+	want := []string{"read_file", "list_dir", "grep"}
+	if RipgrepAvailable() {
+		want = append(want, "rg")
+	}
+	return append(want, "edit", "write_file", "apply_patch", "run_command", "exec", "git", "web_fetch")
 }
 
 func TestCatalogRegistersDefaultPlusModeTools(t *testing.T) {

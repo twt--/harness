@@ -7,8 +7,11 @@ tool-using LLM loop against local files, shell commands, and git.
 
 - **Small and legible.** The whole system should be readable in an afternoon. One purpose
   per package; no framework.
-- **Zero third-party dependencies.** Go stdlib only. SSE, diff application, HTML
+- **Zero third-party Go dependencies.** Go stdlib only. SSE, diff application, HTML
   stripping, and retries are all small enough to own.
+- **Unix philosophy for tools.** When the job is already owned by a mature host CLI
+  (`grep`, `rg`, `git`, shell commands), expose a thin argv wrapper instead of
+  reimplementing optimized search or command semantics in the harness.
 - **Generic over providers.** One internal message/streaming model with two HTTP dialects:
   Anthropic Messages and OpenAI Chat Completions. "OpenAI-style" means the ecosystem
   standard — the same code path must work against OpenAI, vLLM, Ollama, OpenRouter, and
@@ -23,10 +26,9 @@ tool-using LLM loop against local files, shell commands, and git.
   agent loops and are fundamentally different from a model API.
 - OpenAI Responses API (future work; Chat Completions is the compatibility standard).
 - Markdown rendering, MCP, sub-agents.
-- Adopted in v1.1 (no longer non-goals; see
+- Adopted in v1.1 (no longer a non-goal; see
   `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`): parallel
-  dispatch of read-only tool calls, and gitignore-aware search delegated
-  to `git ls-files` rather than an in-tree matcher.
+  dispatch of read-only tool calls.
 
 ## 2. Constraints
 
@@ -54,7 +56,7 @@ tool-using LLM loop against local files, shell commands, and git.
         ┌─────────────▼────────────┐   ┌─────────▼────────────┐
         │ internal/llm             │   │ internal/tools       │
         │   Provider interface     │   │   registry+dispatch  │
-        │   message model, prices  │   │   10 tools           │
+        │   message model, prices  │   │   built-in tools     │
         ├───────────┬──────────────┤   └──────────────────────┘
         │ llm/openai│ llm/anthropic│
         └───────────┴──────────────┘
@@ -73,7 +75,7 @@ internal/llm/anthropic   Messages dialect: same responsibilities
 internal/sse             generic SSE frame reader
 internal/retry           backoff + jitter + Retry-After parsing
 internal/agent           turn loop, interrupt state machine, compaction
-internal/tools           Tool interface, registry, dispatch (recover + central truncation), the 10 tools
+internal/tools           Tool interface, registry, dispatch (recover + central truncation), built-in tools
 internal/session         transcript persistence (atomic save/load)
 internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for setup/pricing metadata
@@ -514,7 +516,8 @@ result**, whichever hits first, with a teaching marker:
 [truncated: showing first 1000 of 4213 lines; use read_file offset/limit or grep to narrow]
 ```
 
-Individual tools also pre-cap with tool-specific advice (e.g. `grep` match caps).
+Individual tools may also apply their own natural limits, but the central cap is the
+backstop for every result.
 
 ### 8.4 Interrupts
 
@@ -532,7 +535,8 @@ A single SIGINT handler plus a per-turn `context.CancelFunc`:
 
 - **Builtin instructions** (a constant): concise agentic-coding guidance — read before
   editing, prefer `edit` with unique context, use tools rather than guessing file
-  contents, run builds/tests via `run_command`, stop when done.
+  contents, use `rg` when available or `grep`/`list_dir` for search, run builds/tests
+  via `run_command`, stop when done.
 - **Environment context**, computed at startup:
 
   ```
@@ -556,6 +560,7 @@ type Tool interface {
     Name() string
     Description() string     // model-facing, one line
     Schema() json.RawMessage // JSON Schema for the input object
+    ReadOnly() bool
     Run(ctx context.Context, input json.RawMessage) (string, error)
 }
 
@@ -599,35 +604,40 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 | `path` | string | default `"."` |
 | `glob` | string | `path.Match` filter on base names |
 
-- Non-recursive by design — recursion is `grep`'s job, and `run_command` (`find`) is the
-  escape hatch. No separate `find` tool: fewer tools means better model reliability.
+- Non-recursive by design — recursion belongs to `grep`/`rg`/host commands, and
+  `run_command` (`find`) is the escape hatch. No separate `find` tool: fewer tools
+  means better model reliability.
 - One entry per line: type char, human-readable size, name (`/` suffix for dirs);
   dirs-first, then alphabetical. 1000-entry cap with truncation marker.
 - Unreadable entries shown with `?` size; listing continues.
 
-### 9.3 `grep`
+### 9.3 `grep` and optional `rg`
 
-> Search file contents with a Go (RE2) regular expression. Recurses from a path; respects .gitignore inside git repos; prints path:line:text.
+> `grep`: Run the host grep command directly. Pass grep options and operands as args, e.g. ["-R","-n","TODO","."]. No shell; returns combined stdout+stderr and the exit code.
+
+> `rg`: Run the host rg (ripgrep) command directly. Pass ripgrep options and operands as args, e.g. ["-n","TODO","."]. No shell; returns combined stdout+stderr and the exit code.
 
 | param | type | notes |
 |---|---|---|
-| `pattern` | string, required | Go `regexp` syntax |
-| `path` | string | default `"."`; may be a single file |
-| `glob` | string | base-name filter |
-| `ignore_case` | bool | prepends `(?i)` |
-| `max_matches` | int | default 200 |
-| `no_ignore` | bool | search ignored files too (default off) |
+| `args` | array of strings, required | arguments passed after the program name |
+| `stdin` | string | written to the program's standard input |
+| `cwd` | string | default process cwd |
+| `timeout_seconds` | int | default 120, cap 600 |
 
-- Inside a git work tree the candidate set is `git ls-files --cached --others
-  --exclude-standard` (tracked + untracked-but-not-ignored), delegating all ignore
-  semantics — nesting, negation, global excludes — to git. The **fixed denylist** walk
-  (`filepath.WalkDir` skipping `.git`, `node_modules`, `vendor`, `dist`, `build`,
-  `target`, `.venv`, `__pycache__`, `.svn`, `.hg`) remains the fallback outside repos, on
-  git failure, when the search root itself is ignored, or with `no_ignore: true`.
-- Skips binary files (NUL sniff) and files >5 MB.
-- Output `relpath:lineno:text`, line text capped at 300 chars; `[truncated at N
-  matches]` when capped; `(no matches)` on zero.
-- Invalid pattern → `error: invalid pattern: <detail>` (model fixes and retries).
+- `grep` is always registered and invokes `grep` from the harness process PATH.
+- `rg` is registered immediately after `grep` only when `exec.LookPath("rg")` succeeds
+  at registry construction time. If `rg` is not installed, the model never sees that
+  tool name.
+- Both tools use `exec.Command(program, args...)`: no shell, glob expansion, pipes,
+  redirection, `$VAR`, or `~` expansion. Each argument arrives byte-for-byte.
+- Search semantics are the host tool's semantics. Regex syntax, recursion,
+  gitignore/default ignore behavior, binary handling, hidden files, and output shape are
+  selected with native CLI flags (`grep -R -n`, `grep -F`, `rg -n`, `rg --hidden`,
+  `rg --no-ignore`, etc.), not reimplemented by the harness.
+- Same process conventions as `run_command` (§9.7): own process group, timeout or ^C
+  kills the group, combined stdout+stderr, `[exit code: N]` trailer, and non-zero exit
+  is NOT an error result. For search this matters because no matches is commonly exit
+  code 1.
 
 ### 9.4 `edit`
 
@@ -807,7 +817,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 - Assistant text streams raw as deltas arrive. No markdown rendering.
 - Tool calls render as one-liners:
-  `[grep] pattern="func main" path=. → 14 matches, 2.1KB`
+  `[grep] args=["-R","-n","func main","."] → 14 lines, 2.1KB`
   built from the tool name, key args, and a result summary. `-v` adds the first ~5 lines
   of each result, dimmed.
 - Per-turn usage line: `[turn: 3 steps · 12.4k in / 1.8k out · $0.071 · 4.3s]`
@@ -934,7 +944,7 @@ injectable), the retry clock, and `ValidateTranscript`.
 | `internal/sse` | frame parsing tables; huge frames; truncated input |
 | providers | `httptest.Server` replaying `.sse` golden fixtures per dialect → assert ordered events; golden request-JSON tests (role:tool hoisting, args-string vs object, system placement, `stream_options`, cache_control); tool-call reassembly tables (fragment splits, empty args → `{}`, interleaved parallel calls, invalid tail → turn-fatal); truncated stream; mid-stream cancellation; retry loop via injected sleeper (429-then-200, 400 immediate failure, budget exhaustion) |
 | `internal/retry` | `Next`: jitter bounds, 30s cap, Retry-After floor |
-| tools | table-driven against `t.TempDir()`; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` table: exact/offset/whitespace fuzz, create, delete, rename, multi-file with one rejected file (rejected file untouched) |
+| tools | table-driven against `t.TempDir()`; `grep` wrapper against the host CLI; optional `rg` registration with a fake executable on PATH; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` table: exact/offset/whitespace fuzz, create, delete, rename, multi-file with one rejected file (rejected file untouched) |
 | agent loop | `FakeProvider` scripts: multi-tool batches, error-result feedback (next request carries the error), max-steps stop, cancellation → transcript still re-sendable |
 | session | save→load→save round-trip; atomic rename leaves no `.tmp`; resume repair; cross-provider resume |
 | compaction | canned summary via FakeProvider; old messages collapse, last 4 turns kept; invariant holds |
@@ -954,8 +964,9 @@ worker, or the wide-open default without separate binaries.
   "unspecified", so a resumed session's saved mode (§11) can supply it before the
   `auto` fallback. `/mode <name>` switches at runtime; `/mode` lists.
 - **Built-ins:** `auto` (all tools, no extra prompt — current behavior), `plan`
-  (read-only tools plus `git_readonly` and `write_tmp_file`, a planning prompt), and
-  `independent` (all tools, a complete-without-asking prompt).
+  (read-only tools including optional `rg` when installed, plus `git_readonly` and
+  `write_tmp_file`, a planning prompt), and `independent` (all tools, a
+  complete-without-asking prompt).
 - **Config `modes`** entries **field-level merge** onto a built-in of the same name:
   a non-empty `allowed_tools` or `prompt` replaces, an omitted field inherits. A new
   name defines a new mode (no `allowed_tools` ⇒ the full default set). Mode prompts
