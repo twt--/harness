@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -21,6 +22,7 @@ const runCommandSchema = `{
   "type": "object",
   "properties": {
     "command": {"type": "string", "description": "Shell command line to execute."},
+    "stdin": {"type": "string", "description": "Written to the command's standard input. Omit for no stdin."},
     "cwd": {"type": "string", "description": "Working directory (default: process cwd)."},
     "timeout_seconds": {"type": "integer", "description": "Kill the command after this many seconds (default 120, cap 600)."}
   },
@@ -32,7 +34,7 @@ type runCommand struct{}
 func (runCommand) Name() string { return "run_command" }
 
 func (runCommand) Description() string {
-	return "Run a shell command. Returns combined stdout+stderr and the exit code."
+	return "Run a shell command. Returns combined stdout+stderr and the exit code. For arguments containing quotes, spaces, or newlines, prefer exec to avoid shell-quoting issues."
 }
 
 func (runCommand) Schema() json.RawMessage { return json.RawMessage(runCommandSchema) }
@@ -40,6 +42,7 @@ func (runCommand) Schema() json.RawMessage { return json.RawMessage(runCommandSc
 func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Command        string `json:"command"`
+		Stdin          string `json:"stdin"`
 		Cwd            string `json:"cwd"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
 	}
@@ -62,7 +65,34 @@ func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error
 		}
 	}
 
-	timeout := args.TimeoutSeconds
+	cmd := shellCommand(args.Command)
+	cmd.Dir = args.Cwd
+	if args.Stdin != "" {
+		cmd.Stdin = strings.NewReader(args.Stdin)
+	}
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	out, err := runProcess(ctx, cmd, &buf, args.TimeoutSeconds)
+	if err != nil {
+		return "", fmt.Errorf("failed to start shell: %w", err)
+	}
+	return out, nil
+}
+
+// runProcess starts cmd in its own process group, enforces the timeout (0 means
+// the default; values above the cap are clamped), and returns the combined
+// output with the standard "[exit code: N]" trailer. A timeout or context
+// cancellation kills the whole group — negative-pid signal reaps children —
+// and is reported in-band, not as a tool error (design §9.7, §9.8). The caller
+// wires cmd.Dir/Stdin and both output streams to buf; runProcess owns Setpgid,
+// the timeout context, the kill goroutine, and output formatting. A non-nil
+// error means the process failed to start; callers wrap it with tool-specific
+// context.
+func runProcess(ctx context.Context, cmd *exec.Cmd, buf *bytes.Buffer, timeoutSeconds int) (string, error) {
+	timeout := timeoutSeconds
 	if timeout == 0 {
 		timeout = runCommandDefaultTimeout
 	}
@@ -73,22 +103,12 @@ func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := shellCommand(args.Command)
-	cmd.Dir = args.Cwd
-	// Own process group so a timeout or cancel kills the whole tree, not just
-	// the shell (design §9.7).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("failed to start shell: %w", err)
+		return "", err
 	}
 
-	// Kill the entire process group on timeout or cancellation. A goroutine
-	// watches the run context; killing the group (negative pid) reaps children.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -120,13 +140,14 @@ func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error
 // (design §2 no-sandbox stance, §9.7); the harness is assumed to be launched
 // inside an already-sandboxed environment, so there is no command allowlist.
 // The shell program name is a static literal in each branch; only the command
-// line itself is user-supplied, which is intrinsic to this tool.
+// line itself is user-supplied, which is intrinsic to this tool — hence the
+// nosemgrep annotations.
 func shellCommand(line string) *exec.Cmd {
 	if _, err := exec.LookPath("bash"); err == nil {
 		// -l makes the login shell pick up the user's PATH/toolchain.
-		return exec.Command("bash", "-lc", line)
+		return exec.Command("bash", "-lc", line) // nosemgrep: dangerous-exec-command
 	}
-	return exec.Command("sh", "-c", line)
+	return exec.Command("sh", "-c", line) // nosemgrep: dangerous-exec-command
 }
 
 // killGroup sends SIGKILL to the entire process group led by pid. Setpgid made

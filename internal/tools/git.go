@@ -50,7 +50,7 @@ func (gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 
 	runErr := cmd.Run()
 	// Failing to locate or start git is infrastructure failure; a non-zero git
-	// exit is a normal result the model should see (design §9.8).
+	// exit is a normal result the model should see (design §9.9).
 	if runErr != nil {
 		if _, ok := runErr.(*exec.ExitError); !ok {
 			return "", fmt.Errorf("failed to run git: %w", runErr)
@@ -67,7 +67,7 @@ func (gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 // buildGitCommand assembles the git invocation without running it: --no-pager
 // is injected as the first argument (no interactive pager), and
 // GIT_TERMINAL_PROMPT=0 is added to the inherited environment so credential
-// prompts fail fast instead of hanging on a missing TTY (design §9.8). Exposing
+// prompts fail fast instead of hanging on a missing TTY (design §9.9). Exposing
 // the *exec.Cmd is the env-inspection seam tests rely on.
 func buildGitCommand(ctx context.Context, userArgs []string) *exec.Cmd {
 	argv := append([]string{"--no-pager"}, userArgs...)

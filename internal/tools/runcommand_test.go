@@ -71,6 +71,19 @@ func TestRunCommandMissingCwd(t *testing.T) {
 	}
 }
 
+func TestRunCommandStdinWired(t *testing.T) {
+	out, err := runRunCommand(t, map[string]any{"command": "cat", "stdin": "hello stdin\n"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "hello stdin") {
+		t.Errorf("stdin not wired to command: %q", out)
+	}
+	if !strings.Contains(out, "[exit code: 0]") {
+		t.Errorf("missing exit code marker: %q", out)
+	}
+}
+
 func TestRunCommandMissingCommand(t *testing.T) {
 	_, err := runRunCommand(t, map[string]any{})
 	if err == nil {

@@ -108,7 +108,7 @@ func (webFetch) Run(ctx context.Context, input json.RawMessage) (string, error) 
 
 // validateHTTPURL rejects anything that is not an absolute http/https URL.
 // Fetching arbitrary http/https URLs is web_fetch's documented purpose
-// (design §2, §9.9); there is no private-IP/SSRF blocking by design.
+// (design §2, §9.10); there is no private-IP/SSRF blocking by design.
 func validateHTTPURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -133,7 +133,7 @@ func mediaTypeOf(contentType string) string {
 	return strings.ToLower(strings.TrimSpace(mt))
 }
 
-// reduceHTML turns an HTML document into readable-ish text (design §9.9): it
+// reduceHTML turns an HTML document into readable-ish text (design §9.10): it
 // drops <script>/<style> element contents, strips all remaining tags,
 // unescapes HTML entities, and collapses runs of whitespace. It is a heuristic
 // reducer for docs and articles, not a renderer.

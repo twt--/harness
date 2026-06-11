@@ -42,11 +42,12 @@ func RegisterFileTools(r *Registry) {
 	r.Register(applyPatch{})
 }
 
-// RegisterExecTools registers the exec tools (run_command, git, web_fetch) on
-// r, in that order. It is the only exported path to these tools; their types
-// are unexported by design.
+// RegisterExecTools registers the exec tools (run_command, exec, git,
+// web_fetch) on r, in that order. It is the only exported path to these tools;
+// their types are unexported by design.
 func RegisterExecTools(r *Registry) {
 	r.Register(runCommand{})
+	r.Register(execTool{})
 	r.Register(gitTool{})
 	r.Register(webFetch{})
 }

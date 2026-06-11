@@ -217,5 +217,5 @@ so a visible context-length error is preferred over silent data loss.
 ## Tools
 
 `read_file`, `list_dir`, `grep`, `edit`, `write_file`, `apply_patch`,
-`run_command`, `git`, `web_fetch`. See [`docs/design.md`](docs/design.md) §9 for
-each tool's schema and exact behavior.
+`run_command`, `exec`, `git`, `web_fetch`. See [`docs/design.md`](docs/design.md)
+§9 for each tool's schema and exact behavior.

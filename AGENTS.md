@@ -36,7 +36,7 @@ internal/llm/anthropic       Messages wire structs, request builder, stream deco
 internal/sse                 generic SSE frame reader
 internal/retry               backoff + jitter + Retry-After parsing
 internal/agent               turn loop, interrupt state machine, compaction
-internal/tools               Tool interface, registry, dispatch, the 9 tools
+internal/tools               Tool interface, registry, dispatch, the 10 tools
 internal/session             transcript persistence (atomic save/load)
 internal/config              flags > env > config-file resolution
 internal/ui                  REPL, streaming renderer, tool summaries, usage line

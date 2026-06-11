@@ -50,7 +50,7 @@ tool-using LLM loop against local files, shell commands, and git.
         ┌─────────────▼────────────┐   ┌─────────▼────────────┐
         │ internal/llm             │   │ internal/tools       │
         │   Provider interface     │   │   registry+dispatch  │
-        │   message model, prices  │   │   9 tools            │
+        │   message model, prices  │   │   10 tools           │
         ├───────────┬──────────────┤   └──────────────────────┘
         │ llm/openai│ llm/anthropic│
         └───────────┴──────────────┘
@@ -69,7 +69,7 @@ internal/llm/anthropic   Messages dialect: same responsibilities
 internal/sse             generic SSE frame reader
 internal/retry           backoff + jitter + Retry-After parsing
 internal/agent           turn loop, interrupt state machine, compaction
-internal/tools           Tool interface, registry, dispatch (recover + central truncation), the 9 tools
+internal/tools           Tool interface, registry, dispatch (recover + central truncation), the 10 tools
 internal/session         transcript persistence (atomic save/load)
 internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for setup/pricing metadata
@@ -671,11 +671,12 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.7 `run_command`
 
-> Run a shell command. Returns combined stdout+stderr and the exit code.
+> Run a shell command. Returns combined stdout+stderr and the exit code. For arguments containing quotes, spaces, or newlines, prefer exec to avoid shell-quoting issues.
 
 | param | type | notes |
 |---|---|---|
 | `command` | string, required | |
+| `stdin` | string | written to the command's standard input |
 | `cwd` | string | default process cwd |
 | `timeout_seconds` | int | default 120, cap 600 |
 
@@ -689,8 +690,37 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 - Runs in its own process group under the turn context; timeout or ^C kills the group
   (children included) and reports output captured so far.
 - Environment inherited unmodified.
+- `stdin`, when provided, is written verbatim to the command's standard input; absent
+  means `/dev/null` (programs see immediate EOF, never hang on input). Prefer it over
+  `echo`/heredocs when feeding content to a command (`git commit -F -`, `python -`,
+  `tee file`) — content travels with zero shell escaping.
 
-### 9.8 `git`
+### 9.8 `exec`
+
+> Run a program directly with an argv array (no shell). Use when arguments contain quotes, spaces, or newlines; no globbing/pipes/$VAR — use run_command for those. Returns combined stdout+stderr and the exit code.
+
+| param | type | notes |
+|---|---|---|
+| `argv` | array of strings, required | program + literal arguments |
+| `stdin` | string | written to the program's standard input |
+| `cwd` | string | default process cwd |
+| `timeout_seconds` | int | default 120, cap 600 |
+
+- `exec.Command(argv[0], argv[1:]...)` — no shell anywhere, so arguments arrive
+  byte-for-byte: nothing to quote, nothing to escape, nothing to inject.
+- **Why it exists:** shell quoting is the dominant model failure when generated content
+  (commit messages with apostrophes, `python -c` one-liners, sed programs, JSON) travels
+  through `run_command` as part of a command line. The argv form eliminates that failure
+  class; `git` (§9.9) proved the pattern works with models.
+- No globbing, `$VAR` expansion, `~`, pipes, or redirection — the tool descriptions
+  cross-steer: `exec` for tricky arguments, `run_command` for shell features. argv[0]
+  resolves against the harness process PATH, not the login-shell PATH `bash -lc` sees.
+- Same conventions as `run_command` (§9.7), sharing its implementation: own process
+  group, timeout or ^C kills the group, combined stdout+stderr, `[exit code: N]`
+  trailer, non-zero exit is NOT an error result. A missing binary is a normal tool
+  error naming the program so the model can correct the call.
+
+### 9.9 `git`
 
 > Run a git command. Pass arguments as an array, e.g. ["status","--porcelain"]. No shell; no pager.
 
@@ -707,7 +737,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 - Combined output + exit code, same conventions as `run_command`. Interactive flows
   (`rebase -i`) fail fast (no TTY) rather than hang.
 
-### 9.9 `web_fetch`
+### 9.10 `web_fetch`
 
 > Fetch a URL (http/https) and return its text content. HTML is reduced to readable text.
 
