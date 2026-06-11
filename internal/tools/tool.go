@@ -24,6 +24,9 @@ type Tool interface {
 	Name() string
 	Description() string     // model-facing, one line
 	Schema() json.RawMessage // JSON Schema for the input object
+	// ReadOnly reports that Run never mutates workspace or repo state, so
+	// calls may dispatch concurrently with other read-only calls (spec §8).
+	ReadOnly() bool
 	Run(ctx context.Context, input json.RawMessage) (string, error)
 }
 
@@ -143,6 +146,19 @@ func (r *Registry) Specs() []llm.ToolSchema {
 		})
 	}
 	return specs
+}
+
+// AllReadOnly reports whether every call resolves to a read-only tool.
+// Unknown names count as not read-only: they dispatch to an error result,
+// and serializing them is the conservative choice.
+func (r *Registry) AllReadOnly(calls []llm.ToolCall) bool {
+	for _, c := range calls {
+		t, ok := r.tools[c.Name]
+		if !ok || !t.ReadOnly() {
+			return false
+		}
+	}
+	return true
 }
 
 // Dispatch runs one tool call and always returns a result (design §8.2). It

@@ -40,6 +40,8 @@ func (*writeTmpFile) Description() string {
 
 func (*writeTmpFile) Schema() json.RawMessage { return json.RawMessage(writeTmpFileSchema) }
 
+func (*writeTmpFile) ReadOnly() bool { return false }
+
 func (w *writeTmpFile) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Name    string `json:"name"`

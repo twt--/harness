@@ -38,6 +38,9 @@ func (webFetch) Description() string {
 
 func (webFetch) Schema() json.RawMessage { return json.RawMessage(webFetchSchema) }
 
+// web_fetch issues a GET and mutates no workspace state.
+func (webFetch) ReadOnly() bool { return true }
+
 func (webFetch) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		URL      string `json:"url"`

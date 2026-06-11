@@ -22,6 +22,7 @@ type fakeTool struct {
 func (f fakeTool) Name() string            { return f.name }
 func (f fakeTool) Description() string     { return f.desc }
 func (f fakeTool) Schema() json.RawMessage { return json.RawMessage(f.schema) }
+func (f fakeTool) ReadOnly() bool          { return false }
 func (f fakeTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	return f.run(ctx, input)
 }

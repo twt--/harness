@@ -31,6 +31,8 @@ func (edit) Description() string {
 
 func (edit) Schema() json.RawMessage { return json.RawMessage(editSchema) }
 
+func (edit) ReadOnly() bool { return false }
+
 func (edit) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Path       string `json:"path"`

@@ -42,6 +42,8 @@ func (execTool) Description() string {
 
 func (execTool) Schema() json.RawMessage { return json.RawMessage(execSchema) }
 
+func (execTool) ReadOnly() bool { return false }
+
 func (execTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Argv           []string `json:"argv"`

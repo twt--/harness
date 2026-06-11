@@ -16,6 +16,7 @@ type ctxTool struct{}
 func (ctxTool) Name() string            { return "ctx_tool" }
 func (ctxTool) Description() string     { return "blocks until ctx is done" }
 func (ctxTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (ctxTool) ReadOnly() bool          { return false }
 func (ctxTool) Run(ctx context.Context, _ json.RawMessage) (string, error) {
 	<-ctx.Done()
 	return "", ctx.Err()
@@ -27,6 +28,7 @@ type stuckTool struct{ release chan struct{} }
 func (s *stuckTool) Name() string            { return "stuck_tool" }
 func (s *stuckTool) Description() string     { return "ignores ctx" }
 func (s *stuckTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (s *stuckTool) ReadOnly() bool          { return false }
 func (s *stuckTool) Run(_ context.Context, _ json.RawMessage) (string, error) {
 	<-s.release
 	return "released", nil
@@ -39,6 +41,7 @@ type internalDeadlineTool struct{}
 func (internalDeadlineTool) Name() string            { return "internal_deadline_tool" }
 func (internalDeadlineTool) Description() string     { return "hits its own deadline" }
 func (internalDeadlineTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (internalDeadlineTool) ReadOnly() bool          { return false }
 func (internalDeadlineTool) Run(_ context.Context, _ json.RawMessage) (string, error) {
 	return "", context.DeadlineExceeded
 }

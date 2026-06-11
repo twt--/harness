@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,18 +38,24 @@ func (s *recordSink) TurnComplete(u TurnUsage) {
 }
 
 // recordTool is a fake tool whose Run is scriptable; it records the inputs it
-// received in call order.
+// received in call order. The mutex guards inputs because read-only steps now
+// dispatch Run concurrently.
 type recordTool struct {
-	name   string
-	run    func(ctx context.Context, input json.RawMessage) (string, error)
-	inputs []string
+	name     string
+	readOnly bool
+	run      func(ctx context.Context, input json.RawMessage) (string, error)
+	mu       sync.Mutex
+	inputs   []string
 }
 
 func (t *recordTool) Name() string            { return t.name }
 func (t *recordTool) Description() string     { return "fake tool" }
 func (t *recordTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *recordTool) ReadOnly() bool          { return t.readOnly }
 func (t *recordTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
+	t.mu.Lock()
 	t.inputs = append(t.inputs, string(input))
+	t.mu.Unlock()
 	return t.run(ctx, input)
 }
 
