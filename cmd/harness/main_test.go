@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1388,5 +1389,163 @@ func TestMain_IntegrationNoAgentsMDWhenMissing(t *testing.T) {
 	}
 	if !strings.Contains(system, "<env>") {
 		t.Errorf("system prompt should contain env block; system=%q", system)
+	}
+}
+
+// toolNames extracts the advertised tool names from a recorded request.
+func toolNames(req llm.Request) []string {
+	names := make([]string, len(req.Tools))
+	for i, s := range req.Tools {
+		names[i] = s.Name
+	}
+	return names
+}
+
+// Default (auto) mode must advertise exactly today's ten tools and carry no
+// mode section — a regression guard that run modes don't change the default.
+func TestRunDefaultModeUnchanged(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	want := []string{"read_file", "list_dir", "grep", "edit", "write_file", "apply_patch", "run_command", "exec", "git", "web_fetch"}
+	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
+		t.Errorf("default mode tools = %v, want %v", got, want)
+	}
+	if strings.Contains(fp.Requests[0].System, "plan mode") || strings.Contains(fp.Requests[0].System, "independent mode") {
+		t.Errorf("default mode should carry no mode section; system=%q", fp.Requests[0].System)
+	}
+}
+
+// Plan mode advertises only its read-only tool set and includes its prompt.
+func TestRunPlanModeRestrictsToolsAndAddsPrompt(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-mode", "plan", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
+		t.Errorf("plan mode tools = %v, want %v", got, want)
+	}
+	if !strings.Contains(fp.Requests[0].System, "plan mode") {
+		t.Errorf("plan mode system prompt should include the plan section; system=%q", fp.Requests[0].System)
+	}
+}
+
+// An unknown mode is a startup usage error that lists the available modes.
+func TestRunUnknownModeIsUsageError(t *testing.T) {
+	fp := llmtest.New("fake")
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-mode", "bogus", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitUsage {
+		t.Fatalf("exit code = %d, want ExitUsage; errw=%q", code, errw.String())
+	}
+	got := errw.String()
+	if !strings.Contains(got, "bogus") || !strings.Contains(got, "auto") || !strings.Contains(got, "plan") {
+		t.Errorf("error should name the bad mode and list valid ones, errw=%q", got)
+	}
+	if len(fp.Requests) != 0 {
+		t.Errorf("no turn should run for an unknown mode, got %d requests", len(fp.Requests))
+	}
+}
+
+// A config mode entry overriding only the prompt keeps the built-in tool list.
+func TestRunConfigModePromptOverrideKeepsTools(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"mode":"plan","modes":{"plan":{"prompt":"CUSTOM PLAN GUIDANCE"}}}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
+		t.Errorf("plan tools should be preserved by a prompt-only override = %v, want %v", got, want)
+	}
+	if !strings.Contains(fp.Requests[0].System, "CUSTOM PLAN GUIDANCE") {
+		t.Errorf("custom plan prompt should be used; system=%q", fp.Requests[0].System)
+	}
+}
+
+// /mode in the REPL switches the advertised tool set on the next turn.
+func TestRunREPLModeCommandSwitchesTools(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
+		"/mode plan\nhello\n/exit\n",
+	)
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("want 1 post-switch request, got %d", len(fp.Requests))
+	}
+	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
+		t.Errorf("post-/mode tools = %v, want plan set %v", got, want)
+	}
+	if !strings.Contains(errw.String(), "mode switched: plan") {
+		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
+	}
+}
+
+// A resumed session restores its run mode (and thus its restricted tool set)
+// when no -mode flag overrides it.
+func TestRunResumeRestoresMode(t *testing.T) {
+	dir := t.TempDir()
+	sessPath := filepath.Join(dir, "prior.json")
+	prior := session.Session{
+		Version:  session.Version,
+		Provider: "anthropic",
+		Model:    "claude-opus-4-8",
+		System:   "you are a test",
+		Mode:     "plan",
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hi"}}},
+			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hello"}}},
+		},
+	}
+	if err := prior.Save(sessPath); err != nil {
+		t.Fatalf("save prior session: %v", err)
+	}
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-resume", sessPath, "-p", "again"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	want := []string{"read_file", "list_dir", "grep", "web_fetch", "git_readonly", "write_tmp_file"}
+	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
+		t.Errorf("resumed plan session tools = %v, want %v", got, want)
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"harness/internal/config"
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
+	"harness/internal/mode"
 	"harness/internal/modelsdev"
 	"harness/internal/session"
 	"harness/internal/skills"
@@ -189,16 +190,94 @@ func run(env environment) int {
 	}
 	catalog := skills.BuildCatalog(discoveredSkills)
 	instructions := skills.Instructions(len(discoveredSkills))
-	systemPrompt := sysprompt.Build(sysprompt.Options{
-		Append:        appendText,
-		Override:      overrideText,
-		NoEnv:         cfg.NoEnv,
-		AgentsMD:      agentsMD,
-		SkillsCatalog: catalog,
-		Env:           sysprompt.EnvOptions{Dir: wd},
-	})
-	if instructions != "" {
-		systemPrompt += "\n\n" + instructions
+
+	// buildSystem assembles the full system prompt for a given run-mode prompt,
+	// reusing every other input. The skills instructions block is appended last,
+	// exactly as at startup, so a /mode switch reproduces the same composition.
+	buildSystem := func(modePrompt string) string {
+		s := sysprompt.Build(sysprompt.Options{
+			Append:        appendText,
+			Override:      overrideText,
+			NoEnv:         cfg.NoEnv,
+			AgentsMD:      agentsMD,
+			SkillsCatalog: catalog,
+			ModePrompt:    modePrompt,
+			Env:           sysprompt.EnvOptions{Dir: wd},
+		})
+		if instructions != "" {
+			s += "\n\n" + instructions
+		}
+		return s
+	}
+
+	// Run modes (design: tool-gating layer). The tool catalog holds every
+	// constructible tool; each mode selects a subset, realized by Subset so the
+	// agent advertises and dispatches only the mode's tools. Built once and
+	// shared with the /mode switch (write_tmp_file holds a per-run temp dir).
+	toolCatalog := tools.Catalog()
+	fileModes := make(map[string]mode.FileMode, len(cfg.Modes))
+	for name, fm := range cfg.Modes {
+		fileModes[name] = mode.FileMode{AllowedTools: fm.AllowedTools, Prompt: fm.Prompt}
+	}
+	modes := mode.Resolve(fileModes)
+	// Expand @file references in mode prompts once at startup: a bad reference
+	// fails fast (rather than on a later /mode switch), and the cached text means
+	// switching never touches the filesystem.
+	for name, m := range modes {
+		expanded, err := resolveAtFile(m.Prompt)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness: mode %q prompt: %v\n", name, err)
+			return ui.ExitUsage
+		}
+		m.Prompt = expanded
+		modes[name] = m
+	}
+
+	// Load a resumed session up front: its saved mode selects the tool set when
+	// no -mode flag overrides it (flags win, as with provider/model below).
+	var resumed *session.Session
+	if cfg.Resume != "" {
+		s, err := session.Load(cfg.Resume)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness: resume %s: %v\n", cfg.Resume, err)
+			return ui.ExitRuntime
+		}
+		resumed = &s
+	}
+
+	modeName := cfg.Mode
+	if resumed != nil && resumed.Mode != "" {
+		if cfg.Mode == "" {
+			modeName = resumed.Mode
+		} else if cfg.Mode != resumed.Mode {
+			fmt.Fprintf(stderr, "harness: session mode %q overridden by %q (flags win)\n", resumed.Mode, cfg.Mode)
+		}
+	}
+	if modeName == "" {
+		modeName = mode.Default
+	}
+	currentMode, ok := modes[modeName]
+	if !ok {
+		fmt.Fprintf(stderr, "harness: unknown mode %q (available: %s)\n", modeName, strings.Join(mode.Names(modes), ", "))
+		return ui.ExitUsage
+	}
+	toolRegistry, err := toolCatalog.Subset(currentMode.AllowedTools)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness: mode %q: %v\n", modeName, err)
+		return ui.ExitUsage
+	}
+	systemPrompt := buildSystem(currentMode.Prompt)
+
+	switchMode := func(name string) (ui.ModeSelection, error) {
+		m, ok := modes[name]
+		if !ok {
+			return ui.ModeSelection{}, fmt.Errorf("unknown mode %q (available: %s)", name, strings.Join(mode.Names(modes), ", "))
+		}
+		reg, err := toolCatalog.Subset(m.AllowedTools)
+		if err != nil {
+			return ui.ModeSelection{}, err
+		}
+		return ui.ModeSelection{Name: m.Name, Tools: reg, System: buildSystem(m.Prompt)}, nil
 	}
 
 	newProvider := env.newProvider
@@ -260,7 +339,6 @@ func run(env environment) int {
 		}, nil
 	}
 
-	toolRegistry := tools.Default()
 	ag := agent.New(provider, toolRegistry, agent.Options{
 		MaxSteps:      cfg.MaxSteps,
 		Model:         cfg.Model,
@@ -273,13 +351,10 @@ func run(env environment) int {
 	var totals session.UsageTotals
 
 	// Resume restores a prior transcript; flags win over the file's
-	// provider/model with a warning (design §11).
-	if cfg.Resume != "" {
-		s, err := session.Load(cfg.Resume)
-		if err != nil {
-			fmt.Fprintf(stderr, "harness: resume %s: %v\n", cfg.Resume, err)
-			return ui.ExitRuntime
-		}
+	// provider/model with a warning (design §11). The mode was resolved above;
+	// the tool registry already reflects it.
+	if resumed != nil {
+		s := *resumed
 		if s.Provider != "" && s.Provider != cfg.Provider {
 			fmt.Fprintf(stderr, "harness: session provider %q overridden by %q (flags win)\n", s.Provider, cfg.Provider)
 		}
@@ -329,6 +404,9 @@ func run(env environment) int {
 		System:          systemPrompt,
 		AvailableModels: modelRegistry.Models(),
 		SwitchModel:     switchModel,
+		Mode:            modeName,
+		AvailableModes:  mode.Names(modes),
+		SwitchMode:      switchMode,
 		SessionPath:     sessionPath,
 		StateDir:        stateDir(getenv),
 		Created:         created,
