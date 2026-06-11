@@ -1,115 +1,68 @@
-# AGENTS.md — harness
+# AGENTS.md - harness
 
-An agentic coding harness in Go: plain-text, line-oriented CLI that drives a tool-using LLM loop against local files, shell commands, and git.
+Harness is a small Go CLI for running a tool-using LLM loop over local files,
+shell commands, web fetches, and git. Keep it simple, stdlib-only, terminal
+first, and provider-neutral.
 
-## Project philosophy
+## Hard Rules
 
-- **Small and legible.** The whole system should be readable in an afternoon. One purpose per package, no framework.
-- **Zero third-party Go dependencies.** Go stdlib only. SSE parsing, diff application, HTML-to-text reduction, and retries are all small enough to own.
-- **Unix philosophy for tools.** When a capability is already a mature host CLI (`grep`, `rg`, `git`, shell commands), prefer a thin argv wrapper over reimplementing it in Go.
-- **Provider-agnostic.** Two HTTP dialects (Anthropic Messages + OpenAI Chat Completions), same internal model.
-- **No sandbox, no permission prompts.** Tools run with process privileges, immediately. Assume the harness itself runs sandboxed.
-- **First-class git.** Dedicated `git` tool plus git summary in the system prompt.
+- No third-party Go module dependencies unless explicitly approved.
+- Assume no backwards compatibility or migration requirement unless stated.
+- Bug fixes need regression tests.
+- Use conventional commit messages. Do not open draft PRs.
+- Never pipe output to `head` or `tail` unless `tee` also saves the full output.
+- Do not revert or overwrite user changes unless explicitly asked.
+- Do not add sandboxing, permission prompts, markdown rendering, MCP, or
+  sub-agent orchestration unless explicitly requested.
 
-## Build, test, lint
+## Verify
 
-```sh
-go build ./cmd/harness
-make                          # same thing, shorter
-make test                     # go test ./...
-```
+- Quick build: `go build ./cmd/harness` or `make`.
+- Tests: `make test` (`go test ./...`).
+- Before submitting: `go build ./... && go vet ./... && go test ./...`.
+- Go version is 1.24+. CI uses `go vet`, not `golangci-lint`.
 
-Verify a full checkout:
+## Package Map
 
-```sh
-go build ./... && go vet ./... && go test ./...
-```
+- `cmd/harness/main.go`: flags, config/setup, provider wiring, signals, REPL vs one-shot.
+- `internal/llm`: provider-neutral types, validation, model/reasoning/pricing metadata. Must not import dialects or factory.
+- `internal/llm/openai`, `internal/llm/anthropic`: HTTP dialects, request builders, stream decoders, tool-call assembly.
+- `internal/llm/factory`: selects dialects; keep separate to avoid import cycles.
+- `internal/agent`: turn loop, tool orchestration, interrupts, compaction.
+- `internal/tools`: `Tool` interface, registry/subsets, dispatch recovery/truncation, built-ins. Inputs are `json.RawMessage`.
+- `internal/config`, `internal/mode`, `internal/modelsdev`: config precedence, run modes, models.dev setup/catalog metadata.
+- `internal/session`: transcripts, replay logs, compaction archives, tool artifacts. New persistence should write temp-file then rename.
+- `internal/ui`, `internal/term`, `internal/logging`: REPL/one-shot rendering, terminal behavior, plaintext slog. ANSI belongs here only.
+- `internal/sysprompt`, `internal/skills`: built-in prompt/env context and skill discovery/disclosure.
+- `internal/sse`, `internal/retry`: shared SSE reader and provider HTTP retry/backoff.
 
-There is no `go fmt` or `golangci-lint` step in CI — `go vet` is the only automated check, and the Go version is 1.24+ (range-over-func, `iter`).
+## Code Patterns
 
-## Architecture
+- Keep packages cohesive and functions small. Return errors from library code; only UI/logging should print.
+- Use `errors.Is`/`errors.As` and `fmt.Errorf("%w")`; avoid string matching.
+- Keep the system prompt on `llm.Request.System`, never in message history.
+- Preserve provider neutrality: agent code depends on `internal/llm` contracts, not dialect packages.
+- Hand-write tool JSON schemas; decode inputs into typed private structs; tolerate unknown JSON keys.
+- Prefer argv-style tools (`exec`, `git`, `grep`, `rg`) when shell quoting is risky; use shell commands only for shell features.
 
-```
-cmd/harness/main.go          flags, config load, wiring, signals, REPL-vs-oneshot
-internal/llm                 provider-agnostic types, Provider interface, model registry, factory
-internal/llm/openai          Chat Completions wire structs, request builder, stream decode
-internal/llm/anthropic       Messages wire structs, request builder, stream decode
-internal/sse                 generic SSE frame reader
-internal/retry               backoff + jitter + Retry-After parsing
-internal/agent               turn loop, interrupt state machine, compaction
-internal/tools               Tool interface, registry, dispatch, built-in tools
-internal/session             transcript persistence (atomic save/load)
-internal/config              flags > env > config-file resolution
-internal/ui                  REPL, streaming renderer, tool summaries, usage line
-internal/sysprompt           builtin instructions + environment context
-```
+## Tests
 
-`internal/llm` is the shared contract — import only it in the agent loop. The factory (`internal/llm/factory`) lives in its own package to avoid import cycles with both dialects.
+- Unit tests live next to code; integration tests live in `cmd/harness/*_test.go`.
+- Avoid network in tests except `httptest.Server`; use fake providers, fixtures, and temp dirs.
+- Avoid sleeps for goroutine coordination; use channels or `sync.WaitGroup`.
+- Preserve `ValidateTranscript` invariants after transcript mutations.
+- Behavioral tool changes need focused tests under `internal/tools`.
 
-The internal message model is Anthropic-shaped (content-block list) because it's a lossless superset of OpenAI's flat fields.
+## Keep Docs In Sync
 
-## Code style
+- Public flags/usage: `README.md` and `cmd/harness/main.go` usage text.
+- Tool behavior/schemas: `docs/design.md` section 9.
+- System prompt behavior: `internal/sysprompt` tests/docs; consider compaction impact.
+- Run modes: `README.md` and `docs/design.md` section 14.
+- Smoke workflow changes: `docs/smoke.md`.
 
-- Go idioms: `errors.Is`, `fmt.Errorf` with `%w`, structured errors over string matching.
-- One purpose per package. If a package has a single natural responsibility, keep it cohesive.
-- Small functions, explicit returns, no panic in library paths.
-- No `fmt` prints in `internal/` — return errors and let the caller (`ui`, `cmd/harness`) render.
-- No colored output outside of `internal/ui` — ANSI is rendered there only when stdout is a TTY; honors `NO_COLOR` and `-no-color`.
-- Session files use provider-neutral JSON tags (`kind`, `tool_use_id`, `result_for_id`, …) so transcripts resume across providers.
-- `ToolInput` is `json.RawMessage`, not `map[string]any` — the tool layer decodes into typed structs on demand.
-- The system prompt lives on `Request.System`, not in the message list, so compaction cannot accidentally summarize it.
+## Adding Things
 
-## Adding a tool
-
-Tools live in `internal/tools`. Each tool:
-
-1. Implements the `Tool` interface (name, description, parameter JSON schema, `Invoke`).
-2. Is its own file for readability (`grep.go`, `edit.go`, `applypatch.go`, …).
-3. Decodes `ToolInput` (a `json.RawMessage`) into a typed struct locally.
-4. Returns `(string, error)`. Errors become tool-result errors surfaced to the model; do not return `fmt.Errorf` for expected failures when plain text suffices.
-5. Is registered in `internal/tools` (the dispatch/registry layer).
-
-The dispatch layer adds context recovery and a central truncation pass over long results — tools return the full result and let the framework trim.
-
-Prefer delegating to battle-tested host executables for generic Unix capabilities. Keep Go implementations for harness-specific contracts such as `edit`, `apply_patch`, transcript/session handling, provider streaming, and narrow safety wrappers.
-
-## Adding a provider dialect
-
-A new provider follows the OpenAI / Anthropic structure:
-
-1. New package `internal/llm/<dialect>`.
-2. Own wire structs, own request builder, own streaming decoder.
-3. Implement `internal/llm.Provider` and register in `internal/llm/factory.New`.
-4. Update `cmd/harness/main.go` inference if `-model` should pick it automatically.
-
-Keep provider state in the dialect package; the loop imports only `internal/llm`.
-
-## Testing
-
-- Unit tests live next to the file they test (`foo.go` → `foo_test.go`), standard Go layout.
-- Integration / end-to-end tests live in `cmd/harness/integration_test.go` and `cmd/harness/main_test.go` — they spin up a mock OpenAI server in-process and exercise the full REPL / one-shot / session / compaction matrix.
-- Test the contract (`internal/llm` types, tool result shape, session round-trip), not wire JSON.
-- Avoid flaky tests: do not sleep waiting on goroutines; use channels or `sync.WaitGroup`.
-- Do not hit the network from unit tests. Use `httptest.NewServer` for provider behavior.
-
-## Conventions worth calling out
-
-- **Atomic saves.** `internal/session` writes to `.tmp` then renames. Any new persistence site should do the same.
-- **Interrupt state machine.** `internal/agent/interrupt.go` owns Ctrl-C semantics — one Ctrl-C cancels the turn, a second within ~1s exits. Do not duplicate signal handling elsewhere.
-- **Compaction.** Keeps the system prompt and last 4 turns verbatim; everything older summarizes. Budget checks use the model's context window; if unknown, `default_context_window` (default 256000) is the fallback. The summary call's tokens/cost are folded into session totals — do not drop them on error paths.
-- **Retries.** All provider HTTP calls go through `internal/retry` (backoff, jitter, Retry-After parsing). Do not implement custom sleep loops.
-- **SSE.** Streaming from both dialects uses `internal/sse`. If you add a new dialect, reuse it.
-
-## What not to do
-
-- Do not add a Go module dependency. If stdlib is missing something for harness-specific logic, check sibling packages first; if a mature host CLI already owns the job, wrap it instead of reimplementing it.
-- Do not add sub-agents, MCP, or markdown rendering. Explicit non-goals (see `docs/design.md` §1). Parallel read-only tool dispatch was adopted in v1.1 — see `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`.
-- Do not sandbox or permission-prompt. If the caller wants safety, they sandbox the process.
-- Do not let `internal/llm` import a dialect or the factory. That direction would create a cycle and break the provider-agnostic loop.
-
-## Before submitting
-
-- `go build ./... && go vet ./... && go test ./...` — all three, in that order.
-- Any public-facing flag changes → update `README.md` Flags table and the usage screen in `cmd/harness/main.go`.
-- Any behavioral changes to tools → update `docs/design.md` §9.
-- Any change to the system prompt → update `internal/sysprompt` and consider compaction behavior.
+- Tool: add one file in `internal/tools`, implement `Tool`, register it, test it, document its model-facing contract.
+- Provider dialect: add `internal/llm/<dialect>`, implement `llm.Provider`, register in `internal/llm/factory`, keep dialect details out of `internal/llm`.
+- Config field or flag: follow `flags > env > config > defaults`; update examples when useful.
