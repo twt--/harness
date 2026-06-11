@@ -109,12 +109,30 @@ func TestGitReadonlyRejectsWriteAndExecCapableFlags(t *testing.T) {
 		{"grep", "-O", "x"},
 		{"grep", "--open-files-in-pager=vim", "x"},
 		{"grep", "--open-files-in-pager", "x"},
+		// -O hidden inside a clustered short-flag group still opens a pager.
+		{"grep", "-inO/tmp/pager", "x"},
+		{"grep", "-nO", "x"},
+		{"grep", "-iO/tmp/pager", "x"},
 		{"bisect", "run", "sh", "-c", "true"},
+		// bisect view / visualize launch a viewer program.
+		{"bisect", "view"},
+		{"bisect", "visualize"},
 	} {
 		out, err := runGitReadonly(t, args...)
 		if err == nil {
 			t.Errorf("git_readonly %v should be rejected, got %q", args, out)
 		}
+	}
+}
+
+// A capital O inside the value of a value-taking short flag is not the pager
+// flag and must still be allowed: -e consumes "FOO" as the pattern, so the O is
+// search data, not -O.
+func TestGitReadonlyAllowsCapitalOInFlagValues(t *testing.T) {
+	gitAvailable(t)
+	committedRepo(t)
+	if _, err := runGitReadonly(t, "grep", "-eFOO"); err != nil {
+		t.Errorf("grep -eFOO (literal search) should be allowed: %v", err)
 	}
 }
 

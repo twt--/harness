@@ -52,26 +52,40 @@ func (gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, erro
 	if strings.HasPrefix(sub, "-") || !slices.Contains(gitReadonlySubcommands, sub) {
 		return "", badArgs("first argument must be one of: %s", strings.Join(gitReadonlySubcommands, ", "))
 	}
-	// "bisect run <cmd>" executes an arbitrary command per revision, escaping
-	// the read-only boundary; the other bisect operations only move HEAD.
-	if sub == "bisect" && len(args.Args) > 1 && args.Args[1] == "run" {
-		return "", badArgs(`git_readonly does not allow "bisect run" (it executes commands)`)
+	// bisect run/view/visualize execute a command or launch a viewer, escaping
+	// the read-only boundary; the other bisect operations only move HEAD. The
+	// operation is always the token right after "bisect".
+	if sub == "bisect" && len(args.Args) > 1 {
+		switch args.Args[1] {
+		case "run", "view", "visualize":
+			return "", badArgs("git_readonly does not allow %q (it runs commands or launches a viewer)", "bisect "+args.Args[1])
+		}
 	}
 	// A few subcommand-local flags still write files or launch programs even on
-	// read-only subcommands (diff/log/show --output, grep --open-files-in-pager).
-	// Reject them so the boundary holds; ordinary flags pass through.
+	// read-only subcommands; reject them so the boundary holds. Ordinary flags
+	// pass through.
 	for _, a := range args.Args[1:] {
 		if disallowedReadonlyFlag(a) {
 			return "", badArgs("flag %q is not allowed in git_readonly", a)
+		}
+	}
+	// git grep's -O/--open-files-in-pager opens matches in a pager (an arbitrary
+	// program). -O can hide inside a clustered short-flag group, e.g. -inO<pager>,
+	// so the long-form check above is not enough.
+	if sub == "grep" {
+		for _, a := range args.Args[1:] {
+			if shortFlagOpensPager(a) {
+				return "", badArgs("flag %q opens a pager and is not allowed in git_readonly", a)
+			}
 		}
 	}
 	return runGitArgs(ctx, args.Args)
 }
 
 // disallowedReadonlyFlag reports whether a subcommand-local flag can write a
-// file or launch a program, which would break the read-only boundary:
-// --output/--output-directory (diff, log, show write to a file) and
-// -O/--open-files-in-pager (grep opens matches in a pager/editor).
+// file or launch a program in long form: --output/--output-directory (diff,
+// log, show write to a file) and --open-files-in-pager (grep opens a pager).
+// Clustered short-form -O is handled separately by shortFlagOpensPager.
 func disallowedReadonlyFlag(arg string) bool {
 	switch {
 	case arg == "--output" || strings.HasPrefix(arg, "--output="):
@@ -80,9 +94,29 @@ func disallowedReadonlyFlag(arg string) bool {
 		return true
 	case arg == "--open-files-in-pager" || strings.HasPrefix(arg, "--open-files-in-pager="):
 		return true
-	case arg == "-o" || arg == "-O" || strings.HasPrefix(arg, "-O"):
-		return true
 	default:
 		return false
 	}
+}
+
+// shortFlagOpensPager reports whether arg is a git grep short-flag cluster
+// containing -O (open-files-in-pager). It scans the cluster left to right and
+// stops at the first value-taking short flag, whose remaining characters are a
+// value rather than more flags — so an "O" inside e.g. -e<pattern> (a literal
+// search for text containing O) is correctly not treated as the pager flag.
+func shortFlagOpensPager(arg string) bool {
+	if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+		return false
+	}
+	for _, c := range arg[1:] {
+		switch c {
+		case 'O':
+			return true
+		// git grep short flags that consume a value (attached or following):
+		// after one of these the rest of the cluster is its value, not flags.
+		case 'e', 'f', 'm', 'A', 'B', 'C':
+			return false
+		}
+	}
+	return false
 }
