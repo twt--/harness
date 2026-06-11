@@ -13,6 +13,10 @@ line-level claims before starting one.
    command line. `exec` (argv array, no shell — design §9.8) eliminates the
    failure class for arguments; `stdin` on both tools eliminates it for
    documents (`git commit -F -`, `python -`, `tee file`).
+6. **gitignore-aware grep.** Inside git repos, grep's candidate files come
+   from `git ls-files --cached --others --exclude-standard`, delegating all
+   ignore semantics to git; the denylist walk remains the non-repo /
+   `no_ignore` fallback. The RE2 contract and output caps are unchanged.
 
 ## High value — loop reliability
 
@@ -53,5 +57,3 @@ before implementing; do not slip these in as incidental changes.
 8. **Parallel dispatch of read-only tool calls.** The loop serializes
    parallel tool calls emitted in one step; independent reads (grep,
    read_file, list_dir) are the obvious latency win.
-9. **`.gitignore`-aware grep.** The fixed denylist is predictable and
-   stdlib-trivial; a correct `.gitignore` parser is a real subsystem.
