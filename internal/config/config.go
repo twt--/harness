@@ -49,6 +49,7 @@ type Config struct {
 	MaxSteps             int // -max-steps, default 50
 	DefaultContextWindow int // -default-context-window, fallback for unknown/unconfigured models
 	ContextWindow        int // -context-window, 0 = registry/default
+	ReasoningEffort      string
 
 	// One-shot mode (design §10).
 	Prompt    string // -p value
@@ -80,6 +81,7 @@ type fileConfig struct {
 	MaxSteps             *int     `json:"max_steps"`
 	DefaultContextWindow *int     `json:"default_context_window"`
 	ContextWindow        *int     `json:"context_window"`
+	ReasoningEffort      string   `json:"reasoning_effort"`
 	Verbose              *bool    `json:"verbose"`
 	NoColor              *bool    `json:"no_color"`
 	Prompt               string   `json:"prompt"`
@@ -117,6 +119,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fSystem, fSystemOverride, fNoEnv := f.system, f.systemOverride, f.noEnv
 	fResume, fSession := f.resume, f.session
 	fMaxSteps, fDefaultContextWindow, fContextWindow := f.maxSteps, f.defaultContextWindow, f.contextWindow
+	fReasoningEffort := f.reasoningEffort
 	fPrompt, fReplPrompt, fVerbose, fNoColor := f.prompt, f.replPrompt, f.verbose, f.noColor
 
 	// set records which flags were explicitly provided, so a flag only overrides
@@ -157,6 +160,8 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_DEFAULT_CONTEXT_WINDOW"), fc.DefaultContextWindow, defaultContextWindow)
 	c.ContextWindow = resolveInt(set["context-window"], *fContextWindow,
 		getenv("HARNESS_CONTEXT_WINDOW"), fc.ContextWindow, 0)
+	c.ReasoningEffort = strings.ToLower(strings.TrimSpace(resolveString(set["reasoning-effort"], *fReasoningEffort,
+		getenv("HARNESS_REASONING_EFFORT"), fc.ReasoningEffort, "")))
 
 	c.NoEnv = resolveBool(set["no-env"], *fNoEnv,
 		getenv("HARNESS_NO_ENV"), fc.NoEnv, false)
@@ -206,6 +211,7 @@ type flags struct {
 	maxSteps                 *int
 	defaultContextWindow     *int
 	contextWindow            *int
+	reasoningEffort          *string
 	prompt                   *string
 	replPrompt               *string
 	verbose, noColor         *bool
@@ -231,6 +237,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.maxSteps = fs.Int("max-steps", defaultMaxSteps, "model round-trips per user turn")
 	f.defaultContextWindow = fs.Int("default-context-window", defaultContextWindow, "default context window for unknown/unconfigured models (tokens)")
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
+	f.reasoningEffort = fs.String("reasoning-effort", "", "reasoning/thinking effort (provider/model dependent)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.noColor = fs.Bool("no-color", false, "disable color output")
 	f.replPrompt = fs.String("prompt", "> ", "REPL input prompt")

@@ -167,6 +167,46 @@ func TestBuildRequestTemperatureOmittedWhenNil(t *testing.T) {
 	}
 }
 
+func TestBuildRequestReasoningEffortOpenAI(t *testing.T) {
+	req := basicRequest()
+	req.Reasoning = llm.ReasoningConfig{Effort: "high"}
+	w := buildRequest(req)
+	if w.ReasoningEffort != "high" {
+		t.Fatalf("reasoning_effort = %q, want high", w.ReasoningEffort)
+	}
+	if w.Reasoning != nil {
+		t.Fatalf("reasoning object should be omitted for OpenAI mode: %+v", w.Reasoning)
+	}
+
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"reasoning_effort":"high"`)) {
+		t.Fatalf("reasoning_effort missing from JSON: %s", b)
+	}
+}
+
+func TestBuildRequestReasoningEffortOpenRouter(t *testing.T) {
+	req := basicRequest()
+	req.Reasoning = llm.ReasoningConfig{Effort: "medium"}
+	w := buildRequestForMode(req, "openrouter")
+	if w.ReasoningEffort != "" {
+		t.Fatalf("reasoning_effort = %q, want omitted for OpenRouter", w.ReasoningEffort)
+	}
+	if w.Reasoning == nil || w.Reasoning.Effort != "medium" {
+		t.Fatalf("reasoning = %+v, want effort medium", w.Reasoning)
+	}
+
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"reasoning":{"effort":"medium"}`)) {
+		t.Fatalf("reasoning object missing from JSON: %s", b)
+	}
+}
+
 func TestBuildRequestStreamOptionsAlwaysPresent(t *testing.T) {
 	req := basicRequest()
 	b, err := json.Marshal(buildRequest(req))

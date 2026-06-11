@@ -217,8 +217,11 @@ type Request struct {
     Tools       []ToolSchema
     MaxTokens   int      // 0 = provider policy (see §5.4)
     Temperature *float64 // nil = omit
+    Reasoning   ReasoningConfig
     StopSeqs    []string
 }
+
+type ReasoningConfig struct { Effort string } // empty = provider default
 
 type ToolSchema struct {
     Name        string
@@ -338,6 +341,7 @@ Edge cases:
 | Streaming usage | `"stream_options":{"include_usage":true}` (always set) | automatic: input tokens in `message_start`, output in `message_delta` |
 | Stop sequences | `stop` | `stop_sequences` |
 | Temperature | omitted when nil (never send a spurious 0) | same |
+| Reasoning effort | OpenAI: `reasoning_effort`; OpenRouter: `reasoning.effort` | `output_config.effort` |
 
 The same `ToolSchema.Parameters` bytes go into `parameters` vs `input_schema` —
 schemas are never transformed.
@@ -395,6 +399,7 @@ type Price struct{ Input, Output, CacheRead, CacheWrite float64 } // USD per 1M 
 type ModelInfo struct {
     ContextWindow int
     Price         Price
+    Reasoning     *ReasoningInfo
 }
 func Cost(model string, u Usage) (usd float64, known bool)
 func ContextWindow(model string) int // registry hit, else default 256_000
@@ -406,8 +411,10 @@ without a dollar figure, and use a conservative 256k context-window default,
 configurable with `-default-context-window` and overridable for a run with
 `-context-window`. Model prices and context windows are loaded from provider
 config files referenced by the main config, then filled from a best-effort
-`https://models.dev/api.json` lookup when local metadata is missing. Localhost base
-URLs skip the online lookup.
+`https://models.dev/api.json` lookup when local metadata is missing. When
+`-reasoning-effort` is set, the same metadata is used to validate known
+provider/model reasoning support and effort values. Localhost base URLs skip the
+online lookup.
 
 ## 7. Configuration and provider selection
 
@@ -420,7 +427,7 @@ Precedence: **flags > environment > config file > built-in defaults.**
 - Config file (optional): `~/.config/harness/config.json` — provider, model,
   provider_configs, and flag defaults. Provider config paths are resolved relative to
   the config file and may define api_type, base_url, api_key, api_key_env, models,
-  context windows, and pricing.
+  context windows, reasoning metadata, and pricing.
 - `--setup` creates a basic config in the default directory, or appends a new provider
   config to an existing default config. It prompts for provider name and model name,
   resolving unique models.dev prefixes when available. It fills provider URL from the
@@ -439,8 +446,8 @@ Precedence: **flags > environment > config file > built-in defaults.**
   works for Ollama.
 - `internal/config` resolves the user-facing settings, then hands the provider factory a
   small `factory.Options` struct (provider, model, base URL, API key, max tokens,
-  temperature, context window). This keeps `internal/llm` free of any dependency on the
-  flag/env/file machinery.
+  temperature, context window, reasoning mode). This keeps `internal/llm` free of any
+  dependency on the flag/env/file machinery.
 
 ## 8. Agent loop (`internal/agent`)
 
@@ -767,6 +774,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 -max-steps <n>    model round-trips per user turn (default 50)
 -default-context-window <n>
 -context-window <n>
+-reasoning-effort <level>
 -v                show tool result snippets
 -no-color
 -config <file>    alternate config path

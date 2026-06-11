@@ -73,3 +73,24 @@ func TestMissingModelRejected(t *testing.T) {
 		t.Error("expected error for missing model")
 	}
 }
+
+func TestReasoningModeInference(t *testing.T) {
+	cases := []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{"openrouter provider name", Options{ProviderName: "openrouter", Provider: "openai"}, "openrouter"},
+		{"openrouter base url", Options{Provider: "openai", BaseURL: "https://openrouter.ai/api/v1"}, "openrouter"},
+		{"openai default", Options{Provider: "openai"}, "openai"},
+		{"anthropic", Options{Provider: "anthropic"}, "anthropic"},
+		{"explicit wins", Options{Provider: "openai", ProviderName: "openrouter", ReasoningMode: "openai"}, "openai"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reasoningMode(tc.opts.ProviderName, tc.opts.Provider, tc.opts.BaseURL, tc.opts.ReasoningMode); got != tc.want {
+				t.Fatalf("reasoningMode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

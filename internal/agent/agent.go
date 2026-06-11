@@ -50,6 +50,9 @@ type Options struct {
 	// Registry supplies model context windows and pricing loaded from provider
 	// config files.
 	Registry *llm.Registry
+	// Reasoning is forwarded to every model request. Empty means provider
+	// default.
+	Reasoning llm.ReasoningConfig
 }
 
 // Agent drives the turn loop against one provider and tool registry, owning the
@@ -63,6 +66,7 @@ type Agent struct {
 	model         string
 	maxSteps      int
 	contextWindow int // -context-window override; 0 = use the registry default
+	reasoning     llm.ReasoningConfig
 }
 
 // New constructs an Agent. A non-positive Options.MaxSteps uses the default.
@@ -82,6 +86,7 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		model:         opts.Model,
 		maxSteps:      maxSteps,
 		contextWindow: opts.ContextWindow,
+		reasoning:     opts.Reasoning,
 	}
 }
 
@@ -144,10 +149,11 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 
 	for steps < a.maxSteps {
 		req := llm.Request{
-			Model:    a.model,
-			System:   a.system,
-			Messages: a.transcript,
-			Tools:    a.tools.Specs(),
+			Model:     a.model,
+			System:    a.system,
+			Messages:  a.transcript,
+			Tools:     a.tools.Specs(),
+			Reasoning: a.reasoning,
 		}
 
 		res, err := a.stream(ctx, req, sink)

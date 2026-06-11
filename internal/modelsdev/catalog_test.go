@@ -16,6 +16,8 @@ const testCatalog = `{
       "openai/gpt-5.5": {
         "id": "openai/gpt-5.5",
         "name": "GPT-5.5",
+        "reasoning": true,
+        "reasoning_options": [{"type":"effort","values":["low","medium","high"]}],
         "limit": {"context": 1050000},
         "cost": {"input": 5, "output": 30, "cache_read": 0.5}
       }
@@ -30,6 +32,8 @@ const testCatalog = `{
       "gpt-5.5": {
         "id": "gpt-5.5",
         "name": "GPT-5.5",
+        "reasoning": true,
+        "reasoning_options": [{"type":"effort","values":["none","low","medium","high","xhigh"]}],
         "limit": {"context": 1050000},
         "cost": {"input": 5, "output": 30, "cache_read": 0.5}
       }
@@ -44,6 +48,8 @@ const testCatalog = `{
       "claude-opus-4-8": {
         "id": "claude-opus-4-8",
         "name": "Claude Opus 4.8",
+        "reasoning": true,
+        "reasoning_options": [{"type":"effort","values":["low","medium","high","xhigh","max"]}],
         "limit": {"context": 1000000},
         "cost": {"input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25}
       }
@@ -72,6 +78,9 @@ func TestDecodeProviderBaseURLAndModelPricing(t *testing.T) {
 	}
 	if info.ContextWindow != 1_050_000 || info.Price.Input != 5 || info.Price.Output != 30 || info.Price.CacheRead != 0.5 {
 		t.Fatalf("model info = %+v", info)
+	}
+	if info.Reasoning == nil || !info.Reasoning.SupportsEffort("high") {
+		t.Fatalf("reasoning info = %+v, want high effort support", info.Reasoning)
 	}
 }
 

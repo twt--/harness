@@ -22,12 +22,14 @@ import (
 // config layer), never read here.
 type Options struct {
 	Provider      string // api type: "openai" | "anthropic"; empty = infer from Model
+	ProviderName  string // configured provider name, e.g. "openrouter"
 	Model         string
 	BaseURL       string
 	APIKey        string
 	MaxTokens     int
 	Temperature   *float64
 	ContextWindow int
+	ReasoningMode string // "openai" | "openrouter" | "anthropic"; empty = infer
 }
 
 // New constructs the provider selected by opts. The provider is inferred from
@@ -63,6 +65,7 @@ func New(opts Options) (llm.Provider, error) {
 			APIKey:        opts.APIKey,
 			BaseURL:       opts.BaseURL,
 			ContextWindow: opts.ContextWindow,
+			ReasoningMode: reasoningMode(opts.ProviderName, provider, opts.BaseURL, opts.ReasoningMode),
 		}), nil
 	default:
 		return nil, fmt.Errorf("llm: unknown provider %q (want openai or anthropic)", provider)
@@ -75,6 +78,19 @@ func New(opts Options) (llm.Provider, error) {
 func inferProvider(model string) string {
 	if strings.HasPrefix(model, "claude") {
 		return "anthropic"
+	}
+	return "openai"
+}
+
+func reasoningMode(providerName, apiType, baseURL, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if apiType == "anthropic" {
+		return "anthropic"
+	}
+	if strings.EqualFold(providerName, "openrouter") || strings.Contains(strings.ToLower(baseURL), "openrouter.ai") {
+		return "openrouter"
 	}
 	return "openai"
 }

@@ -19,8 +19,9 @@ type Price struct {
 
 // ModelInfo is the registry entry for one model.
 type ModelInfo struct {
-	ContextWindow int   `json:"context_window"`
-	Price         Price `json:"price"`
+	ContextWindow int            `json:"context_window"`
+	Price         Price          `json:"price"`
+	Reasoning     *ReasoningInfo `json:"reasoning,omitempty"`
 }
 
 // ProviderConfig is the on-disk schema for a provider JSON file.
@@ -35,9 +36,11 @@ type ProviderConfig struct {
 
 // ModelEntry is one model inside a ProviderConfig.
 type ModelEntry struct {
-	Name          string `json:"name"`
-	ContextWindow int    `json:"context_window"`
-	Price         Price  `json:"price"`
+	Name             string            `json:"name"`
+	ContextWindow    int               `json:"context_window"`
+	Price            Price             `json:"price"`
+	Reasoning        *bool             `json:"reasoning,omitempty"`
+	ReasoningOptions []ReasoningOption `json:"reasoning_options,omitempty"`
 }
 
 // DefaultContextWindow is used for any model not in the registry — arbitrary
@@ -94,6 +97,7 @@ func LoadProviderConfigs(configDir string, files []string, warn func(string)) (*
 				models[m.Name] = ModelInfo{
 					ContextWindow: m.ContextWindow,
 					Price:         m.Price,
+					Reasoning:     modelEntryReasoning(m),
 				}
 			}
 		}
@@ -143,6 +147,11 @@ func (r *Registry) MergeModel(model string, info ModelInfo) {
 	}
 	if priceZero(current.Price) && !priceZero(info.Price) {
 		current.Price = info.Price
+	}
+	if current.Reasoning == nil && info.Reasoning != nil {
+		current.Reasoning = info.Reasoning.Clone()
+	} else if current.Reasoning != nil && len(current.Reasoning.Options) == 0 && info.Reasoning != nil && len(info.Reasoning.Options) > 0 {
+		current.Reasoning.Options = info.Reasoning.Clone().Options
 	}
 	r.models[model] = current
 }
@@ -204,6 +213,20 @@ func (r *Registry) Cost(model string, u Usage) (usd float64, known bool) {
 
 func priceZero(p Price) bool {
 	return p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0
+}
+
+func modelEntryReasoning(m ModelEntry) *ReasoningInfo {
+	if m.Reasoning == nil && len(m.ReasoningOptions) == 0 {
+		return nil
+	}
+	supported := false
+	if m.Reasoning != nil {
+		supported = *m.Reasoning
+	}
+	return (&ReasoningInfo{
+		Supported: supported,
+		Options:   append([]ReasoningOption(nil), m.ReasoningOptions...),
+	}).Clone()
 }
 
 // ContextWindow returns the model's context window from the registry, or the

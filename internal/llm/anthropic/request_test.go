@@ -147,6 +147,23 @@ func TestBuildRequestTemperatureOmittedWhenNil(t *testing.T) {
 	}
 }
 
+func TestBuildRequestReasoningEffort(t *testing.T) {
+	req := basicRequest()
+	req.Reasoning = llm.ReasoningConfig{Effort: "xhigh"}
+	w := buildRequest(req, 1_000_000)
+	if w.OutputConfig == nil || w.OutputConfig.Effort != "xhigh" {
+		t.Fatalf("output_config = %+v, want effort xhigh", w.OutputConfig)
+	}
+
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"output_config":{"effort":"xhigh"}`)) {
+		t.Fatalf("output_config effort missing from JSON: %s", b)
+	}
+}
+
 func TestBuildRequestNoSystemOmitsSystem(t *testing.T) {
 	req := basicRequest()
 	req.System = ""

@@ -121,7 +121,12 @@ func run(env environment) int {
 	}
 	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
 	effectiveProvider, effectiveBaseURL, effectiveAPIKey := resolveProvider(cfg, providerConfigs, getenv)
-	enrichRegistryFromModelsDev(modelRegistry, cfg.Model, cfg.Provider, effectiveProvider, effectiveBaseURL, env.modelsDevCatalog, cfg.Verbose, stderr)
+	reasoning := llm.ReasoningConfig{Effort: cfg.ReasoningEffort}
+	enrichRegistryFromModelsDev(modelRegistry, cfg.Model, cfg.Provider, effectiveProvider, effectiveBaseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr)
+	if err := validateReasoningEffort(modelRegistry, cfg.Model, reasoning); err != nil {
+		fmt.Fprintf(stderr, "harness: %v\n", err)
+		return ui.ExitUsage
+	}
 	effectiveContextWindow := cfg.ContextWindow
 	if effectiveContextWindow <= 0 {
 		effectiveContextWindow = modelRegistry.ContextWindow(cfg.Model)
@@ -189,10 +194,12 @@ func run(env environment) int {
 	}
 	provider, err := newProvider(factory.Options{
 		Provider:      effectiveProvider,
+		ProviderName:  cfg.Provider,
 		Model:         cfg.Model,
 		BaseURL:       effectiveBaseURL,
 		APIKey:        effectiveAPIKey,
 		ContextWindow: effectiveContextWindow,
+		ReasoningMode: reasoningMode(cfg.Provider, effectiveProvider, effectiveBaseURL),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
@@ -205,17 +212,22 @@ func run(env environment) int {
 			return ui.ModelSelection{}, fmt.Errorf("model is required")
 		}
 		providerName, apiType, baseURL, apiKey := resolveSwitchProvider(model, cfg, providerConfigs, getenv)
-		enrichRegistryFromModelsDev(modelRegistry, model, providerName, apiType, baseURL, env.modelsDevCatalog, cfg.Verbose, stderr)
+		enrichRegistryFromModelsDev(modelRegistry, model, providerName, apiType, baseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr)
+		if err := validateReasoningEffort(modelRegistry, model, reasoning); err != nil {
+			return ui.ModelSelection{}, err
+		}
 		contextWindow := cfg.ContextWindow
 		if contextWindow <= 0 {
 			contextWindow = modelRegistry.ContextWindow(model)
 		}
 		runtime, err := newProvider(factory.Options{
 			Provider:      apiType,
+			ProviderName:  providerName,
 			Model:         model,
 			BaseURL:       baseURL,
 			APIKey:        apiKey,
 			ContextWindow: contextWindow,
+			ReasoningMode: reasoningMode(providerName, apiType, baseURL),
 		})
 		if err != nil {
 			return ui.ModelSelection{}, err
@@ -235,6 +247,7 @@ func run(env environment) int {
 		Model:         cfg.Model,
 		ContextWindow: cfg.ContextWindow,
 		Registry:      modelRegistry,
+		Reasoning:     reasoning,
 	})
 
 	created := now()
@@ -358,14 +371,14 @@ func defaultModelsDevCatalog(ctx context.Context) (*modelsdev.Catalog, error) {
 	return modelsdev.Fetch(ctx, http.DefaultClient, modelsdev.DefaultURL)
 }
 
-func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiType, baseURL string, fetch func(context.Context) (*modelsdev.Catalog, error), verbose bool, errw io.Writer) {
+func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiType, baseURL string, fetch func(context.Context) (*modelsdev.Catalog, error), needReasoning bool, verbose bool, errw io.Writer) {
 	if registry == nil || fetch == nil || model == "" {
 		return
 	}
 	if isLocalBaseURL(baseURL) {
 		return
 	}
-	if info, ok := registry.Lookup(model); ok && info.ContextWindow > 0 && registry.HasPrice(model) {
+	if info, ok := registry.Lookup(model); ok && info.ContextWindow > 0 && registry.HasPrice(model) && (!needReasoning || info.Reasoning != nil) {
 		return
 	}
 
@@ -397,6 +410,36 @@ func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiT
 	}
 }
 
+func validateReasoningEffort(registry *llm.Registry, model string, reasoning llm.ReasoningConfig) error {
+	if reasoning.Empty() || registry == nil {
+		return nil
+	}
+	info, ok := registry.Lookup(model)
+	if !ok || info.Reasoning == nil {
+		return nil
+	}
+	if info.Reasoning.SupportsEffort(reasoning.Effort) {
+		return nil
+	}
+	if !info.Reasoning.Supported {
+		return fmt.Errorf("model %q does not support reasoning effort", model)
+	}
+	if values, ok := info.Reasoning.EffortValues(); ok && len(values) > 0 {
+		return fmt.Errorf("model %q does not support reasoning effort %q (supported: %s)", model, reasoning.Effort, strings.Join(values, ", "))
+	}
+	return fmt.Errorf("model %q does not support reasoning effort", model)
+}
+
+func reasoningMode(providerName, apiType, baseURL string) string {
+	if apiType == "anthropic" {
+		return "anthropic"
+	}
+	if strings.EqualFold(providerName, "openrouter") || strings.Contains(strings.ToLower(baseURL), "openrouter.ai") {
+		return "openrouter"
+	}
+	return "openai"
+}
+
 func isLocalBaseURL(raw string) bool {
 	if raw == "" {
 		return false
@@ -426,9 +469,11 @@ type setupProviderConfig struct {
 }
 
 type setupModelConfig struct {
-	Name          string     `json:"name"`
-	ContextWindow int        `json:"context_window,omitempty"`
-	Price         *llm.Price `json:"price,omitempty"`
+	Name             string                `json:"name"`
+	ContextWindow    int                   `json:"context_window,omitempty"`
+	Price            *llm.Price            `json:"price,omitempty"`
+	Reasoning        *bool                 `json:"reasoning,omitempty"`
+	ReasoningOptions []llm.ReasoningOption `json:"reasoning_options,omitempty"`
 }
 
 func runSetup(env environment, force bool) error {
@@ -741,9 +786,12 @@ func promptWithDefault(r *bufio.Reader, w io.Writer, label, def string, required
 
 func setupModelFromModelsDev(model modelsdev.Model) setupModelConfig {
 	cfg := setupModelConfig{
-		Name:          model.ID,
-		ContextWindow: model.Limit.Context,
+		Name:             model.ID,
+		ContextWindow:    model.Limit.Context,
+		ReasoningOptions: append([]llm.ReasoningOption(nil), model.ReasoningOptions...),
 	}
+	reasoning := model.Reasoning
+	cfg.Reasoning = &reasoning
 	if setupPriceKnown(model.Cost) {
 		price := model.Cost
 		cfg.Price = &price

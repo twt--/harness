@@ -19,20 +19,26 @@ const emptyArgs = "{}"
 // pointer so it is omitted entirely when unset (compatible servers pick their
 // own defaults, design §5.4).
 type wireRequest struct {
-	Model         string         `json:"model"`
-	Messages      []wireMessage  `json:"messages"`
-	Tools         []wireTool     `json:"tools,omitempty"`
-	MaxTokens     *int           `json:"max_tokens,omitempty"`
-	Temperature   *float64       `json:"temperature,omitempty"`
-	Stop          []string       `json:"stop,omitempty"`
-	Stream        bool           `json:"stream"`
-	StreamOptions *streamOptions `json:"stream_options"`
+	Model           string         `json:"model"`
+	Messages        []wireMessage  `json:"messages"`
+	Tools           []wireTool     `json:"tools,omitempty"`
+	MaxTokens       *int           `json:"max_tokens,omitempty"`
+	Temperature     *float64       `json:"temperature,omitempty"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+	Reasoning       *wireReasoning `json:"reasoning,omitempty"`
+	Stop            []string       `json:"stop,omitempty"`
+	Stream          bool           `json:"stream"`
+	StreamOptions   *streamOptions `json:"stream_options"`
 }
 
 // streamOptions always sets include_usage so the trailing usage chunk is emitted
 // (design §5.4).
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+type wireReasoning struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // wireMessage is one request message. An assistant message with tool_calls but
@@ -122,6 +128,10 @@ type wireUsage struct {
 // tool results are hoisted into sibling role:"tool" messages placed immediately
 // after the issuing assistant message, in call order (design §4).
 func buildRequest(req llm.Request) wireRequest {
+	return buildRequestForMode(req, "openai")
+}
+
+func buildRequestForMode(req llm.Request, reasoningMode string) wireRequest {
 	w := wireRequest{
 		Model:         req.Model,
 		Stream:        true,
@@ -135,6 +145,13 @@ func buildRequest(req llm.Request) wireRequest {
 	}
 	if len(req.StopSeqs) > 0 {
 		w.Stop = req.StopSeqs
+	}
+	if req.Reasoning.Effort != "" {
+		if reasoningMode == "openrouter" {
+			w.Reasoning = &wireReasoning{Effort: req.Reasoning.Effort}
+		} else {
+			w.ReasoningEffort = req.Reasoning.Effort
+		}
 	}
 
 	if req.System != "" {

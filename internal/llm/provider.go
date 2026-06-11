@@ -25,6 +25,7 @@ type Request struct {
 	Tools       []ToolSchema
 	MaxTokens   int      // 0 = provider policy (see design §5.4)
 	Temperature *float64 // nil = omit
+	Reasoning   ReasoningConfig
 	StopSeqs    []string
 }
 

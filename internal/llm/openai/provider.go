@@ -34,16 +34,18 @@ type Config struct {
 	APIKey        string
 	BaseURL       string // default https://api.openai.com/v1
 	ContextWindow int    // unused by OpenAI request building; kept for factory symmetry
+	ReasoningMode string // "openai" or "openrouter"; empty defaults to "openai"
 	HTTPClient    *http.Client
 	Sleep         func(time.Duration) // nil = time.Sleep
 }
 
 // Provider is the OpenAI Chat Completions dialect.
 type Provider struct {
-	apiKey  string
-	baseURL string
-	client  *http.Client
-	sleep   func(time.Duration)
+	apiKey        string
+	baseURL       string
+	reasoningMode string
+	client        *http.Client
+	sleep         func(time.Duration)
 }
 
 // New constructs a Provider from cfg, applying defaults.
@@ -63,10 +65,11 @@ func New(cfg Config) *Provider {
 		sleep = time.Sleep
 	}
 	return &Provider{
-		apiKey:  cfg.APIKey,
-		baseURL: base,
-		client:  client,
-		sleep:   sleep,
+		apiKey:        cfg.APIKey,
+		baseURL:       base,
+		reasoningMode: cfg.ReasoningMode,
+		client:        client,
+		sleep:         sleep,
 	}
 }
 
@@ -77,7 +80,7 @@ func (p *Provider) Name() string { return "openai" }
 // turn-fatal. ctx.Err() is checked before every attempt and sleep.
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
-		body, err := json.Marshal(buildRequest(req))
+		body, err := json.Marshal(buildRequestForMode(req, p.reasoningMode))
 		if err != nil {
 			yield(llm.StreamEvent{}, &llm.APIError{Message: "marshal request: " + err.Error()})
 			return

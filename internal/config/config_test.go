@@ -266,6 +266,7 @@ func TestHarnessEnvMapping(t *testing.T) {
 		"HARNESS_MAX_STEPS":              "12",
 		"HARNESS_DEFAULT_CONTEXT_WINDOW": "512000",
 		"HARNESS_CONTEXT_WINDOW":         "256000",
+		"HARNESS_REASONING_EFFORT":       "HIGH",
 		"HARNESS_SYSTEM":                 "env system note",
 		"HARNESS_NO_ENV":                 "true",
 		"HARNESS_NO_COLOR":               "true",
@@ -287,6 +288,9 @@ func TestHarnessEnvMapping(t *testing.T) {
 	}
 	if c.ContextWindow != 256000 {
 		t.Fatalf("context-window %d, want 256000", c.ContextWindow)
+	}
+	if c.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort %q, want high", c.ReasoningEffort)
 	}
 	if c.System != "env system note" {
 		t.Fatalf("system %q", c.System)
@@ -406,6 +410,35 @@ func TestDefaultContextWindowPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
 	}
 }
 
+func TestReasoningEffortPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"reasoning_effort":"low"}`)
+	env := envFrom(map[string]string{"HARNESS_REASONING_EFFORT": "medium"})
+
+	c, err := Load([]string{"-model", "gpt-5.5", "-reasoning-effort", "HIGH"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ReasoningEffort != "high" {
+		t.Fatalf("flag precedence: got reasoning effort %q, want high", c.ReasoningEffort)
+	}
+
+	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ReasoningEffort != "medium" {
+		t.Fatalf("env precedence: got reasoning effort %q, want medium", c.ReasoningEffort)
+	}
+
+	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ReasoningEffort != "low" {
+		t.Fatalf("file precedence: got reasoning effort %q, want low", c.ReasoningEffort)
+	}
+}
+
 func TestMaxStepsFlagBeatsFile(t *testing.T) {
 	cfgPath := writeConfig(t, `{"max_steps":7}`)
 	c, err := Load([]string{"-max-steps", "9"}, noEnv, cfgPath)
@@ -479,7 +512,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-	"-v", "-no-color", "-config", "-setup", "-force", "-prompt",
+	"-reasoning-effort", "-v", "-no-color", "-config", "-setup", "-force", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the

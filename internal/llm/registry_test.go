@@ -36,7 +36,7 @@ func TestLoadProviderConfigsReadsProviderWrapper(t *testing.T) {
       "api_type": "openai",
       "base_url": "https://openrouter.ai/api/v1",
       "models": [
-        {"name":"openai/gpt-5.1","context_window":1000000,"price":{"input":2,"output":8}}
+        {"name":"openai/gpt-5.1","context_window":1000000,"price":{"input":2,"output":8},"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]}
       ]
     },
     {
@@ -61,6 +61,10 @@ func TestLoadProviderConfigsReadsProviderWrapper(t *testing.T) {
 	}
 	if got := r.ContextWindow("openai/gpt-5.1"); got != 1_000_000 {
 		t.Fatalf("openai/gpt-5.1 context window = %d, want 1000000", got)
+	}
+	info, ok := r.Lookup("openai/gpt-5.1")
+	if !ok || info.Reasoning == nil || !info.Reasoning.SupportsEffort("medium") {
+		t.Fatalf("openai/gpt-5.1 reasoning info = %+v, ok=%v", info.Reasoning, ok)
 	}
 	cost, known := r.Cost("claude-sonnet-4-5", Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000})
 	if !known || cost != 18 {

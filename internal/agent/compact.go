@@ -90,9 +90,10 @@ func (a *Agent) Compact(ctx context.Context, sink EventSink) (llm.Usage, error) 
 // the summary text and the call's usage.
 func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm.Usage, error) {
 	req := llm.Request{
-		Model:    a.model,
-		System:   summaryInstruction,
-		Messages: older,
+		Model:     a.model,
+		System:    summaryInstruction,
+		Messages:  older,
+		Reasoning: a.reasoning,
 	}
 	var text []byte
 	var usage llm.Usage

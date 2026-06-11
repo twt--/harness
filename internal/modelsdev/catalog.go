@@ -34,10 +34,12 @@ type Provider struct {
 
 // Model is the subset of one models.dev model entry used by harness.
 type Model struct {
-	ID    string    `json:"id"`
-	Name  string    `json:"name"`
-	Limit Limit     `json:"limit"`
-	Cost  llm.Price `json:"cost"`
+	ID               string                `json:"id"`
+	Name             string                `json:"name"`
+	Reasoning        bool                  `json:"reasoning"`
+	ReasoningOptions []llm.ReasoningOption `json:"reasoning_options"`
+	Limit            Limit                 `json:"limit"`
+	Cost             llm.Price             `json:"cost"`
 }
 
 // Limit carries token limits from models.dev.
@@ -260,6 +262,10 @@ func (m Model) ModelInfo() llm.ModelInfo {
 	return llm.ModelInfo{
 		ContextWindow: m.Limit.Context,
 		Price:         m.Cost,
+		Reasoning: &llm.ReasoningInfo{
+			Supported: m.Reasoning,
+			Options:   append([]llm.ReasoningOption(nil), m.ReasoningOptions...),
+		},
 	}
 }
 

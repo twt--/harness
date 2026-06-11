@@ -12,6 +12,10 @@
     {
       "name": "claude-opus-4-8",
       "context_window": 1000000,
+      "reasoning": true,
+      "reasoning_options": [
+        { "type": "effort", "values": ["low", "medium", "high", "xhigh", "max"] }
+      ],
       "price": { "input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25 }
     },
     {

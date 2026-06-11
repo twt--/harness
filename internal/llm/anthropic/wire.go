@@ -27,6 +27,11 @@ type wireRequest struct {
 	StopSequences []string        `json:"stop_sequences,omitempty"`
 	Stream        bool            `json:"stream"`
 	Temperature   *float64        `json:"temperature,omitempty"`
+	OutputConfig  *outputConfig   `json:"output_config,omitempty"`
+}
+
+type outputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // wireTextBlock is a system/text block; it carries optional cache_control.
@@ -142,6 +147,9 @@ func buildRequest(req llm.Request, contextWindow int) wireRequest {
 
 	if len(req.StopSeqs) > 0 {
 		w.StopSequences = req.StopSeqs
+	}
+	if req.Reasoning.Effort != "" {
+		w.OutputConfig = &outputConfig{Effort: req.Reasoning.Effort}
 	}
 
 	for _, t := range req.Tools {

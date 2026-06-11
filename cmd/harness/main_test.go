@@ -66,6 +66,8 @@ func testModelsDevCatalog(t *testing.T) *modelsdev.Catalog {
       "gpt-5.5": {
         "id": "gpt-5.5",
         "name": "GPT-5.5",
+        "reasoning": true,
+        "reasoning_options": [{"type":"effort","values":["none","low","medium","high","xhigh"]}],
         "limit": {"context": 1050000},
         "cost": {"input": 5, "output": 30, "cache_read": 0.5}
       }
@@ -81,6 +83,8 @@ func testModelsDevCatalog(t *testing.T) *modelsdev.Catalog {
       "openai/gpt-5.5": {
         "id": "openai/gpt-5.5",
         "name": "GPT-5.5",
+        "reasoning": true,
+        "reasoning_options": [{"type":"effort","values":["low","medium","high"]}],
         "limit": {"context": 1050000},
         "cost": {"input": 5, "output": 30, "cache_read": 0.5}
       }
@@ -202,7 +206,7 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	flags := []string{
 		"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 		"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-		"-v", "-no-color", "-config", "-setup", "-force", "-prompt",
+		"-reasoning-effort", "-v", "-no-color", "-config", "-setup", "-force", "-prompt",
 	}
 	for _, arg := range []string{"-h", "--help"} {
 		fp := llmtest.New("fake")
@@ -328,9 +332,11 @@ func TestRunSetupUsesModelsDevDefaults(t *testing.T) {
 		APIKey    string   `json:"api_key"`
 		APIKeyEnv []string `json:"api_key_env"`
 		Models    []struct {
-			Name          string    `json:"name"`
-			ContextWindow int       `json:"context_window"`
-			Price         llm.Price `json:"price"`
+			Name             string                `json:"name"`
+			ContextWindow    int                   `json:"context_window"`
+			Price            llm.Price             `json:"price"`
+			Reasoning        bool                  `json:"reasoning"`
+			ReasoningOptions []llm.ReasoningOption `json:"reasoning_options"`
 		} `json:"models"`
 	}
 	data, err := os.ReadFile(providerPath)
@@ -354,6 +360,9 @@ func TestRunSetupUsesModelsDevDefaults(t *testing.T) {
 	if model.Name != "openai/gpt-5.5" || model.ContextWindow != 1_050_000 ||
 		model.Price.Input != 5 || model.Price.Output != 30 || model.Price.CacheRead != 0.5 {
 		t.Fatalf("generated model = %+v", model)
+	}
+	if !model.Reasoning || len(model.ReasoningOptions) != 1 || model.ReasoningOptions[0].Type != "effort" {
+		t.Fatalf("generated reasoning metadata = reasoning:%v options:%+v", model.Reasoning, model.ReasoningOptions)
 	}
 }
 
@@ -594,6 +603,123 @@ func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
 	}
 	if got.ContextWindow != 1_000_000 {
 		t.Fatalf("factory context window = %d, want 1000000", got.ContextWindow)
+	}
+}
+
+func TestRunReasoningEffortUsesOpenRouterModeAndRequestConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	providerPath := filepath.Join(dir, "openrouter.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+	  "provider": "openrouter",
+	  "model": "openai/gpt-5.5",
+	  "provider_configs": ["openrouter.json"],
+	  "reasoning_effort": "medium"
+	}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(providerPath, []byte(`{
+  "name": "openrouter",
+  "api_type": "openai",
+  "base_url": "https://openrouter.ai/api/v1",
+  "models": [
+    {"name":"openai/gpt-5.5","context_window":1050000,"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]}
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got.Provider != "openai" || got.ProviderName != "openrouter" || got.ReasoningMode != "openrouter" {
+		t.Fatalf("factory options = %+v, want openrouter reasoning mode over openai dialect", got)
+	}
+	if len(fp.Requests) != 1 || fp.Requests[0].Reasoning.Effort != "medium" {
+		t.Fatalf("request reasoning = %+v", fp.Requests)
+	}
+}
+
+func TestRunReasoningEffortRejectedWhenModelsDevSaysUnsupported(t *testing.T) {
+	fp := llmtest.New("fake")
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-4o", "-reasoning-effort", "high", "-p", "hi"}, fp, "")
+	catalog, err := modelsdev.Decode(strings.NewReader(`{
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "gpt-4o": {
+        "id": "gpt-4o",
+        "name": "GPT-4o",
+        "reasoning": false,
+        "limit": {"context": 128000},
+        "cost": {"input": 2.5, "output": 10}
+      }
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatalf("decode catalog: %v", err)
+	}
+	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
+		return catalog, nil
+	}
+
+	if code := run(env); code != ui.ExitUsage {
+		t.Fatalf("exit = %d, want usage error; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 0 {
+		t.Fatalf("provider should not be called after validation failure, got %d requests", len(fp.Requests))
+	}
+	if !strings.Contains(errw.String(), "does not support reasoning effort") {
+		t.Fatalf("stderr should explain unsupported effort, got %q", errw.String())
+	}
+}
+
+func TestRunReasoningEffortRejectedWhenValueUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	providerPath := filepath.Join(dir, "openai.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+	  "provider": "openai",
+	  "model": "gpt-5-pro",
+	  "provider_configs": ["openai.json"],
+	  "reasoning_effort": "xhigh"
+	}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(providerPath, []byte(`{
+  "name": "openai",
+  "api_type": "openai",
+  "base_url": "https://api.openai.com/v1",
+  "models": [
+    {"name":"gpt-5-pro","context_window":400000,"reasoning":true,"reasoning_options":[{"type":"effort","values":["high"]}]}
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+
+	fp := llmtest.New("fake")
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
+	if code := run(env); code != ui.ExitUsage {
+		t.Fatalf("exit = %d, want usage error; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 0 {
+		t.Fatalf("provider should not be called after validation failure, got %d requests", len(fp.Requests))
+	}
+	if !strings.Contains(errw.String(), `supported: high`) {
+		t.Fatalf("stderr should list supported effort values, got %q", errw.String())
 	}
 }
 
