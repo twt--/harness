@@ -68,6 +68,13 @@ new `streamWithRetry` helper that `RunTurn` calls in place of `stream`:
 - Retryable: errors wrapping `sse.ErrTruncatedStream`; `*llm.APIError`
   with `Retryable == true`; transport/read errors that are neither
   `*llm.APIError` nor context errors.
+- The Anthropic decoder builds mid-stream `error`-frame errors with
+  `Retryable` unset, which would make the policy above never retry an
+  `overloaded_error` frame. The provider classifies frame types:
+  `overloaded_error`, `api_error`, and `rate_limit_error` are
+  retryable; everything else is not.
+- Retries do not consume the `maxSteps` budget — a step is one logical
+  model round-trip; the attempt cap bounds the extra cost.
 - Not retryable: `context.Canceled` / `context.DeadlineExceeded`
   (existing cancel repair applies unchanged); `*llm.APIError` with
   `Retryable == false` (for example invalid_request).
@@ -133,6 +140,14 @@ max(lastInput, est) * 100 >= window * compactThresholdPct
   keep-whole-turns rule already preserves the tool_use/tool_result
   invariant mid-turn: the in-flight turn is the newest turn, so it is
   kept verbatim.
+- `lastInput` becomes a context-size signal, not a billing one:
+  `InputTokens + CacheReadTokens + CacheWriteTokens`. Today it is
+  `InputTokens` alone, which on Anthropic excludes cached tokens —
+  most of the context in a long session — so the reported-tokens
+  trigger could undercount by an order of magnitude.
+- After a mid-turn compaction, `lastInput` resets to 0: the old
+  reported count no longer describes the compacted transcript, and
+  keeping it would re-trigger compaction every step.
 - The post-turn `MaybeCompact` call stays (it catches the
   reported-tokens signal, which is more accurate than the estimate).
 - Mid-turn compaction usage folds into the turn total, as post-turn
@@ -176,22 +191,26 @@ hard cap.
 (or any future tool) blocks the turn until ^C
 (`tools/tool.go:139-177`).
 
-**Design.** `Registry.Dispatch` wraps the call's context:
-`context.WithTimeout(ctx, r.dispatchTimeout)`.
+**Design.** `Registry.Dispatch` wraps the call's context with
+`context.WithTimeout` and runs `Tool.Run` in a goroutine, selecting on
+completion versus the derived context's expiry — so even a tool that
+ignores its context cannot hang the turn (the abandoned goroutine is
+the standard, accepted cost; the panic recover moves into the
+goroutine).
 
-- Default **5 minutes**, stored as a `Registry` field; exported setter
-  `SetDispatchTimeout(d time.Duration)` for tests and future config; no
-  config-file knob yet.
+- Default **11 minutes**: the largest tool self-limit
+  (`run_command`/`exec` cap `timeout_seconds` at 600s) plus a
+  one-minute grace, so the ceiling never fires first for well-behaved
+  tools. Stored as a `Registry` field (zero value means the default);
+  exported setter `SetDispatchTimeout(d time.Duration)` for tests and
+  future config; no config-file knob yet.
 - On expiry the result is the standard `is_error` shape:
-  `error: tool timed out after 5m0s`. Distinguish the ceiling firing
-  (`ctx.Err() == context.DeadlineExceeded` from the derived context)
-  from an outer cancellation, which must keep propagating as
-  cancellation, not as a tool error.
+  `error: tool timed out after 11m0s`. An outer cancellation (the
+  parent context is done) keeps today's behavior — an `is_error`
+  result carrying the cancellation error — and is never reported as a
+  timeout.
 - Tools already honor context (`grep` checks `ctx.Err()`, exec tools
   use `CommandContext`), so no per-tool changes.
-- Verify the ceiling exceeds `run_command`/`exec` self-limits so it
-  never fires first for well-behaved tools; adjust the default upward
-  if any self-limit is higher.
 
 **Tests.** A stub tool that blocks on `ctx.Done()` returns a timeout
 `is_error` result; outer cancellation still surfaces as cancellation;
