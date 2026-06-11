@@ -14,6 +14,7 @@ import (
 	"harness/internal/llm"
 	"harness/internal/session"
 	"harness/internal/skills"
+	"harness/internal/term"
 )
 
 // App bundles the dependencies the REPL and one-shot driver need. main builds it
@@ -119,8 +120,10 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		prompt = "> "
 	}
 
-	// Reset terminal before the first prompt (VT100 reset sequence)
-	fmt.Fprint(app.Errw, "\033c")
+	// Restore a usable terminal before the first prompt (termios sane plus an
+	// emulator soft reset), in case a prior process left it in raw, no-echo,
+	// or mouse-reporting state. Targets /dev/tty directly; no-op without one.
+	_ = term.Reset()
 	fmt.Fprint(app.Errw, prompt)
 	for {
 		select {

@@ -442,3 +442,22 @@ type errContextT string
 
 func (e errContextT) Error() string { return string(e) }
 func errContext(s string) error     { return errContextT(s) }
+
+// The terminal reset must go to /dev/tty (and only when one exists), never to
+// Errw: a piped or redirected stderr must receive no escape sequences. This
+// regression-tests the removal of the \033c (RIS) write before the first
+// prompt, which also cleared the user's screen and scrollback.
+func TestREPLWritesNoEscapeSequencesToErrw(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+
+	code := Run(strings.NewReader("/exit\n"), app, nil)
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if s := errw.String(); strings.ContainsRune(s, '\x1b') {
+		t.Errorf("errw contains escape bytes: %q", s)
+	}
+}

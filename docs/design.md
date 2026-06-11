@@ -716,6 +716,17 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 - Dim color only when stdout is a TTY (`os.Stdout.Stat()` mode check); `NO_COLOR` env or
   `-no-color` disables. Everything is legible without color.
 
+### Terminal reset on REPL start
+
+Before the first prompt the REPL restores the controlling terminal to a usable state
+(`internal/term`, stdlib-only): kernel termios to the platform's `stty sane` equivalent
+(GNU semantics on Linux; BSD `f_sane` flag semantics plus the `cfmakesane` control-char
+reset on macOS), then an emulator soft reset (DECSTR; mouse tracking, focus reporting,
+and bracketed paste off; leave alt screen; show cursor; charset and SGR reset). This
+repairs a terminal left in raw/no-echo/mouse-reporting state by a crashed program. It
+targets `/dev/tty` directly, is a silent no-op without a controlling terminal, and —
+unlike the RIS (`\033c`) it replaced — never clears the screen or scrollback.
+
 ### Meta-commands
 
 Lines starting with `/` are commands; `//` escapes a literal slash.
