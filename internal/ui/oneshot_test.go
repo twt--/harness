@@ -90,7 +90,10 @@ func TestOneShotSaveFailureWarned(t *testing.T) {
 
 func TestOneShotProviderErrorExit1(t *testing.T) {
 	var out, errw bytes.Buffer
-	fp := llmtest.New("fake", llmtest.Step{Err: errContext("upstream 500")})
+	// A plain (non-API, non-cancel) error is retryable, so it must persist
+	// across the whole per-step budget (1 + 2 retries) to surface as exit 1.
+	fail := llmtest.Step{Err: errContext("upstream 500")}
+	fp := llmtest.New("fake", fail, fail, fail)
 	app := newTestApp(t, &out, &errw, fp)
 
 	code := OneShot(app, "go")

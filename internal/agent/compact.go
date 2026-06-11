@@ -106,11 +106,11 @@ func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm
 			text = append(text, ev.Text...)
 		case llm.EventUsage:
 			if ev.Usage != nil {
-				usage = *ev.Usage
+				usage = mergeUsage(usage, *ev.Usage)
 			}
 		case llm.EventDone:
 			if ev.Usage != nil {
-				usage = *ev.Usage
+				usage = mergeUsage(usage, *ev.Usage)
 			}
 		}
 	}

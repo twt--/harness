@@ -7,13 +7,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"harness/internal/llm"
+	"harness/internal/retry"
 	"harness/internal/tools"
 )
 
 // defaultMaxSteps caps model round-trips per user turn (design §8.1).
 const defaultMaxSteps = 50
+
+// streamRetries is the per-step mid-stream retry budget: a step whose stream
+// fails after the first byte may be re-requested this many times (spec §2).
+// Retries do not consume the maxSteps budget.
+const streamRetries = 2
 
 // EventSink receives the turn's observable events for rendering. The agent loop
 // owns the transcript and the control flow; the sink only reports. Phase 10's
@@ -67,6 +74,7 @@ type Agent struct {
 	maxSteps      int
 	contextWindow int // -context-window override; 0 = use the registry default
 	reasoning     llm.ReasoningConfig
+	sleep         func(time.Duration) // mid-stream retry backoff; nil-free, set in New
 }
 
 // New constructs an Agent. A non-positive Options.MaxSteps uses the default.
@@ -87,6 +95,7 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		maxSteps:      maxSteps,
 		contextWindow: opts.ContextWindow,
 		reasoning:     opts.Reasoning,
+		sleep:         time.Sleep,
 	}
 }
 
@@ -131,6 +140,14 @@ func (a *Agent) SetModel(model string, contextWindow int) {
 // SetTranscript replaces the running transcript (used when resuming a session).
 func (a *Agent) SetTranscript(msgs []llm.Message) { a.transcript = msgs }
 
+// SetSleep replaces the mid-stream retry backoff function. Tests inject a no-op
+// to keep the loop free of real time; a nil argument is ignored.
+func (a *Agent) SetSleep(sleep func(time.Duration)) {
+	if sleep != nil {
+		a.sleep = sleep
+	}
+}
+
 // Transcript returns the current transcript. The slice is owned by the Agent;
 // callers must not mutate it.
 func (a *Agent) Transcript() []llm.Message { return a.transcript }
@@ -166,9 +183,9 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Reasoning: a.reasoning,
 		}
 
-		res, err := a.stream(ctx, req, sink)
+		res, wasted, err := a.streamWithRetry(ctx, req, sink)
 		steps++
-		total = add(total, res.usage)
+		total = add(total, add(res.usage, wasted))
 		lastInput = res.usage.InputTokens
 
 		if err != nil {
@@ -230,6 +247,39 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 	return nil
 }
 
+// streamWithRetry runs stream, re-requesting the step from scratch when it
+// fails mid-flight with a retryable error. Partial output from a failed
+// attempt is never committed to the transcript; wasted carries the usage
+// failed attempts reported (paid for, so counted) — it never drives the
+// compaction trigger.
+func (a *Agent) streamWithRetry(ctx context.Context, req llm.Request, sink EventSink) (res stepResult, wasted llm.Usage, err error) {
+	for attempt := 0; ; attempt++ {
+		res, err = a.stream(ctx, req, sink)
+		if err == nil || attempt >= streamRetries || !retryableStreamError(err) {
+			return res, wasted, err
+		}
+		wasted = add(wasted, res.usage)
+		sink.Notice(fmt.Sprintf("[stream interrupted: %v; retrying step]", err))
+		a.sleep(retry.Next(attempt, 0))
+	}
+}
+
+// retryableStreamError reports whether a mid-stream failure may be retried by
+// re-requesting the step. Cancellation is the user's call to stop; a
+// non-retryable APIError (invalid_request, auth) will not get better by
+// asking again. Everything else — truncated streams, transport resets,
+// retryable API errors — is transient (spec §2).
+func retryableStreamError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var apiErr *llm.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Retryable
+	}
+	return true
+}
+
 // stream consumes one provider stream: it forwards text deltas to the sink,
 // assembles completed tool calls in emission order, and captures the final
 // usage and stop reason. A terminal stream error is returned with whatever
@@ -255,11 +305,11 @@ func (a *Agent) stream(ctx context.Context, req llm.Request, sink EventSink) (st
 			})
 		case llm.EventUsage:
 			if ev.Usage != nil {
-				res.usage = *ev.Usage
+				res.usage = mergeUsage(res.usage, *ev.Usage)
 			}
 		case llm.EventDone:
 			if ev.Usage != nil {
-				res.usage = *ev.Usage
+				res.usage = mergeUsage(res.usage, *ev.Usage)
 			}
 			res.stopReason = ev.StopReason
 		}
@@ -299,5 +349,17 @@ func add(a, b llm.Usage) llm.Usage {
 		OutputTokens:     a.OutputTokens + b.OutputTokens,
 		CacheReadTokens:  a.CacheReadTokens + b.CacheReadTokens,
 		CacheWriteTokens: a.CacheWriteTokens + b.CacheWriteTokens,
+	}
+}
+
+// mergeUsage merges a cumulative usage snapshot into acc element-wise. The
+// provider contract says snapshots are cumulative; max keeps a zeroed or
+// partial late frame from erasing earlier numbers (spec §3).
+func mergeUsage(acc, in llm.Usage) llm.Usage {
+	return llm.Usage{
+		InputTokens:      max(acc.InputTokens, in.InputTokens),
+		OutputTokens:     max(acc.OutputTokens, in.OutputTokens),
+		CacheReadTokens:  max(acc.CacheReadTokens, in.CacheReadTokens),
+		CacheWriteTokens: max(acc.CacheWriteTokens, in.CacheWriteTokens),
 	}
 }

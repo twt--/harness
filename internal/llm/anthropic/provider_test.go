@@ -530,6 +530,46 @@ func TestNormalizeStopReason(t *testing.T) {
 	}
 }
 
+func TestMidStreamErrorFrameRetryability(t *testing.T) {
+	cases := []struct {
+		errType   string
+		retryable bool
+	}{
+		{"overloaded_error", true},
+		{"api_error", true},
+		{"rate_limit_error", true},
+		{"invalid_request_error", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.errType, func(t *testing.T) {
+			body := "event: message_start\n" +
+				`data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}` + "\n\n" +
+				"event: error\n" +
+				`data: {"type":"error","error":{"type":"` + tc.errType + `","message":"x"}}` + "\n\n"
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", "text/event-stream")
+				writeBody(w, []byte(body))
+			}))
+			defer srv.Close()
+
+			p := New(Config{APIKey: "k", BaseURL: srv.URL})
+			var streamErr error
+			for _, err := range p.Stream(context.Background(), llm.Request{Model: "m"}) {
+				if err != nil {
+					streamErr = err
+				}
+			}
+			var apiErr *llm.APIError
+			if !errors.As(streamErr, &apiErr) {
+				t.Fatalf("stream error = %v, want *llm.APIError", streamErr)
+			}
+			if apiErr.Retryable != tc.retryable {
+				t.Errorf("Retryable = %v, want %v", apiErr.Retryable, tc.retryable)
+			}
+		})
+	}
+}
+
 // --- helpers ---
 
 func kindsOf(events []llm.StreamEvent) []llm.EventKind {

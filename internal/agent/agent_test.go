@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"harness/internal/llm"
 	"harness/internal/llm/llmtest"
+	"harness/internal/sse"
 	"harness/internal/tools"
 )
 
@@ -423,6 +426,149 @@ func TestSetToolsChangesAdvertisedAndDispatchableTools(t *testing.T) {
 	res := a.tools.Dispatch(context.Background(), llm.ToolCall{ID: "1", Name: "grep", Input: json.RawMessage(`{}`)})
 	if !res.IsError || !strings.Contains(res.Text, "unknown tool") {
 		t.Errorf("removed tool should be undispatchable, got %+v", res)
+	}
+}
+
+func TestMidStreamRetrySucceedsOnSecondAttempt(t *testing.T) {
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{
+				textDelta("partial "),
+				{Kind: llm.EventUsage, Usage: &llm.Usage{InputTokens: 40}},
+			},
+			Err: &llm.APIError{StatusCode: 529, Message: "overloaded", Retryable: true},
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("hello")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+	)
+	a := newAgent(fp, tools.Default(), Options{})
+	a.sleep = func(time.Duration) {}
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "hi", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	msgs := a.Transcript()
+	mustValid(t, msgs)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 messages, got %d:\n%s", len(msgs), dump(msgs))
+	}
+	if got := msgs[1].Content[0].Text; got != "hello" {
+		t.Errorf("assistant text = %q, want %q (failed attempt must not be committed)", got, "hello")
+	}
+	if len(fp.Requests) != 2 {
+		t.Errorf("provider called %d times, want 2", len(fp.Requests))
+	}
+	var retried bool
+	for _, n := range sink.notices {
+		if strings.Contains(n, "retrying step") {
+			retried = true
+		}
+	}
+	if !retried {
+		t.Errorf("no retry notice, notices=%v", sink.notices)
+	}
+	// Wasted usage from the failed attempt is paid for and counted.
+	if got := sink.turnUsage[0].Usage.InputTokens; got != 50 {
+		t.Errorf("turn input tokens = %d, want 50 (40 wasted + 10)", got)
+	}
+}
+
+func TestMidStreamRetryBudgetExhausted(t *testing.T) {
+	fail := llmtest.Step{Err: &llm.APIError{StatusCode: 529, Message: "overloaded", Retryable: true}}
+	fp := llmtest.New("fake", fail, fail, fail)
+	a := newAgent(fp, tools.Default(), Options{})
+	a.sleep = func(time.Duration) {}
+	sink := &recordSink{}
+
+	err := a.RunTurn(context.Background(), "hi", sink)
+	var apiErr *llm.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("RunTurn err = %v, want the APIError after budget exhaustion", err)
+	}
+	if len(fp.Requests) != 3 {
+		t.Errorf("provider called %d times, want 3 (1 + 2 retries)", len(fp.Requests))
+	}
+	mustValid(t, a.Transcript())
+}
+
+func TestMidStreamNonRetryableNotRetried(t *testing.T) {
+	fp := llmtest.New("fake",
+		llmtest.Step{Err: &llm.APIError{StatusCode: 400, Message: "bad request", Retryable: false}},
+	)
+	a := newAgent(fp, tools.Default(), Options{})
+	a.sleep = func(time.Duration) {}
+
+	err := a.RunTurn(context.Background(), "hi", &recordSink{})
+	if err == nil {
+		t.Fatal("RunTurn should fail")
+	}
+	if len(fp.Requests) != 1 {
+		t.Errorf("provider called %d times, want 1 (no retry)", len(fp.Requests))
+	}
+}
+
+func TestTruncatedStreamRetried(t *testing.T) {
+	fp := llmtest.New("fake",
+		llmtest.Step{Err: fmt.Errorf("stream ended early: %w", sse.ErrTruncatedStream)},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("ok")}, Stop: llm.StopEndTurn},
+	)
+	a := newAgent(fp, tools.Default(), Options{})
+	a.sleep = func(time.Duration) {}
+
+	if err := a.RunTurn(context.Background(), "hi", &recordSink{}); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(fp.Requests) != 2 {
+		t.Errorf("provider called %d times, want 2", len(fp.Requests))
+	}
+}
+
+func TestCancellationDuringRetryBackoff(t *testing.T) {
+	// A retryable failure schedules a retry; cancellation arrives during the
+	// backoff sleep, before the next attempt. The loop must honor it: return
+	// context.Canceled, attempt no further request, and leave a valid transcript.
+	fail := llmtest.Step{Err: &llm.APIError{StatusCode: 529, Message: "overloaded", Retryable: true}}
+	fp := llmtest.New("fake", fail, fail, fail)
+	a := newAgent(fp, tools.Default(), Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.sleep = func(time.Duration) { cancel() }
+
+	err := a.RunTurn(ctx, "hi", &recordSink{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+	}
+	// One real attempt, then cancellation during the backoff stops the loop
+	// before any retry re-requests the step.
+	if len(fp.Requests) > 2 {
+		t.Errorf("provider called %d times, want at most 2 (no retry after cancel)", len(fp.Requests))
+	}
+	mustValid(t, a.Transcript())
+}
+
+func TestZeroedFinalUsageFrameDoesNotEraseEarlier(t *testing.T) {
+	// The Done event carries zero usage (FakeProvider appends Done with
+	// step.Usage, here the zero value); the mid-stream snapshot must survive.
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{
+			{Kind: llm.EventUsage, Usage: &llm.Usage{InputTokens: 100, OutputTokens: 10, CacheReadTokens: 7}},
+			textDelta("hi"),
+		},
+		Stop: llm.StopEndTurn,
+	})
+	a := newAgent(fp, tools.Default(), Options{})
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "hi", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	u := sink.turnUsage[0].Usage
+	if u.InputTokens != 100 || u.OutputTokens != 10 || u.CacheReadTokens != 7 {
+		t.Errorf("usage = %+v, want the mid-stream snapshot preserved", u)
 	}
 }
 

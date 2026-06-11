@@ -267,6 +267,7 @@ func (p *Provider) decode(ctx context.Context, r io.Reader, yield func(llm.Strea
 			if data.Error != nil {
 				apiErr.Code = data.Error.Type
 				apiErr.Message = data.Error.Message
+				apiErr.Retryable = retryableErrorType(data.Error.Type)
 			}
 			yield(llm.StreamEvent{}, apiErr)
 			return
@@ -309,6 +310,17 @@ func parseErrorResponse(resp *http.Response) *llm.APIError {
 		apiErr.Message = strings.TrimSpace(string(body))
 	}
 	return apiErr
+}
+
+// retryableErrorType classifies mid-stream error-frame types: transient server
+// conditions are retryable by re-requesting the step; everything else
+// (invalid_request_error, authentication_error, ...) is terminal.
+func retryableErrorType(t string) bool {
+	switch t {
+	case "overloaded_error", "api_error", "rate_limit_error":
+		return true
+	}
+	return false
 }
 
 // normalizeStopReason maps Anthropic stop reasons onto the four normalized
