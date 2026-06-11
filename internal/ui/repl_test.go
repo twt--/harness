@@ -163,6 +163,50 @@ func TestREPLLiteralSlashEscape(t *testing.T) {
 	}
 }
 
+func TestREPLBracketedPasteSubmittedAsSingleLiteralPrompt(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("ok")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+
+	pasted := "/exit is pasted text\nsecond line\nthird line"
+	in := strings.NewReader(bracketedPasteStart + pasted + bracketedPasteEnd + "\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("bracketed paste should send one prompt, got %d requests", len(fp.Requests))
+	}
+	sent := app.Agent.Transcript()[0].Content[0].Text
+	if sent != pasted {
+		t.Errorf("pasted prompt = %q, want %q", sent, pasted)
+	}
+}
+
+func TestREPLAcceptsPromptLongerThanScannerLimit(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("ok")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+
+	prompt := strings.Repeat("x", 4*1024*1024+1)
+	in := strings.NewReader(prompt + "\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("long prompt should send one request, got %d", len(fp.Requests))
+	}
+	sent := app.Agent.Transcript()[0].Content[0].Text
+	if sent != prompt {
+		t.Fatalf("long prompt length = %d, want %d", len(sent), len(prompt))
+	}
+}
+
 func TestREPLUsageCumulative(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake",

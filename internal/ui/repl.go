@@ -18,6 +18,11 @@ import (
 	"harness/internal/tools"
 )
 
+const (
+	bracketedPasteStart = "\x1b[200~"
+	bracketedPasteEnd   = "\x1b[201~"
+)
+
 // ModelSelection is the runtime model/provider bundle returned by App.SwitchModel.
 type ModelSelection struct {
 	Provider      string
@@ -123,26 +128,17 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		app.Created = app.clock()()
 	}
 
-	lines := make(chan string)
+	inputs := make(chan replInput)
 	scanDone := make(chan struct{})
-	// scanErr holds a non-EOF read error from the input scanner. It is written
-	// before lines is closed, so Run reads it only after observing the close
+	// scanErr holds a non-EOF read error from the input reader. It is written
+	// before inputs is closed, so Run reads it only after observing the close
 	// (the channel close establishes the happens-before, no race).
 	var scanErr error
 	go func() {
-		defer close(lines)
-		sc := bufio.NewScanner(in)
-		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-		for sc.Scan() {
-			select {
-			case lines <- sc.Text():
-			case <-scanDone:
-				return
-			}
-		}
-		scanErr = sc.Err() // nil on clean EOF; a real error otherwise
+		defer close(inputs)
+		scanErr = readREPLInputs(in, inputs, scanDone)
 	}()
-	// Unblock the scanner goroutine's pending send on every return path.
+	// Unblock the reader goroutine's pending send on every return path.
 	defer close(scanDone)
 
 	prompt := app.Prompt
@@ -154,6 +150,8 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	// emulator soft reset), in case a prior process left it in raw, no-echo,
 	// or mouse-reporting state. Targets /dev/tty directly; no-op without one.
 	_ = term.Reset()
+	_ = term.SetBracketedPaste(true)
+	defer term.SetBracketedPaste(false)
 	fmt.Fprint(app.Errw, prompt)
 	for {
 		select {
@@ -163,7 +161,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			// no concurrent writer.
 			app.saveOrWarn(app.SessionPath)
 			return ExitInterrupt
-		case line, ok := <-lines:
+		case input, ok := <-inputs:
 			if !ok {
 				// Input ended: clean EOF (^D) or a read error. Surface a read
 				// error so it is not mistaken for a deliberate ^D, then save and
@@ -174,7 +172,13 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				app.saveOrWarn(app.SessionPath)
 				return ExitOK
 			}
+			line := input.text
 			if line == "" {
+				fmt.Fprint(app.Errw, prompt)
+				continue
+			}
+			if input.pasted {
+				app.runTurn(line)
 				fmt.Fprint(app.Errw, prompt)
 				continue
 			}
@@ -204,6 +208,80 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			app.runTurn(line)
 			fmt.Fprint(app.Errw, prompt)
 		}
+	}
+}
+
+type replInput struct {
+	text   string
+	pasted bool
+}
+
+func readREPLInputs(in io.Reader, out chan<- replInput, done <-chan struct{}) error {
+	r := bufio.NewReader(in)
+	var paste strings.Builder
+	inPaste := false
+	for {
+		line, endedByNewline, err := readTerminalLine(r)
+		if line != "" || endedByNewline {
+			if ok := handleREPLLine(line, endedByNewline, &inPaste, &paste, out, done); !ok {
+				return nil
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if inPaste && paste.Len() > 0 {
+					sendREPLInput(out, done, replInput{text: paste.String(), pasted: true})
+				}
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func readTerminalLine(r *bufio.Reader) (line string, endedByNewline bool, err error) {
+	line, err = r.ReadString('\n')
+	if strings.HasSuffix(line, "\n") {
+		endedByNewline = true
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+	}
+	return line, endedByNewline, err
+}
+
+func handleREPLLine(line string, endedByNewline bool, inPaste *bool, paste *strings.Builder, out chan<- replInput, done <-chan struct{}) bool {
+	if !*inPaste {
+		start := strings.Index(line, bracketedPasteStart)
+		if start < 0 {
+			return sendREPLInput(out, done, replInput{text: line})
+		}
+		*inPaste = true
+		paste.WriteString(line[:start])
+		line = line[start+len(bracketedPasteStart):]
+	}
+
+	end := strings.Index(line, bracketedPasteEnd)
+	if end >= 0 {
+		paste.WriteString(line[:end])
+		text := paste.String() + line[end+len(bracketedPasteEnd):]
+		paste.Reset()
+		*inPaste = false
+		return sendREPLInput(out, done, replInput{text: text, pasted: true})
+	}
+
+	paste.WriteString(line)
+	if endedByNewline {
+		paste.WriteByte('\n')
+	}
+	return true
+}
+
+func sendREPLInput(out chan<- replInput, done <-chan struct{}, input replInput) bool {
+	select {
+	case out <- input:
+		return true
+	case <-done:
+		return false
 	}
 }
 

@@ -853,6 +853,12 @@ repairs a terminal left in raw/no-echo/mouse-reporting state by a crashed progra
 targets `/dev/tty` directly, is a silent no-op without a controlling terminal, and —
 unlike the RIS (`\033c`) it replaced — never clears the screen or scrollback.
 
+After reset, the REPL enables bracketed-paste reporting for the session and disables it
+on exit. Bracketed paste markers are parsed by the input reader so a multi-line paste is
+submitted as one literal user prompt, preserving embedded newlines and preventing pasted
+`/commands` from dispatching as meta-commands. The reader uses `bufio.Reader` rather
+than `bufio.Scanner` so long prompt lines are not capped by Scanner's token limit.
+
 ### Meta-commands
 
 Lines starting with `/` are commands; `//` escapes a literal slash.

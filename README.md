@@ -177,6 +177,10 @@ Precedence is **flags > environment > config file > built-in defaults**.
 ## Meta-commands (REPL)
 
 Lines starting with `/` are commands; `//` sends a literal leading slash.
+In terminals that support bracketed paste, pasted text is submitted as one
+literal prompt, preserving embedded newlines; pasted `/commands` are not
+executed as meta-commands. For non-interactive large input, prefer `-p -` or
+piped stdin.
 
 | command | effect |
 |---|---|

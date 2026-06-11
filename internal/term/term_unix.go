@@ -32,6 +32,11 @@ const softReset = "\x1b7\x1b[?1049l" + // leave alternate screen (DECSC-guarded,
 	"\x1b(B\x0f" + // G0 = ASCII, shift in (undo line-drawing charset)
 	"\x1b[0m" // SGR reset (also in DECSTR; explicit for partial emulators)
 
+const (
+	bracketedPasteEnable  = "\x1b[?2004h"
+	bracketedPasteDisable = "\x1b[?2004l"
+)
+
 // Reset restores the controlling terminal to a usable state: kernel termios
 // to the platform's `stty sane` equivalent (echo, canonical mode, default
 // control characters), then the emulator soft reset above. It targets
@@ -57,6 +62,26 @@ func Reset() error {
 	}
 	if _, err := f.WriteString(softReset); err != nil {
 		return fmt.Errorf("term: write soft reset: %w", err)
+	}
+	return nil
+}
+
+// SetBracketedPaste enables or disables terminal bracketed-paste reporting.
+// Like Reset, it targets /dev/tty and is a silent no-op without a controlling
+// terminal so tests and redirected runs do not receive escape sequences.
+func SetBracketedPaste(enabled bool) error {
+	f, err := os.OpenFile("/dev/tty", os.O_WRONLY|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	seq := bracketedPasteDisable
+	if enabled {
+		seq = bracketedPasteEnable
+	}
+	if _, err := f.WriteString(seq); err != nil {
+		return fmt.Errorf("term: set bracketed paste: %w", err)
 	}
 	return nil
 }
