@@ -22,6 +22,10 @@ const defaultMaxSteps = 50
 // Retries do not consume the maxSteps budget.
 const streamRetries = 2
 
+// maxAutoContinues bounds AutoContinue budgets per turn so a pathological
+// loop still terminates (spec §5).
+const maxAutoContinues = 3
+
 // EventSink receives the turn's observable events for rendering. The agent loop
 // owns the transcript and the control flow; the sink only reports. Phase 10's
 // renderer implements it (design §8.1, §10).
@@ -60,6 +64,9 @@ type Options struct {
 	// Reasoning is forwarded to every model request. Empty means provider
 	// default.
 	Reasoning llm.ReasoningConfig
+	// AutoContinue grants up to maxAutoContinues fresh step budgets when the
+	// model still wants tools at the cap, instead of stopping (spec §5).
+	AutoContinue bool
 }
 
 // Agent drives the turn loop against one provider and tool registry, owning the
@@ -74,6 +81,7 @@ type Agent struct {
 	maxSteps      int
 	contextWindow int // -context-window override; 0 = use the registry default
 	reasoning     llm.ReasoningConfig
+	autoContinue  bool                // grant fresh step budgets at the cap (spec §5)
 	sleep         func(time.Duration) // mid-stream retry backoff; nil-free, set in New
 }
 
@@ -95,6 +103,7 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		maxSteps:      maxSteps,
 		contextWindow: opts.ContextWindow,
 		reasoning:     opts.Reasoning,
+		autoContinue:  opts.AutoContinue,
 		sleep:         time.Sleep,
 	}
 }
@@ -173,8 +182,22 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 	var total llm.Usage
 	var lastInput int // input tokens the final step reported (drives the trigger)
 	steps := 0
+	budget := a.maxSteps
+	continues := 0
 
-	for steps < a.maxSteps {
+	for steps < budget {
+		// Proactive trigger (spec §4): a turn whose tool results balloon the
+		// context compacts before the next request, not after the turn. The
+		// estimate catches growth the last reported count knows nothing about.
+		if trigger := max(lastInput, estimateTokens(a.transcript)); trigger*100 >= a.window()*compactThresholdPct {
+			if compUsage, err := a.Compact(ctx, sink); err == nil {
+				total = add(total, compUsage)
+				// The old reported count no longer describes the compacted
+				// transcript and would re-trigger every step.
+				lastInput = 0
+			}
+		}
+
 		req := llm.Request{
 			Model:     a.model,
 			System:    a.system,
@@ -186,7 +209,8 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		res, wasted, err := a.streamWithRetry(ctx, req, sink)
 		steps++
 		total = add(total, add(res.usage, wasted))
-		lastInput = res.usage.InputTokens
+		// Context-size signal, not billing: cached tokens occupy the window too.
+		lastInput = res.usage.InputTokens + res.usage.CacheReadTokens + res.usage.CacheWriteTokens
 
 		if err != nil {
 			// Cancellation repair: keep streamed partial text as a text-only
@@ -228,9 +252,15 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Content: results,
 		})
 
-		if steps >= a.maxSteps {
-			sink.Notice(maxStepsNotice(a.maxSteps))
-			break
+		if steps >= budget {
+			if a.autoContinue && continues < maxAutoContinues {
+				continues++
+				budget += a.maxSteps
+				sink.Notice(fmt.Sprintf("[max steps reached; auto-continuing (%d/%d)]", continues, maxAutoContinues))
+			} else {
+				sink.Notice(maxStepsNotice(a.maxSteps))
+				break
+			}
 		}
 	}
 

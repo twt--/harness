@@ -286,6 +286,55 @@ func TestMaxStepsStop(t *testing.T) {
 	}
 }
 
+func TestAutoContinuePastMaxSteps(t *testing.T) {
+	tool := &recordTool{name: "loop", run: func(_ context.Context, _ json.RawMessage) (string, error) {
+		return "again", nil
+	}}
+	reg := &tools.Registry{}
+	reg.Register(tool)
+
+	// Every step asks for a tool; with MaxSteps 2 and 3 auto-continues the
+	// loop runs 2*(1+3)=8 steps, then stops with the final notice.
+	always := llmtest.Step{
+		Events: []llm.StreamEvent{toolDone(0, "id", "loop", `{}`)},
+		Stop:   llm.StopToolUse,
+	}
+	steps := make([]llmtest.Step, 10)
+	for i := range steps {
+		steps[i] = always
+	}
+	fp := llmtest.New("fake", steps...)
+	a := newAgent(fp, reg, Options{MaxSteps: 2, AutoContinue: true})
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	mustValid(t, a.Transcript())
+
+	if len(fp.Requests) != 8 {
+		t.Errorf("provider called %d times, want 8 (4 budgets of 2)", len(fp.Requests))
+	}
+	if sink.turnUsage[0].Steps != 8 {
+		t.Errorf("TurnComplete steps = %d, want 8", sink.turnUsage[0].Steps)
+	}
+	var continues, stops int
+	for _, n := range sink.notices {
+		if strings.Contains(n, "auto-continuing") {
+			continues++
+		}
+		if strings.Contains(n, "say \"continue\"") {
+			stops++
+		}
+	}
+	if continues != 3 {
+		t.Errorf("want 3 auto-continue notices, got %d (%v)", continues, sink.notices)
+	}
+	if stops != 1 {
+		t.Errorf("want the final stop notice once, got %d (%v)", stops, sink.notices)
+	}
+}
+
 func TestCancellationMidStreamKeepsPartialText(t *testing.T) {
 	tool := &recordTool{name: "noop", run: func(_ context.Context, _ json.RawMessage) (string, error) {
 		return "", nil

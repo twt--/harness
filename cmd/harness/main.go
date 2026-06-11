@@ -345,6 +345,7 @@ func run(env environment) int {
 		ContextWindow: cfg.ContextWindow,
 		Registry:      modelRegistry,
 		Reasoning:     reasoning,
+		AutoContinue:  cfg.OnMaxSteps == "continue",
 	})
 
 	created := now()

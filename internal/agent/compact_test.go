@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -483,4 +484,107 @@ func dumpShort(msgs []llm.Message) string {
 		b.WriteString(string(rune('0'+i%10)) + ":" + string(m.Role) + " ")
 	}
 	return b.String()
+}
+
+// seedTurns returns n complete small turns so compaction has history to fold.
+func seedTurns(n int) []llm.Message {
+	var msgs []llm.Message
+	for i := 0; i < n; i++ {
+		msgs = append(msgs,
+			llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "q"}}},
+			llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "a"}}},
+		)
+	}
+	return msgs
+}
+
+func TestProactiveCompactionMidTurn(t *testing.T) {
+	// Window 1000 tokens -> trigger at 780 tokens (3120 bytes estimated).
+	// The tool result is 8000 bytes, so the estimate crosses the threshold
+	// before step 2's request is built.
+	big := strings.Repeat("x", 8000)
+	tool := &recordTool{name: "blob", run: func(_ context.Context, _ json.RawMessage) (string, error) {
+		return big, nil
+	}}
+	reg := &tools.Registry{}
+	reg.Register(tool)
+
+	fp := llmtest.New("fake",
+		llmtest.Step{ // step 1: ask for the ballooning tool
+			Events: []llm.StreamEvent{toolDone(0, "c1", "blob", `{}`)},
+			Stop:   llm.StopToolUse,
+			Usage:  llm.Usage{InputTokens: 10, OutputTokens: 2},
+		},
+		llmtest.Step{ // the mid-turn summary call
+			Events: []llm.StreamEvent{textDelta("the summary")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 50, OutputTokens: 5},
+		},
+		llmtest.Step{ // step 2 proper, against the compacted transcript
+			Events: []llm.StreamEvent{textDelta("done")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 20, OutputTokens: 3},
+		},
+	)
+	a := newAgent(fp, reg, Options{ContextWindow: 1000})
+	a.SetTranscript(seedTurns(5))
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	mustValid(t, a.Transcript())
+
+	if len(fp.Requests) != 3 {
+		t.Fatalf("provider called %d times, want 3 (step, summary, step)", len(fp.Requests))
+	}
+	// The post-compaction request starts with the summary message.
+	first := fp.Requests[2].Messages[0]
+	if !strings.HasPrefix(first.Content[0].Text, summaryHeader) {
+		t.Errorf("post-compaction request should start with the summary, got %q", first.Content[0].Text)
+	}
+	var compacted bool
+	for _, n := range sink.notices {
+		if strings.Contains(n, "compacted:") {
+			compacted = true
+		}
+	}
+	if !compacted {
+		t.Errorf("no compaction notice, notices=%v", sink.notices)
+	}
+	// Summary-call usage folds into the turn total (10+50+20 inputs).
+	if got := sink.turnUsage[0].Usage.InputTokens; got != 80 {
+		t.Errorf("turn input tokens = %d, want 80", got)
+	}
+}
+
+func TestNoMidTurnCompactionUnderThreshold(t *testing.T) {
+	tool := &recordTool{name: "small", run: func(_ context.Context, _ json.RawMessage) (string, error) {
+		return "tiny", nil
+	}}
+	reg := &tools.Registry{}
+	reg.Register(tool)
+
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{toolDone(0, "c1", "small", `{}`)},
+			Stop:   llm.StopToolUse,
+		},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("done")}, Stop: llm.StopEndTurn},
+	)
+	a := newAgent(fp, reg, Options{ContextWindow: 1_000_000})
+	a.SetTranscript(seedTurns(5))
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(fp.Requests) != 2 {
+		t.Errorf("provider called %d times, want 2 (no summary call)", len(fp.Requests))
+	}
+	for _, n := range sink.notices {
+		if strings.Contains(n, "compacted:") {
+			t.Errorf("unexpected compaction: %v", sink.notices)
+		}
+	}
 }
