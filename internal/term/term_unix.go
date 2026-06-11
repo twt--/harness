@@ -205,3 +205,20 @@ type windowSize struct {
 	X    uint16
 	Y    uint16
 }
+
+func getTermios(fd uintptr) (syscall.Termios, error) {
+	var t syscall.Termios
+	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, reqGet,
+		uintptr(unsafe.Pointer(&t)), 0, 0, 0); errno != 0 {
+		return t, errno
+	}
+	return t, nil
+}
+
+func setTermios(fd uintptr, t *syscall.Termios) error {
+	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, reqSet,
+		uintptr(unsafe.Pointer(t)), 0, 0, 0); errno != 0 {
+		return errno
+	}
+	return nil
+}

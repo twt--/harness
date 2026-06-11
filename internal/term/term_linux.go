@@ -2,10 +2,7 @@
 
 package term
 
-import (
-	"syscall"
-	"unsafe"
-)
+import "syscall"
 
 const (
 	reqGet = syscall.TCGETS
@@ -59,21 +56,4 @@ func sane(t *syscall.Termios) {
 	t.Cc[syscall.VLNEXT] = 0x16   // ^V
 	t.Cc[syscall.VDISCARD] = 0x0F // ^O
 	// VMIN and VTIME are left untouched (GNU sane_mode breaks before them).
-}
-
-func getTermios(fd uintptr) (syscall.Termios, error) {
-	var t syscall.Termios
-	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, reqGet,
-		uintptr(unsafe.Pointer(&t)), 0, 0, 0); errno != 0 {
-		return t, errno
-	}
-	return t, nil
-}
-
-func setTermios(fd uintptr, t *syscall.Termios) error {
-	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, reqSet,
-		uintptr(unsafe.Pointer(t)), 0, 0, 0); errno != 0 {
-		return errno
-	}
-	return nil
 }

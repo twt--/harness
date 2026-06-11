@@ -2,10 +2,7 @@
 
 package term
 
-import (
-	"syscall"
-	"unsafe"
-)
+import "syscall"
 
 const (
 	reqGet = syscall.TIOCGETA
@@ -65,21 +62,4 @@ func sane(t *syscall.Termios) {
 	t.Cc[syscall.VTIME] = 0
 	t.Cc[syscall.VSTATUS] = 0x14 // ^T
 	// VEOL and VEOL2 stay disabled (vDisable), matching ttydefchars.
-}
-
-func getTermios(fd uintptr) (syscall.Termios, error) {
-	var t syscall.Termios
-	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, reqGet,
-		uintptr(unsafe.Pointer(&t)), 0, 0, 0); errno != 0 {
-		return t, errno
-	}
-	return t, nil
-}
-
-func setTermios(fd uintptr, t *syscall.Termios) error {
-	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, fd, reqSet,
-		uintptr(unsafe.Pointer(t)), 0, 0, 0); errno != 0 {
-		return errno
-	}
-	return nil
 }
