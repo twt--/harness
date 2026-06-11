@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -229,5 +230,178 @@ func TestGrepLongSingleLineNotDropped(t *testing.T) {
 	}
 	if !strings.Contains(out, "big.txt:1:") {
 		t.Errorf("expected match on big.txt line 1: %q", out)
+	}
+}
+
+// initGitRepo turns dir into a git repo; skips the test when git is missing.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// mkWrite writes content to path, creating parent directories first. It wraps
+// mustWrite (which does not mkdir) so the git tests can populate subdirs.
+func mkWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, path, content)
+}
+
+func TestGrepRespectsGitignore(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "secret.txt\nbuildout/\n")
+	mkWrite(t, filepath.Join(dir, "kept.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "secret.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "buildout", "gen.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "sub", ".gitignore"), "local.txt\n")
+	mkWrite(t, filepath.Join(dir, "sub", "local.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "sub", "kept.txt"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+dir+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	for _, want := range []string{"kept.txt:1:needle here", "sub/kept.txt:1:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	for _, banned := range []string{"secret.txt", "buildout", "local.txt"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("ignored file %q leaked into output:\n%s", banned, out)
+		}
+	}
+}
+
+func TestGrepNoIgnoreSearchesEverything(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "secret.txt\n")
+	mkWrite(t, filepath.Join(dir, "secret.txt"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+dir+`","no_ignore":true}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if !strings.Contains(out, "secret.txt:1:needle here") {
+		t.Errorf("no_ignore should search ignored files:\n%s", out)
+	}
+}
+
+func TestGrepNonRepoFallsBackToDenylist(t *testing.T) {
+	dir := t.TempDir() // no git repo here
+	mkWrite(t, filepath.Join(dir, "a.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "node_modules", "dep.js"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+dir+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if !strings.Contains(out, "a.txt:1:needle here") {
+		t.Errorf("missing a.txt match:\n%s", out)
+	}
+	if strings.Contains(out, "node_modules") {
+		t.Errorf("denylist not applied in fallback:\n%s", out)
+	}
+}
+
+func TestGrepGitListingHonorsGlob(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, "a.go"), "needle\n")
+	mkWrite(t, filepath.Join(dir, "a.txt"), "needle\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+dir+`","glob":"*.go"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if !strings.Contains(out, "a.go:1:needle") || strings.Contains(out, "a.txt") {
+		t.Errorf("glob filter wrong:\n%s", out)
+	}
+}
+
+// Grepping AT an ignored directory expresses intent to search it: an empty git
+// listing for an ignored root must fall back to the walker, not silently hide
+// the real files inside.
+func TestGrepIgnoredRootFallsBackToWalker(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "secretdir/\n")
+	mkWrite(t, filepath.Join(dir, "secretdir", "a.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "secretdir", "b.txt"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+filepath.Join(dir, "secretdir")+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	for _, want := range []string{"secretdir/a.txt:1:needle here", "secretdir/b.txt:1:needle here"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A non-ignored root whose listing is empty only because every file is
+// individually ignored must trust the empty result — gitignore working as
+// intended, not a hidden-root false positive.
+func TestGrepNonIgnoredRootTrustsEmptyListing(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "*.log\n")
+	mkWrite(t, filepath.Join(dir, "only.log"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+dir+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if strings.Contains(out, "only.log") {
+		t.Errorf("individually-ignored file leaked via walker fallback:\n%s", out)
+	}
+	if out != "(no matches)" {
+		t.Errorf("want (no matches) for fully-filtered non-ignored root, got:\n%s", out)
+	}
+}
+
+// Grepping a path INSIDE a repo: display paths compose from the subdir root,
+// and gitignore rules declared at the repo root still apply to the subdir
+// listing. This pins the fragile filepath.Base(root)+git-relative composition.
+func TestGrepSubdirRootHonorsRepoIgnore(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	mkWrite(t, filepath.Join(dir, ".gitignore"), "sub/skip.txt\n")
+	mkWrite(t, filepath.Join(dir, "sub", "keep.txt"), "needle here\n")
+	mkWrite(t, filepath.Join(dir, "sub", "skip.txt"), "needle here\n")
+
+	out, err := grep{}.Run(context.Background(),
+		json.RawMessage(`{"pattern":"needle","path":"`+filepath.Join(dir, "sub")+`"}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if !strings.Contains(out, "sub/keep.txt:1:needle here") {
+		t.Errorf("display path should start with subdir root:\n%s", out)
+	}
+	if strings.Contains(out, "skip.txt") {
+		t.Errorf("repo-root gitignore should hide sub/skip.txt:\n%s", out)
 	}
 }

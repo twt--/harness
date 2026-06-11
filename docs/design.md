@@ -602,7 +602,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.3 `grep`
 
-> Search file contents with a Go (RE2) regular expression. Recurses from a path; prints path:line:text.
+> Search file contents with a Go (RE2) regular expression. Recurses from a path; respects .gitignore inside git repos; prints path:line:text.
 
 | param | type | notes |
 |---|---|---|
@@ -611,11 +611,14 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 | `glob` | string | base-name filter |
 | `ignore_case` | bool | prepends `(?i)` |
 | `max_matches` | int | default 200 |
+| `no_ignore` | bool | search ignored files too (default off) |
 
-- Walks with `filepath.WalkDir`, skipping a **fixed denylist**: `.git`, `node_modules`,
-  `vendor`, `dist`, `build`, `target`, `.venv`, `__pycache__`, `.svn`, `.hg`. No
-  `.gitignore` parser — a correct one (nesting, negation, precedence) is a real
-  subsystem; the denylist is predictable and stdlib-trivial. Documented behavior.
+- Inside a git work tree the candidate set is `git ls-files --cached --others
+  --exclude-standard` (tracked + untracked-but-not-ignored), delegating all ignore
+  semantics — nesting, negation, global excludes — to git. The **fixed denylist** walk
+  (`filepath.WalkDir` skipping `.git`, `node_modules`, `vendor`, `dist`, `build`,
+  `target`, `.venv`, `__pycache__`, `.svn`, `.hg`) remains the fallback outside repos, on
+  git failure, when the search root itself is ignored, or with `no_ignore: true`.
 - Skips binary files (NUL sniff) and files >5 MB.
 - Output `relpath:lineno:text`, line text capped at 300 chars; `[truncated at N
   matches]` when capped; `(no matches)` on zero.
