@@ -628,6 +628,11 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 - `rg` is registered immediately after `grep` only when `exec.LookPath("rg")` succeeds
   at registry construction time. If `rg` is not installed, the model never sees that
   tool name.
+- Missing optional CLI-backed tools are reported once at startup through the plaintext
+  slog handler, e.g.
+  `[warn] [cli_tools] Tool "rg" is disabled. Reason: "rg" binary not found.`
+  `-q`/`--quiet` suppresses these diagnostics, and `--log-level`/`LOG_LEVEL` filters
+  them by level.
 - Both tools use `exec.Command(program, args...)`: no shell, glob expansion, pipes,
   redirection, `$VAR`, or `~` expansion. Each argument arrives byte-for-byte.
 - Search semantics are the host tool's semantics. Regex syntax, recursion,
@@ -750,8 +755,10 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 |---|---|---|
 | `args` | array of strings, required | argv after `git` |
 
-- `exec.CommandContext(ctx, "git", append([]string{"--no-pager"}, args...)...)` — no
-  shell, so no quoting ambiguity. `GIT_TERMINAL_PROMPT=0` prevents auth hangs.
+- `git` is registered only when `exec.LookPath("git")` succeeds at registry
+  construction time. If git is not installed, the model never sees the `git` tool name.
+- `exec.CommandContext(ctx, <resolved-git-path>, append([]string{"--no-pager"}, args...)...)`
+  — no shell, so no quoting ambiguity. `GIT_TERMINAL_PROMPT=0` prevents auth hangs.
 - **One argv tool, not narrow per-subcommand tools:** a single stable schema covers the
   entire git surface (status, diff, log, blame, stash, rebase, commit) that the model
   already knows from training; enumerating subcommands multiplies schemas and still
@@ -784,8 +791,9 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 |---|---|---|
 | `args` | array of strings, required | argv after `git`, starting with the subcommand |
 
-- A read-only sibling of `git` (§9.9) used by restricted run modes (§14). It reuses
-  the same `--no-pager` / `GIT_TERMINAL_PROMPT=0` plumbing.
+- A read-only sibling of `git` (§9.9) used by restricted run modes (§14). It is
+  registered only when git is installed and reuses the same `--no-pager` /
+  `GIT_TERMINAL_PROMPT=0` plumbing.
 - **Allowlist by bare subcommand:** `args[0]` must be one of `status`, `log`, `diff`,
   `show`, `grep`, `blame`, `bisect` and must not start with `-`. Because global git
   options (`-c`, `-C`, `--git-dir`, `--exec-path`, `--paginate`) precede the
@@ -824,6 +832,10 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
   (cost omitted for unknown models).
 - Dim color only when stdout is a TTY (`os.Stdout.Stat()` mode check); `NO_COLOR` env or
   `-no-color` disables. Everything is legible without color.
+- Startup diagnostics use `log/slog` with a plaintext handler: `[level] [category]
+  message`. Default level is `info`; `--log-level` or `LOG_LEVEL` accepts `debug`,
+  `info`, `warn`, or `error`; `-q`/`--quiet` suppresses non-error slog-backed
+  diagnostics.
 
 ### Terminal reset on REPL start
 
@@ -869,6 +881,8 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 -context-window <n>
 -reasoning-effort <level>
 -v                show tool result snippets
+-q, --quiet       suppress informational diagnostics
+--log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color
 -config <file>    alternate config path
 --setup           create or update config in ~/.config/harness
@@ -963,9 +977,10 @@ worker, or the wide-open default without separate binaries.
   > `mode` in the config file > the built-in default `auto`. An empty value means
   "unspecified", so a resumed session's saved mode (§11) can supply it before the
   `auto` fallback. `/mode <name>` switches at runtime; `/mode` lists.
-- **Built-ins:** `auto` (all tools, no extra prompt — current behavior), `plan`
-  (read-only tools including optional `rg` when installed, plus `git_readonly` and
-  `write_tmp_file`, a planning prompt), and `independent` (all tools, a
+- **Built-ins:** `auto` (all available tools, no extra prompt — current behavior),
+  `plan` (read-only tools including optional `rg` when installed, plus optional
+  `git_readonly` when git is installed and `write_tmp_file`, a planning prompt), and
+  `independent` (all available tools, a
   complete-without-asking prompt).
 - **Config `modes`** entries **field-level merge** onto a built-in of the same name:
   a non-empty `allowed_tools` or `prompt` replaces, an omitted field inherits. A new

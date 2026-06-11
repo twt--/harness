@@ -288,7 +288,7 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	flags := []string{
 		"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 		"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-		"-reasoning-effort", "-v", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
+		"-reasoning-effort", "-v", "-q", "-quiet", "-log-level", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
 	}
 	for _, arg := range []string{"-h", "--help"} {
 		fp := llmtest.New("fake")
@@ -1428,6 +1428,69 @@ func TestRunDefaultModeUnchanged(t *testing.T) {
 	}
 }
 
+func TestRunLogsUnavailableToolsAtLaunch(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	got := errw.String()
+	for _, want := range []string{
+		`[warn] [cli_tools] Tool "rg" is disabled. Reason: "rg" binary not found.`,
+		`[warn] [cli_tools] Tool "git" is disabled. Reason: "git" binary not found.`,
+		`[warn] [cli_tools] Tool "git_readonly" is disabled. Reason: "git" binary not found.`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, got)
+		}
+	}
+	for _, name := range []string{"rg", "git", "git_readonly"} {
+		if slices.Contains(toolNames(fp.Requests[0]), name) {
+			t.Fatalf("request advertised unavailable tool %q: %v", name, toolNames(fp.Requests[0]))
+		}
+	}
+}
+
+func TestRunQuietSuppressesUnavailableToolWarnings(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "--quiet", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if strings.Contains(errw.String(), "[cli_tools]") {
+		t.Fatalf("quiet should suppress disabled-tool warnings, stderr=%q", errw.String())
+	}
+}
+
+func TestRunLogLevelSuppressesUnavailableToolWarnings(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
+	})
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "--log-level", "error", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if strings.Contains(errw.String(), "[cli_tools]") {
+		t.Fatalf("log-level error should suppress warn diagnostics, stderr=%q", errw.String())
+	}
+}
+
 // Plan mode advertises only its read-only tool set and includes its prompt.
 func TestRunPlanModeRestrictsToolsAndAddsPrompt(t *testing.T) {
 	fp := llmtest.New("fake", llmtest.Step{
@@ -1560,5 +1623,9 @@ func expectedPlanToolNames() []string {
 	if tools.RipgrepAvailable() {
 		names = append(names, "rg")
 	}
-	return append(names, "web_fetch", "git_readonly", "write_tmp_file")
+	names = append(names, "web_fetch")
+	if tools.GitAvailable() {
+		names = append(names, "git_readonly")
+	}
+	return append(names, "write_tmp_file")
 }

@@ -272,6 +272,7 @@ func TestHarnessEnvMapping(t *testing.T) {
 		"HARNESS_NO_COLOR":               "true",
 		"HARNESS_VERBOSE":                "true",
 		"HARNESS_PROMPT":                 "env> ",
+		"LOG_LEVEL":                      "WARN",
 	})
 	c, err := Load(nil, env, "")
 	if err != nil {
@@ -303,6 +304,9 @@ func TestHarnessEnvMapping(t *testing.T) {
 	}
 	if !c.Verbose {
 		t.Fatalf("verbose false, want true")
+	}
+	if c.LogLevel != "warn" {
+		t.Fatalf("log level %q, want warn", c.LogLevel)
 	}
 	if c.ReplPrompt != "env> " {
 		t.Fatalf("repl prompt %q, want env> ", c.ReplPrompt)
@@ -459,12 +463,57 @@ func TestMaxStepsFlagBeatsFile(t *testing.T) {
 }
 
 func TestBoolFlagsParsed(t *testing.T) {
-	c, err := Load([]string{"-model", "gpt-5.5", "-no-env", "-no-color", "-v"}, noEnv, "")
+	c, err := Load([]string{"-model", "gpt-5.5", "-no-env", "-no-color", "-v", "-q"}, noEnv, "")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !c.NoEnv || !c.NoColor || !c.Verbose {
+	if !c.NoEnv || !c.NoColor || !c.Verbose || !c.Quiet {
 		t.Fatalf("bool flags not all set: %+v", c)
+	}
+}
+
+func TestQuietLongFlagParsed(t *testing.T) {
+	c, err := Load([]string{"--quiet"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.Quiet {
+		t.Fatalf("Quiet = false, want true")
+	}
+}
+
+func TestLogLevelPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"log_level":"debug"}`)
+	env := envFrom(map[string]string{"LOG_LEVEL": "error"})
+
+	c, err := Load([]string{"--log-level", "warn"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.LogLevel != "warn" {
+		t.Fatalf("flag precedence: log level %q, want warn", c.LogLevel)
+	}
+
+	c, err = Load(nil, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.LogLevel != "error" {
+		t.Fatalf("env precedence: log level %q, want error", c.LogLevel)
+	}
+
+	c, err = Load(nil, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.LogLevel != "debug" {
+		t.Fatalf("file precedence: log level %q, want debug", c.LogLevel)
+	}
+}
+
+func TestInvalidLogLevelIsUsageError(t *testing.T) {
+	if _, err := Load([]string{"--log-level", "verbose"}, noEnv, ""); err == nil {
+		t.Fatal("expected invalid log level to fail")
 	}
 }
 
@@ -512,7 +561,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-	"-reasoning-effort", "-v", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
+	"-reasoning-effort", "-v", "-q", "-quiet", "-log-level", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the

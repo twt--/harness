@@ -113,6 +113,8 @@ interrupted.
 -reasoning-effort <level>   reasoning/thinking effort when supported
 -mode <name>      run mode: auto (default), plan, independent, or a config-defined mode
 -v                show tool result snippets (first ~5 lines, dimmed)
+-q, --quiet       suppress informational diagnostics
+--log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
 -config <file>    alternate config path
 --setup           create or update config in ~/.config/harness
@@ -191,9 +193,9 @@ Three modes are built in:
 
 | mode | tools | behavior |
 |---|---|---|
-| `auto` | all tools | the default — the model decides what to do (unchanged behavior) |
-| `plan` | read-only (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, `git_readonly`, `write_tmp_file`) | collaborate on a plan without modifying the project |
-| `independent` | all tools | complete the task end-to-end without pausing for input; stop only on a hard blocker or the step limit |
+| `auto` | all available tools | the default — the model decides what to do (unchanged behavior) |
+| `plan` | read-only (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, optional `git_readonly`, `write_tmp_file`) | collaborate on a plan without modifying the project |
+| `independent` | all available tools | complete the task end-to-end without pausing for input; stop only on a hard blocker or the step limit |
 
 Define new modes or override built-ins in the config file under `modes`. Entries
 **field-level merge** onto a built-in of the same name — an omitted field keeps
@@ -261,10 +263,14 @@ so a visible context-length error is preferred over silent data loss.
 ## Tools
 
 `read_file`, `list_dir`, `grep`, optional `rg` when ripgrep is installed,
-`edit`, `write_file`, `apply_patch`, `run_command`, `exec`, `git`,
-`web_fetch`, plus two used by restricted modes: `git_readonly` (read-only git
+`edit`, `write_file`, `apply_patch`, `run_command`, `exec`, optional `git`
+when git is installed, `web_fetch`, plus two used by restricted modes: optional
+`git_readonly` (read-only git
 subcommands — `status`, `log`, `diff`, `show`, `grep`, `blame`, `bisect`) and
 `write_tmp_file` (write scratch files under a private per-run temp directory).
-`grep` and `rg` are thin argv wrappers around the host CLIs. See
+Missing optional CLI-backed tools are reported on stderr at startup, e.g.
+`[warn] [cli_tools] Tool "rg" is disabled. Reason: "rg" binary not found.`
+unless `-q`/`--quiet` or `--log-level error` suppresses the warning. `grep`,
+`rg`, and `git` are thin argv wrappers around the host CLIs. See
 [`docs/design.md`](docs/design.md) §9 for each tool's schema and exact
 behavior.

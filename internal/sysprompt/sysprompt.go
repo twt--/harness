@@ -20,7 +20,7 @@ Work directly with the tools rather than guessing at file contents or command ou
 - Read a file with read_file before editing it; never assume what it contains.
 - Prefer edit with enough surrounding context to make old_string unique; use write_file only to create new files or fully replace one.
 - Use rg when available, otherwise grep and list_dir, to locate code instead of speculating about paths; grep/rg take native CLI arguments as arrays.
-- Run builds, tests, and linters with run_command, and use git for version-control operations; read the actual output before deciding what to do next. Prefer exec (argv array, no shell) when command arguments contain quotes, spaces, or newlines.
+- Run builds, tests, and linters with run_command, and use git for version-control operations when available; read the actual output before deciding what to do next. Prefer exec (argv array, no shell) when command arguments contain quotes, spaces, or newlines.
 - Make the smallest change that satisfies the request, then verify it.
 
 Stop and report once the task is done. Do not keep calling tools after the work is complete.`

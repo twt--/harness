@@ -24,7 +24,17 @@ const gitReadonlySchema = `{
 // exploration, accepted by design.
 var gitReadonlySubcommands = []string{"bisect", "blame", "diff", "grep", "log", "show", "status"}
 
-type gitReadonly struct{}
+type gitReadonly struct {
+	program string
+}
+
+func newGitReadonly() (gitReadonly, bool) {
+	program, ok := gitProgram()
+	if !ok {
+		return gitReadonly{}, false
+	}
+	return gitReadonly{program: program}, true
+}
 
 func (gitReadonly) Name() string { return "git_readonly" }
 
@@ -36,7 +46,7 @@ func (gitReadonly) Schema() json.RawMessage { return json.RawMessage(gitReadonly
 
 func (gitReadonly) ReadOnly() bool { return true }
 
-func (gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, error) {
+func (g gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Args []string `json:"args"`
 	}
@@ -81,7 +91,7 @@ func (gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, erro
 			}
 		}
 	}
-	return runGitArgs(ctx, args.Args)
+	return runGitArgs(ctx, g.program, args.Args)
 }
 
 // disallowedReadonlyFlag reports whether a subcommand-local flag can write a

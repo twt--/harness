@@ -10,9 +10,17 @@ type ripgrep struct {
 	program string
 }
 
-func newRipgrep() (ripgrep, bool) {
+func ripgrepProgram() (string, bool) {
 	program, err := exec.LookPath("rg")
 	if err != nil {
+		return "", false
+	}
+	return program, true
+}
+
+func newRipgrep() (ripgrep, bool) {
+	program, ok := ripgrepProgram()
+	if !ok {
 		return ripgrep{}, false
 	}
 	return ripgrep{program: program}, true
@@ -21,7 +29,7 @@ func newRipgrep() (ripgrep, bool) {
 // RipgrepAvailable reports whether the optional rg tool can be registered from
 // the current PATH.
 func RipgrepAvailable() bool {
-	_, ok := newRipgrep()
+	_, ok := ripgrepProgram()
 	return ok
 }
 

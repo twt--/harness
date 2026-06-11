@@ -57,6 +57,15 @@ func TestResolveNilKeepsBuiltins(t *testing.T) {
 	}
 }
 
+func TestPlanModeOmitsGitReadonlyWhenGitMissing(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	plan := Builtins()["plan"]
+	if slices.Contains(plan.AllowedTools, "git_readonly") {
+		t.Fatalf("plan mode includes unavailable git_readonly: %v", plan.AllowedTools)
+	}
+}
+
 // Field-level merge: overriding only the prompt keeps the built-in tool list.
 func TestResolvePromptOnlyOverrideKeepsTools(t *testing.T) {
 	m := Resolve(map[string]FileMode{"plan": {Prompt: "custom plan prompt"}})

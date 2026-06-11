@@ -18,6 +18,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"harness/internal/logging"
 )
 
 // ErrHelp is returned by Load when -h/--help is requested. It is not a usage
@@ -64,6 +66,8 @@ type Config struct {
 
 	// UI.
 	Verbose    bool   // -v
+	Quiet      bool   // -q / --quiet: suppress slog-backed diagnostics
+	LogLevel   string // --log-level / LOG_LEVEL: debug, info, warn, error
 	NoColor    bool   // -no-color or NO_COLOR
 	ReplPrompt string // -prompt: REPL input prompt (default "> ")
 
@@ -99,6 +103,7 @@ type fileConfig struct {
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	OnMaxSteps           string   `json:"on_max_steps"`
 	Verbose              *bool    `json:"verbose"`
+	LogLevel             string   `json:"log_level"`
 	NoColor              *bool    `json:"no_color"`
 	Prompt               string   `json:"prompt"`
 	ProviderConfigs      []string `json:"provider_configs"`
@@ -201,6 +206,14 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_NO_ENV"), fc.NoEnv, false)
 	c.Verbose = resolveBool(set["v"], *fVerbose,
 		getenv("HARNESS_VERBOSE"), fc.Verbose, false)
+	c.Quiet = *f.quietShort || *f.quiet
+	logLevel := resolveString(set["log-level"], *f.logLevel,
+		getenv("LOG_LEVEL"), fc.LogLevel, logging.LevelInfo)
+	canonicalLogLevel, err := logging.CanonicalLevel(logLevel)
+	if err != nil {
+		return Config{}, err
+	}
+	c.LogLevel = canonicalLogLevel
 	c.NoColor = resolveBool(set["no-color"], *fNoColor,
 		getenv("HARNESS_NO_COLOR"), fc.NoColor, false)
 	c.ReplPrompt = resolveString(set["prompt"], *fReplPrompt,
@@ -250,7 +263,9 @@ type flags struct {
 	mode                     *string
 	prompt                   *string
 	replPrompt               *string
+	logLevel                 *string
 	verbose, noColor         *bool
+	quietShort, quiet        *bool
 	config                   *string
 	setup                    *bool
 	force                    *bool
@@ -278,6 +293,9 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.onMaxSteps = fs.String("on-max-steps", "", "when the step budget is hit: stop (default) or continue (up to 3 fresh budgets)")
 	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
+	f.quietShort = fs.Bool("q", false, "suppress informational diagnostics")
+	f.quiet = fs.Bool("quiet", false, "suppress informational diagnostics")
+	f.logLevel = fs.String("log-level", logging.LevelInfo, "diagnostic log level: debug, info, warn, error (also LOG_LEVEL)")
 	f.noColor = fs.Bool("no-color", false, "disable color output")
 	f.replPrompt = fs.String("prompt", "> ", "REPL input prompt")
 	// -config is consumed by the caller before Load (it picks the file Load

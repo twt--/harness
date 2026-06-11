@@ -44,6 +44,21 @@ type Registry struct {
 // stop tools with no self-limit from hanging the turn (spec §6).
 const defaultDispatchTimeout = 11 * time.Minute
 
+// DisabledTool describes an optional built-in tool that was not registered.
+type DisabledTool struct {
+	Name   string
+	Reason string
+}
+
+// Message renders a concise user-facing disabled-tool diagnostic.
+func (d DisabledTool) Message() string {
+	return fmt.Sprintf("Tool %q is disabled. Reason: %s.", d.Name, d.Reason)
+}
+
+func missingBinaryTool(name, binary string) DisabledTool {
+	return DisabledTool{Name: name, Reason: fmt.Sprintf("%q binary not found", binary)}
+}
+
 // SetDispatchTimeout overrides the per-call ceiling applied by Dispatch.
 // Non-positive values reset to the default.
 func (r *Registry) SetDispatchTimeout(d time.Duration) { r.dispatchTimeout = d }
@@ -52,11 +67,17 @@ func (r *Registry) SetDispatchTimeout(d time.Duration) { r.dispatchTimeout = d }
 // grep, optional rg, edit, write_file, apply_patch) on r, in that order. It is
 // the only exported path to these tools; their types are unexported by design.
 func RegisterFileTools(r *Registry) {
+	registerFileTools(r, nil)
+}
+
+func registerFileTools(r *Registry, disabled *[]DisabledTool) {
 	r.Register(readFile{})
 	r.Register(listDir{})
 	r.Register(grep{})
 	if rg, ok := newRipgrep(); ok {
 		r.Register(rg)
+	} else if disabled != nil {
+		*disabled = append(*disabled, missingBinaryTool("rg", "rg"))
 	}
 	r.Register(edit{})
 	r.Register(writeFile{})
@@ -67,18 +88,34 @@ func RegisterFileTools(r *Registry) {
 // web_fetch) on r, in that order. It is the only exported path to these tools;
 // their types are unexported by design.
 func RegisterExecTools(r *Registry) {
+	registerExecTools(r, nil)
+}
+
+func registerExecTools(r *Registry, disabled *[]DisabledTool) {
 	r.Register(runCommand{})
 	r.Register(execTool{})
-	r.Register(gitTool{})
+	if git, ok := newGitTool(); ok {
+		r.Register(git)
+	} else if disabled != nil {
+		*disabled = append(*disabled, missingBinaryTool("git", "git"))
+	}
 	r.Register(webFetch{})
 }
 
 // Default returns a Registry preloaded with every built-in tool.
 func Default() *Registry {
-	r := &Registry{}
-	RegisterFileTools(r)
-	RegisterExecTools(r)
+	r, _ := DefaultWithDiagnostics()
 	return r
+}
+
+// DefaultWithDiagnostics returns the default tool registry plus diagnostics for
+// optional tools that were not registered.
+func DefaultWithDiagnostics() (*Registry, []DisabledTool) {
+	r := &Registry{}
+	var disabled []DisabledTool
+	registerFileTools(r, &disabled)
+	registerExecTools(r, &disabled)
+	return r, disabled
 }
 
 // DefaultNames returns the names of the Default tool set in registration
@@ -90,10 +127,21 @@ func DefaultNames() []string { return Default().Names() }
 // select from by name. Build it once per process — write_tmp_file holds the
 // per-run temp directory.
 func Catalog() *Registry {
-	r := Default()
-	r.Register(gitReadonly{})
-	r.Register(newWriteTmpFile())
+	r, _ := CatalogWithDiagnostics()
 	return r
+}
+
+// CatalogWithDiagnostics returns the complete constructible tool catalog plus
+// diagnostics for optional tools that were not registered.
+func CatalogWithDiagnostics() (*Registry, []DisabledTool) {
+	r, disabled := DefaultWithDiagnostics()
+	if git, ok := newGitReadonly(); ok {
+		r.Register(git)
+	} else {
+		disabled = append(disabled, missingBinaryTool("git_readonly", "git"))
+	}
+	r.Register(newWriteTmpFile())
+	return r, disabled
 }
 
 // Names returns the registered tool names in registration order.

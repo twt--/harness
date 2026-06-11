@@ -111,7 +111,7 @@ func TestGitEmptyArgs(t *testing.T) {
 // Env-inspection seam: the command builder must inject --no-pager as the first
 // arg and GIT_TERMINAL_PROMPT=0 into the environment, without running git.
 func TestGitCommandSeam(t *testing.T) {
-	cmd := buildGitCommand(context.Background(), []string{"status", "--porcelain"})
+	cmd := buildGitCommand(context.Background(), "", []string{"status", "--porcelain"})
 
 	// --no-pager injected immediately after the program name.
 	if len(cmd.Args) < 2 || cmd.Args[1] != "--no-pager" {

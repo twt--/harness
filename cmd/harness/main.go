@@ -26,6 +26,7 @@ import (
 	"harness/internal/config"
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
+	"harness/internal/logging"
 	"harness/internal/mode"
 	"harness/internal/modelsdev"
 	"harness/internal/session"
@@ -124,6 +125,11 @@ func run(env environment) int {
 		fmt.Fprintln(stderr, "harness: a model is required (-model or HARNESS_MODEL)")
 		return ui.ExitUsage
 	}
+	logger, err := logging.NewLogger(stderr, cfg.LogLevel, cfg.Quiet)
+	if err != nil {
+		fmt.Fprintf(stderr, "harness: %v\n", err)
+		return ui.ExitUsage
+	}
 
 	modelRegistry, providerConfigs, err := llm.LoadProviderConfigs(configDir(cfgPath), cfg.ProviderConfigs, func(msg string) {
 		fmt.Fprintf(stderr, "harness: %s\n", msg)
@@ -214,7 +220,10 @@ func run(env environment) int {
 	// constructible tool; each mode selects a subset, realized by Subset so the
 	// agent advertises and dispatches only the mode's tools. Built once and
 	// shared with the /mode switch (write_tmp_file holds a per-run temp dir).
-	toolCatalog := tools.Catalog()
+	toolCatalog, disabledTools := tools.CatalogWithDiagnostics()
+	for _, disabled := range disabledTools {
+		logger.Warn(disabled.Message(), logging.Category("cli_tools"))
+	}
 	fileModes := make(map[string]mode.FileMode, len(cfg.Modes))
 	for name, fm := range cfg.Modes {
 		fileModes[name] = mode.FileMode{AllowedTools: fm.AllowedTools, Prompt: fm.Prompt}

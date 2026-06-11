@@ -321,12 +321,20 @@ func expectedDefaultNames() []string {
 	if RipgrepAvailable() {
 		want = append(want, "rg")
 	}
-	return append(want, "edit", "write_file", "apply_patch", "run_command", "exec", "git", "web_fetch")
+	want = append(want, "edit", "write_file", "apply_patch", "run_command", "exec")
+	if GitAvailable() {
+		want = append(want, "git")
+	}
+	return append(want, "web_fetch")
 }
 
 func TestCatalogRegistersDefaultPlusModeTools(t *testing.T) {
 	r := Catalog()
-	want := append(append([]string{}, DefaultNames()...), "git_readonly", "write_tmp_file")
+	want := append([]string{}, DefaultNames()...)
+	if GitAvailable() {
+		want = append(want, "git_readonly")
+	}
+	want = append(want, "write_tmp_file")
 	if got := r.Names(); !slices.Equal(got, want) {
 		t.Errorf("Catalog().Names() = %v, want %v", got, want)
 	}
@@ -335,6 +343,42 @@ func TestCatalogRegistersDefaultPlusModeTools(t *testing.T) {
 			t.Errorf("tool %q has empty schema", s.Name)
 		}
 	}
+}
+
+func TestCatalogDiagnosticsForMissingCLITools(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	r, disabled := CatalogWithDiagnostics()
+	for _, name := range []string{"rg", "git", "git_readonly"} {
+		if slices.Contains(r.Names(), name) {
+			t.Fatalf("CatalogWithDiagnostics registered %q without its binary; names=%v", name, r.Names())
+		}
+		if !disabledContains(disabled, name) {
+			t.Fatalf("disabled diagnostics missing %q: %+v", name, disabled)
+		}
+	}
+}
+
+func TestDefaultNamesOmitMissingGitTool(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	for _, name := range []string{"git", "git_readonly"} {
+		if slices.Contains(DefaultNames(), name) {
+			t.Fatalf("DefaultNames() includes unavailable %q: %v", name, DefaultNames())
+		}
+		if slices.Contains(Catalog().Names(), name) {
+			t.Fatalf("Catalog() includes unavailable %q: %v", name, Catalog().Names())
+		}
+	}
+}
+
+func disabledContains(disabled []DisabledTool, name string) bool {
+	for _, d := range disabled {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Subset gating must be airtight: an excluded tool is neither advertised in

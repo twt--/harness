@@ -21,7 +21,32 @@ const gitSchema = `{
   "required": ["args"]
 }`
 
-type gitTool struct{}
+type gitTool struct {
+	program string
+}
+
+func gitProgram() (string, bool) {
+	program, err := exec.LookPath("git")
+	if err != nil {
+		return "", false
+	}
+	return program, true
+}
+
+func newGitTool() (gitTool, bool) {
+	program, ok := gitProgram()
+	if !ok {
+		return gitTool{}, false
+	}
+	return gitTool{program: program}, true
+}
+
+// GitAvailable reports whether the optional git-backed tools can be registered
+// from the current PATH.
+func GitAvailable() bool {
+	_, ok := gitProgram()
+	return ok
+}
 
 func (gitTool) Name() string { return "git" }
 
@@ -33,7 +58,7 @@ func (gitTool) Schema() json.RawMessage { return json.RawMessage(gitSchema) }
 
 func (gitTool) ReadOnly() bool { return false }
 
-func (gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
+func (g gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Args []string `json:"args"`
 	}
@@ -44,13 +69,13 @@ func (gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 		return "", badArgs("args is required and must be a non-empty array")
 	}
 
-	return runGitArgs(ctx, args.Args)
+	return runGitArgs(ctx, g.program, args.Args)
 }
 
 // runGitArgs executes git with userArgs and formats the combined output plus
 // the exit-code marker; shared by git and git_readonly.
-func runGitArgs(ctx context.Context, userArgs []string) (string, error) {
-	cmd := buildGitCommand(ctx, userArgs)
+func runGitArgs(ctx context.Context, program string, userArgs []string) (string, error) {
+	cmd := buildGitCommand(ctx, program, userArgs)
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -77,9 +102,12 @@ func runGitArgs(ctx context.Context, userArgs []string) (string, error) {
 // GIT_TERMINAL_PROMPT=0 is added to the inherited environment so credential
 // prompts fail fast instead of hanging on a missing TTY (design §9.9). Exposing
 // the *exec.Cmd is the env-inspection seam tests rely on.
-func buildGitCommand(ctx context.Context, userArgs []string) *exec.Cmd {
+func buildGitCommand(ctx context.Context, program string, userArgs []string) *exec.Cmd {
+	if program == "" {
+		program = "git"
+	}
 	argv := append([]string{"--no-pager"}, userArgs...)
-	cmd := exec.CommandContext(ctx, "git", argv...)
+	cmd := exec.CommandContext(ctx, program, argv...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	return cmd
 }
