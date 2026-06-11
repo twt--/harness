@@ -32,15 +32,17 @@ Stop and report once the task is done. Do not keep calling tools after the work 
 // directory; when non-empty it is appended after the env block (and before
 // Append), giving the model project-specific instructions without the user
 // having to pass -system explicitly. SkillsCatalog is an optional section
-// listing available agent skills for progressive disclosure.
+// listing available agent skills for progressive disclosure. ModePrompt carries
+// the active run mode's instructions and is appended as the final section, so a
+// mode layers on top of every other customization.
 type Options struct {
-	Append         string // appended after the builtin (or override) instructions
-	Override       string // replaces the builtin instructions when non-empty
-	NoEnv          bool   // drop the env-context block
-	AgentsMD       string // contents of AGENTS.md from the working directory (optional)
-	SkillsCatalog  string // available skills catalog (optional, from skills discovery)
-	ModePrompt     string // run-mode instructions, appended as the final section (optional)
-	Env            EnvOptions
+	Append        string // appended after the builtin (or override) instructions
+	Override      string // replaces the builtin instructions when non-empty
+	NoEnv         bool   // drop the env-context block
+	AgentsMD      string // contents of AGENTS.md from the working directory (optional)
+	SkillsCatalog string // available skills catalog (optional, from skills discovery)
+	ModePrompt    string // run-mode instructions, appended as the final section (optional)
+	Env           EnvOptions
 }
 
 // Build composes the full system prompt per design §8.5: instructions, then a

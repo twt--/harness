@@ -754,6 +754,41 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 - Output prefixed `# <final-url> (<status>, <content-type>)`. Non-2xx responses return
   status + body as content (not `is_error` — the model may want the error page).
 
+### 9.11 `git_readonly`
+
+> Run a read-only git command: status, log, diff, show, grep, blame, or bisect.
+
+| param | type | notes |
+|---|---|---|
+| `args` | array of strings, required | argv after `git`, starting with the subcommand |
+
+- A read-only sibling of `git` (§9.9) used by restricted run modes (§14). It reuses
+  the same `--no-pager` / `GIT_TERMINAL_PROMPT=0` plumbing.
+- **Allowlist by bare subcommand:** `args[0]` must be one of `status`, `log`, `diff`,
+  `show`, `grep`, `blame`, `bisect` and must not start with `-`. Because global git
+  options (`-c`, `-C`, `--git-dir`, `--exec-path`, `--paginate`) precede the
+  subcommand, requiring a non-flag first argument blocks every global-option
+  injection. Subcommand-local flags after `args[0]` pass through.
+- A few local flags still break the read-only boundary and are rejected:
+  `--output`/`--output-directory` (write a file) and `-O`/`--open-files-in-pager`
+  (launch a pager/editor). `bisect run <cmd>` is rejected (it executes commands);
+  other `bisect` operations are allowed even though they move HEAD.
+
+### 9.12 `write_tmp_file`
+
+> Write a scratch file under this run's private temp directory and return its absolute path.
+
+| param | type | notes |
+|---|---|---|
+| `name` | string, required | relative file name (subdirectories allowed) |
+| `content` | string, required | full file content (empty allowed) |
+
+- Gives read-only run modes (§14, `plan`) a place to draft notes without project
+  write access. Files are written under one `os.MkdirTemp` directory created lazily on
+  first use and shared across calls; they are kept after exit.
+- `name` must be relative and stay inside the temp directory: absolute paths and any
+  `..` escape (after `filepath.Clean`) are rejected. Returns the absolute path written.
+
 ## 10. CLI / REPL (`internal/ui`)
 
 ### Rendering
@@ -896,7 +931,34 @@ injectable), the retry clock, and `ValidateTranscript`.
 Cross-cutting: `ValidateTranscript` is asserted after every transcript mutation in every
 test that touches one.
 
-## 14. Future work
+## 14. Run modes (`internal/mode`)
+
+A **run mode** is a named bundle of an allowed-tool set and extra system-prompt
+instructions. It lets one harness behave as a collaborative planner, an autonomous
+worker, or the wide-open default without separate binaries.
+
+- **Selection** follows the standard precedence (§7): `-mode` flag > `HARNESS_MODE`
+  > `mode` in the config file > the built-in default `auto`. An empty value means
+  "unspecified", so a resumed session's saved mode (§11) can supply it before the
+  `auto` fallback. `/mode <name>` switches at runtime; `/mode` lists.
+- **Built-ins:** `auto` (all tools, no extra prompt — current behavior), `plan`
+  (read-only tools plus `git_readonly` and `write_tmp_file`, a planning prompt), and
+  `independent` (all tools, a complete-without-asking prompt).
+- **Config `modes`** entries **field-level merge** onto a built-in of the same name:
+  a non-empty `allowed_tools` or `prompt` replaces, an omitted field inherits. A new
+  name defines a new mode (no `allowed_tools` ⇒ the full default set). Mode prompts
+  accept `@file` and are expanded once at startup (fail-fast).
+- **Tool gating** is the harness's one departure from the no-sandbox stance (§2): the
+  mode's tool set is realized by `tools.Registry.Subset`, building a registry that
+  holds only the allowed tools. Because the agent advertises (`Specs`) and dispatches
+  from the same registry, an excluded tool is neither offered nor callable. The
+  underlying tools still assume an external sandbox for real isolation; gating only
+  shapes what each mode exposes. `Agent.SetTools` swaps the registry for `/mode`.
+- The mode prompt is appended to the system prompt as the final section, so it layers
+  on top of the builtin instructions, env block, AGENTS.md, and `-system` text. The
+  active mode is saved with the session and restored on `-resume` (flags win).
+
+## 15. Future work
 
 - CLI-subprocess backends (codex / claude) behind a separate "delegate" abstraction.
 - OpenAI Responses API dialect.
