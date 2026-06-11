@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // Price is the per-1M-token price in USD for each token category. CacheRead and
@@ -108,6 +109,19 @@ func (r *Registry) Lookup(model string) (ModelInfo, bool) {
 	}
 	info, ok := r.models[model]
 	return info, ok
+}
+
+// Models returns the configured model names in stable order.
+func (r *Registry) Models() []string {
+	if r == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.models))
+	for name := range r.models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // HasPrice reports whether model has any non-zero configured price component.

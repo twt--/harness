@@ -120,6 +120,46 @@ func TestRunOneShotAssistantToStdout(t *testing.T) {
 	}
 }
 
+func TestRunREPLModelCommandSwitchesProvider(t *testing.T) {
+	initial := llmtest.New("initial")
+	switched := llmtest.New("switched", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	})
+	env, _, errw, _ := fakeProviderEnv(t,
+		[]string{"-model", "claude-opus-4-8"},
+		initial,
+		"/model gpt-5.5\nhello\n/exit\n",
+	)
+	var opts []factory.Options
+	env.newProvider = func(opt factory.Options) (llm.Provider, error) {
+		opts = append(opts, opt)
+		if len(opts) == 1 {
+			return initial, nil
+		}
+		return switched, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(opts) != 2 {
+		t.Fatalf("provider factory calls = %d, want 2 (%+v)", len(opts), opts)
+	}
+	if opts[1].Provider != "openai" || opts[1].Model != "gpt-5.5" {
+		t.Fatalf("switch provider options = %+v, want openai/gpt-5.5", opts[1])
+	}
+	if len(initial.Requests) != 0 {
+		t.Fatalf("initial provider should receive no turns after switch, got %d", len(initial.Requests))
+	}
+	if len(switched.Requests) != 1 || switched.Requests[0].Model != "gpt-5.5" {
+		t.Fatalf("switched requests = %+v, want one gpt-5.5 request", switched.Requests)
+	}
+	if !strings.Contains(errw.String(), "model switched") {
+		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
+	}
+}
+
 // TestRunEnvBlockReportsAbsoluteCwd is the regression test for the env block
 // emitting `cwd: .` instead of the absolute working directory (design §8.5).
 // main must populate EnvOptions.Dir via os.Getwd so the system prompt the model

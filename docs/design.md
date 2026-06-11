@@ -398,6 +398,7 @@ type ModelInfo struct {
 }
 func Cost(model string, u Usage) (usd float64, known bool)
 func ContextWindow(model string) int // registry hit, else default 256_000
+func Models() []string // sorted configured model ids
 ```
 
 Unknown models (arbitrary names on OpenAI-compatible servers) display token counts
@@ -748,7 +749,8 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 | `/compact` | force compaction now |
 | `/usage` | cumulative session tokens + cost |
 | `/save [file]` | force save (optionally elsewhere) |
-| `/model` | print provider/model/base-url |
+| `/model` | show current provider/model/base-url and configured models |
+| `/model <id>` | switch subsequent turns to model `<id>` |
 
 ### Flags
 

@@ -155,7 +155,8 @@ Lines starting with `/` are commands; `//` sends a literal leading slash.
 | `/compact` | force compaction now |
 | `/usage` | cumulative session tokens and cost |
 | `/save [file]` | force save (optionally elsewhere) |
-| `/model` | print provider, model, and base URL |
+| `/model` | show current provider/model/base URL and configured models |
+| `/model <id>` | switch subsequent turns to model `<id>` |
 
 ## Sessions
 

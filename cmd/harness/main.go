@@ -199,6 +199,36 @@ func run(env environment) int {
 		return ui.ExitUsage
 	}
 
+	switchModel := func(model string) (ui.ModelSelection, error) {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return ui.ModelSelection{}, fmt.Errorf("model is required")
+		}
+		providerName, apiType, baseURL, apiKey := resolveSwitchProvider(model, cfg, providerConfigs, getenv)
+		enrichRegistryFromModelsDev(modelRegistry, model, providerName, apiType, baseURL, env.modelsDevCatalog, cfg.Verbose, stderr)
+		contextWindow := cfg.ContextWindow
+		if contextWindow <= 0 {
+			contextWindow = modelRegistry.ContextWindow(model)
+		}
+		runtime, err := newProvider(factory.Options{
+			Provider:      apiType,
+			Model:         model,
+			BaseURL:       baseURL,
+			APIKey:        apiKey,
+			ContextWindow: contextWindow,
+		})
+		if err != nil {
+			return ui.ModelSelection{}, err
+		}
+		return ui.ModelSelection{
+			Provider:      providerName,
+			Model:         model,
+			BaseURL:       baseURL,
+			Runtime:       runtime,
+			ContextWindow: cfg.ContextWindow,
+		}, nil
+	}
+
 	toolRegistry := tools.Default()
 	ag := agent.New(provider, toolRegistry, agent.Options{
 		MaxSteps:      cfg.MaxSteps,
@@ -255,22 +285,24 @@ func run(env environment) int {
 	})
 
 	app := &ui.App{
-		Agent:       ag,
-		Renderer:    renderer,
-		Out:         stdout,
-		Errw:        stderr,
-		Provider:    cfg.Provider,
-		Model:       cfg.Model,
-		BaseURL:     effectiveBaseURL,
-		Registry:    modelRegistry,
-		System:      systemPrompt,
-		SessionPath: sessionPath,
-		StateDir:    stateDir(getenv),
-		Created:     created,
-		Now:         now,
-		Prompt:      cfg.ReplPrompt,
-		Skills:      discoveredSkills,
-		SkillDirs:   skillDirs,
+		Agent:           ag,
+		Renderer:        renderer,
+		Out:             stdout,
+		Errw:            stderr,
+		Provider:        cfg.Provider,
+		Model:           cfg.Model,
+		BaseURL:         effectiveBaseURL,
+		Registry:        modelRegistry,
+		System:          systemPrompt,
+		AvailableModels: modelRegistry.Models(),
+		SwitchModel:     switchModel,
+		SessionPath:     sessionPath,
+		StateDir:        stateDir(getenv),
+		Created:         created,
+		Now:             now,
+		Prompt:          cfg.ReplPrompt,
+		Skills:          discoveredSkills,
+		SkillDirs:       skillDirs,
 	}
 	app.SetUsage(totals)
 
@@ -849,6 +881,105 @@ func resolveProvider(cfg config.Config, providers []llm.ProviderConfig, getenv f
 		apiKey = pc.APIKey
 	}
 	return provider, baseURL, apiKey
+}
+
+func resolveSwitchProvider(model string, cfg config.Config, providers []llm.ProviderConfig, getenv func(string) string) (provider, apiType, baseURL, apiKey string) {
+	if pc, ok := providerConfigForModel(providers, model, cfg.Provider); ok {
+		return runtimeProviderConfig(pc, cfg, getenv)
+	}
+	if pc, ok := providerConfigByName(providers, cfg.Provider); ok {
+		return runtimeProviderConfig(pc, cfg, getenv)
+	}
+
+	apiType = inferAPIType(model)
+	provider = apiType
+	baseURL = providerBaseURLEnv(apiType, getenv)
+	apiKey = providerAPIKeyEnv(apiType, getenv)
+	if cfg.Provider == provider {
+		if cfg.BaseURL != "" {
+			baseURL = cfg.BaseURL
+		}
+		if cfg.APIKey != "" {
+			apiKey = cfg.APIKey
+		}
+	}
+	return provider, apiType, baseURL, apiKey
+}
+
+func runtimeProviderConfig(pc llm.ProviderConfig, cfg config.Config, getenv func(string) string) (provider, apiType, baseURL, apiKey string) {
+	provider = pc.Name
+	apiType = pc.APIType
+	if apiType == "" {
+		apiType = pc.Name
+	}
+	baseURL = pc.BaseURL
+	if pc.Name == cfg.Provider && cfg.BaseURL != "" {
+		baseURL = cfg.BaseURL
+	}
+	if pc.Name == cfg.Provider {
+		apiKey = cfg.APIKey
+	}
+	for _, name := range pc.APIKeyEnv {
+		if value := getenv(name); value != "" {
+			apiKey = value
+			break
+		}
+	}
+	if apiKey == "" {
+		apiKey = providerAPIKeyEnv(apiType, getenv)
+	}
+	if apiKey == "" {
+		apiKey = pc.APIKey
+	}
+	return provider, apiType, baseURL, apiKey
+}
+
+func providerConfigForModel(providers []llm.ProviderConfig, model, preferred string) (llm.ProviderConfig, bool) {
+	for _, pc := range providers {
+		if pc.Name == preferred && providerConfigHasModel(pc, model) {
+			return pc, true
+		}
+	}
+	for _, pc := range providers {
+		if providerConfigHasModel(pc, model) {
+			return pc, true
+		}
+	}
+	return llm.ProviderConfig{}, false
+}
+
+func providerConfigHasModel(pc llm.ProviderConfig, model string) bool {
+	for _, entry := range pc.Models {
+		if entry.Name == model {
+			return true
+		}
+	}
+	return false
+}
+
+func inferAPIType(model string) string {
+	if strings.HasPrefix(model, "claude") {
+		return "anthropic"
+	}
+	return "openai"
+}
+
+func providerBaseURLEnv(provider string, getenv func(string) string) string {
+	switch provider {
+	case "anthropic":
+		return getenv("ANTHROPIC_BASE_URL")
+	default:
+		return getenv("OPENAI_BASE_URL")
+	}
+}
+
+func providerAPIKeyEnv(provider string, getenv func(string) string) string {
+	switch provider {
+	case "anthropic":
+		return getenv("ANTHROPIC_API_KEY")
+	default:
+		return getenv("OPENAI_API_KEY")
+	}
 }
 
 func providerConfigByName(providers []llm.ProviderConfig, name string) (llm.ProviderConfig, bool) {

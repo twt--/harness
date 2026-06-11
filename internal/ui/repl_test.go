@@ -229,6 +229,7 @@ func TestREPLModelCommand(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake")
 	app := newTestApp(t, &out, &errw, fp)
+	app.AvailableModels = []string{"gpt-5.5", "claude-opus-4-8"}
 
 	in := strings.NewReader("/model\n/exit\n")
 	if code := Run(in, app, nil); code != 0 {
@@ -237,6 +238,50 @@ func TestREPLModelCommand(t *testing.T) {
 	got := errw.String()
 	if !strings.Contains(got, "anthropic") || !strings.Contains(got, "claude-opus-4-8") || !strings.Contains(got, "api.anthropic.com") {
 		t.Errorf("/model should print provider/model/base-url, errw=%q", got)
+	}
+	if !strings.Contains(got, "available models:") || !strings.Contains(got, "gpt-5.5") {
+		t.Errorf("/model should list available models, errw=%q", got)
+	}
+}
+
+func TestREPLModelCommandSwitchesNextTurn(t *testing.T) {
+	var out, errw bytes.Buffer
+	initial := llmtest.New("initial")
+	switched := llmtest.New("switched", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("switched reply")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, initial)
+	app.SwitchModel = func(model string) (ModelSelection, error) {
+		if model != "gpt-5.5" {
+			t.Fatalf("switch model = %q, want gpt-5.5", model)
+		}
+		return ModelSelection{
+			Provider: "openai",
+			Model:    model,
+			BaseURL:  "https://api.openai.com/v1",
+			Runtime:  switched,
+		}, nil
+	}
+
+	in := strings.NewReader("/model gpt-5.5\nhello\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if len(initial.Requests) != 0 {
+		t.Fatalf("initial provider should not receive the post-switch turn, got %d requests", len(initial.Requests))
+	}
+	if len(switched.Requests) != 1 {
+		t.Fatalf("switched provider requests = %d, want 1", len(switched.Requests))
+	}
+	if switched.Requests[0].Model != "gpt-5.5" {
+		t.Fatalf("post-switch request model = %q, want gpt-5.5", switched.Requests[0].Model)
+	}
+	if app.Provider != "openai" || app.Model != "gpt-5.5" {
+		t.Fatalf("app provider/model = %s/%s, want openai/gpt-5.5", app.Provider, app.Model)
+	}
+	if !strings.Contains(errw.String(), "model switched") {
+		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
 	}
 }
 

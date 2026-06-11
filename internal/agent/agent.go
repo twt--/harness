@@ -99,6 +99,20 @@ func (a *Agent) window() int {
 // SetSystem sets the system prompt sent on every request.
 func (a *Agent) SetSystem(system string) { a.system = system }
 
+// SetProvider replaces the provider used for subsequent model calls.
+func (a *Agent) SetProvider(provider llm.Provider) {
+	if provider != nil {
+		a.provider = provider
+	}
+}
+
+// SetModel replaces the model id stamped onto subsequent requests. contextWindow
+// is the same override as Options.ContextWindow: zero means use the registry.
+func (a *Agent) SetModel(model string, contextWindow int) {
+	a.model = model
+	a.contextWindow = contextWindow
+}
+
 // SetTranscript replaces the running transcript (used when resuming a session).
 func (a *Agent) SetTranscript(msgs []llm.Message) { a.transcript = msgs }
 

@@ -17,6 +17,15 @@ import (
 	"harness/internal/term"
 )
 
+// ModelSelection is the runtime model/provider bundle returned by App.SwitchModel.
+type ModelSelection struct {
+	Provider      string
+	Model         string
+	BaseURL       string
+	Runtime       llm.Provider
+	ContextWindow int // agent override; 0 means use the registry
+}
+
 // App bundles the dependencies the REPL and one-shot driver need. main builds it
 // from the resolved config, provider factory, tool registry, and renderer
 // (design §10). The agent owns the running transcript; App tracks the cumulative
@@ -32,6 +41,9 @@ type App struct {
 	BaseURL  string
 	Registry *llm.Registry
 	System   string
+
+	AvailableModels []string
+	SwitchModel     func(model string) (ModelSelection, error)
 
 	SessionPath string    // current save path; /clear rotates it
 	StateDir    string    // for rotating to a fresh auto-save path on /clear
@@ -49,7 +61,7 @@ type App struct {
 	// Skills is the discovered skills map for /skills listing and
 	// $skillName invocation (design §10). nil disables both features.
 	Skills map[string]skills.Skill
-	
+
 	// SkillDirs is the list of scanned skill directories with their scopes,
 	// used by /skills to group output by source location.
 	SkillDirs []skills.Dir
@@ -65,7 +77,7 @@ const helpText = `commands:
   /compact         force compaction now
   /usage           cumulative session tokens and cost
   /save [file]     force save (optionally elsewhere)
-  /model           print provider, model, and base URL
+  /model [model]   list models, or switch to model
   /skills          list available skills
   $skillName       invoke a skill (reads SKILL.md and sends as prompt)
 lines starting with / are commands; // sends a literal leading slash`
@@ -206,13 +218,89 @@ func (app *App) command(line string) (exit bool) {
 			fmt.Fprintf(app.Errw, "[saved %s]\n", path)
 		}
 	case "/model":
-		fmt.Fprintf(app.Errw, "provider=%s model=%s base-url=%s\n", app.Provider, app.Model, app.BaseURL)
+		if arg == "" {
+			fmt.Fprintln(app.Errw, app.modelSummary())
+		} else {
+			app.switchModel(arg)
+		}
 	case "/skills":
 		fmt.Fprintln(app.Errw, app.skillsSummary())
 	default:
 		fmt.Fprintf(app.Errw, "unknown command %q; type /help\n", cmd)
 	}
 	return false
+}
+
+// modelSummary renders the current model plus the configured models available
+// for quick switching.
+func (app *App) modelSummary() string {
+	models := append([]string(nil), app.AvailableModels...)
+	if app.Registry != nil {
+		models = append(models, app.Registry.Models()...)
+	}
+	models = uniqueModels(models, app.Model)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "current: provider=%s model=%s base-url=%s\n", app.Provider, app.Model, app.BaseURL)
+	b.WriteString("available models:")
+	if len(models) == 0 {
+		b.WriteString(" none configured")
+		return b.String()
+	}
+	for _, model := range models {
+		if model == app.Model {
+			fmt.Fprintf(&b, "\n  %s (current)", model)
+		} else {
+			fmt.Fprintf(&b, "\n  %s", model)
+		}
+	}
+	return b.String()
+}
+
+func uniqueModels(models []string, current string) []string {
+	seen := make(map[string]bool, len(models)+1)
+	var out []string
+	for _, model := range models {
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		out = append(out, model)
+	}
+	if current != "" && !seen[current] {
+		out = append(out, current)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (app *App) switchModel(model string) {
+	if app.SwitchModel == nil {
+		fmt.Fprintln(app.Errw, "[model switch unavailable]")
+		return
+	}
+	selection, err := app.SwitchModel(model)
+	if err != nil {
+		fmt.Fprintf(app.Errw, "[model switch failed: %v]\n", err)
+		return
+	}
+	if selection.Runtime == nil {
+		fmt.Fprintln(app.Errw, "[model switch failed: no provider was created]")
+		return
+	}
+	if selection.Model == "" {
+		selection.Model = model
+	}
+	if selection.Provider == "" {
+		selection.Provider = app.Provider
+	}
+	app.Agent.SetProvider(selection.Runtime)
+	app.Agent.SetModel(selection.Model, selection.ContextWindow)
+	app.Renderer.SetModel(selection.Model)
+	app.Provider = selection.Provider
+	app.Model = selection.Model
+	app.BaseURL = selection.BaseURL
+	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s base-url=%s]\n", app.Provider, app.Model, app.BaseURL)
 }
 
 // clear resets the conversation and rotates to a fresh auto-save file (design
@@ -360,21 +448,21 @@ func (app *App) skillsSummary() string {
 	if len(app.Skills) == 0 {
 		return "[no skills available]"
 	}
-	
+
 	// Group skills by scope
 	byScope := make(map[skills.Scope][]string)
 	for name, s := range app.Skills {
 		byScope[s.Scope] = append(byScope[s.Scope], name)
 	}
-	
+
 	// Find directory paths for each scope
 	scopePath := make(map[skills.Scope]string)
 	for _, d := range app.SkillDirs {
 		scopePath[d.Scope] = d.Path
 	}
-	
+
 	var b strings.Builder
-	
+
 	// Build directory label
 	dirLabel := func(scope skills.Scope) string {
 		if path, ok := scopePath[scope]; ok {
@@ -385,7 +473,7 @@ func (app *App) skillsSummary() string {
 		}
 		return "user"
 	}
-	
+
 	// Print local (project) skills first, then user skills
 	for _, scope := range []skills.Scope{skills.ScopeProject, skills.ScopeUser} {
 		names := byScope[scope]
@@ -393,19 +481,19 @@ func (app *App) skillsSummary() string {
 			continue
 		}
 		sort.Strings(names)
-		
+
 		if scope == skills.ScopeProject {
 			b.WriteString("local skills:\n")
 		} else {
 			fmt.Fprintf(&b, "user skills (%s):\n", dirLabel(scope))
 		}
-		
+
 		for _, name := range names {
 			s := app.Skills[name]
 			fmt.Fprintf(&b, "  $%s - %s\n", name, s.Description)
 		}
 	}
-	
+
 	return b.String()
 }
 

@@ -76,6 +76,23 @@ func TestContextWindowKnown(t *testing.T) {
 	}
 }
 
+func TestModelsSorted(t *testing.T) {
+	r := NewRegistry(map[string]ModelInfo{
+		"z-model": {},
+		"a-model": {},
+	})
+	got := r.Models()
+	want := []string{"a-model", "z-model"}
+	if len(got) != len(want) {
+		t.Fatalf("Models length = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Models = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestRegistryEntriesWellFormed(t *testing.T) {
 	r := testRegistry()
 	for name, info := range r.models {

@@ -74,6 +74,9 @@ func NewRenderer(out, errw io.Writer, opts RenderOptions) *Renderer {
 // The driver calls it immediately before agent.RunTurn.
 func (r *Renderer) StartTurn() { r.turnStart = r.now() }
 
+// SetModel updates the model used for subsequent usage/cost summaries.
+func (r *Renderer) SetModel(model string) { r.model = model }
+
 func (r *Renderer) TextDelta(text string) { io.WriteString(r.out, text) }
 
 // ToolStart stashes the call so ToolResult can render name+args+summary on one
