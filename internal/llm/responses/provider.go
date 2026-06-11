@@ -3,7 +3,6 @@
 package responses
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,14 +13,12 @@ import (
 	"time"
 
 	"harness/internal/llm"
-	"harness/internal/retry"
 	"harness/internal/sse"
 )
 
 const (
 	defaultBaseURL = "https://api.openai.com/v1"
 	responsesPath  = "/responses"
-	maxAttempts    = 5
 )
 
 type Config struct {
@@ -77,63 +74,19 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.St
 	}
 }
 
+// connect performs the request via the shared retry-before-first-byte loop
+// (llm.Connect); the dialect supplies the Responses endpoint, bearer auth, and
+// its error-body parser.
 func (p *Provider) connect(ctx context.Context, body []byte, yield func(llm.StreamEvent, error) bool) (*http.Response, error) {
-	url := p.baseURL + responsesPath
-
-	for attempt := 0; ; attempt++ {
-		if err := ctx.Err(); err != nil {
-			yield(llm.StreamEvent{}, err)
-			return nil, err
-		}
-
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		if err != nil {
-			yield(llm.StreamEvent{}, &llm.APIError{Message: "build request: " + err.Error()})
-			return nil, err
-		}
-		httpReq.Header.Set("content-type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-		resp, err := p.client.Do(httpReq)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				yield(llm.StreamEvent{}, ctxErr)
-				return nil, ctxErr
-			}
-			apiErr := &llm.APIError{Message: err.Error(), Retryable: true}
-			if !p.backoff(ctx, attempt, 0, apiErr, yield) {
-				return nil, apiErr
-			}
-			continue
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		apiErr := parseErrorResponse(resp)
-		resp.Body.Close()
-		if !apiErr.Retryable {
-			yield(llm.StreamEvent{}, apiErr)
-			return nil, apiErr
-		}
-		if !p.backoff(ctx, attempt, apiErr.RetryAfter, apiErr, yield) {
-			return nil, apiErr
-		}
-	}
-}
-
-func (p *Provider) backoff(ctx context.Context, attempt int, retryAfter time.Duration, apiErr *llm.APIError, yield func(llm.StreamEvent, error) bool) bool {
-	if attempt >= maxAttempts-1 {
-		yield(llm.StreamEvent{}, apiErr)
-		return false
-	}
-	if err := ctx.Err(); err != nil {
-		yield(llm.StreamEvent{}, err)
-		return false
-	}
-	p.sleep(retry.Next(attempt, retryAfter))
-	return true
+	return llm.Connect(ctx, llm.ConnectOptions{
+		Client: p.client,
+		URL:    p.baseURL + responsesPath,
+		Header: func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+p.apiKey)
+		},
+		ParseError: parseErrorResponse,
+		Sleep:      p.sleep,
+	}, body, yield)
 }
 
 func (p *Provider) decode(ctx context.Context, r io.Reader, yield func(llm.StreamEvent, error) bool) {

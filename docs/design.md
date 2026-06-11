@@ -381,8 +381,11 @@ type APIError struct {
   provider's error message.
 - **Backoff:** full jitter — `sleep = rand(0, min(30s, 500ms·2^attempt))`, 5 attempts.
   `Retry-After` (seconds or HTTP-date) is honored as a floor. The policy is a pure
-  function (`retry.Next(attempt, retryAfter) time.Duration`); the retry loop lives in
-  each provider, which injects a `sleep` function so tests run instantly.
+  function (`retry.Next(attempt, retryAfter) time.Duration`); the retry loop itself is
+  the shared `llm.Connect`, which every dialect calls with its endpoint, auth headers,
+  and error-body parser, and which takes an injected `sleep` so tests run instantly.
+  (The loop originally lived in each provider; the three copies were byte-identical
+  apart from those inputs, so they were consolidated.)
 - **Provider retries apply only before the first response byte.** Once tokens have
   streamed, the provider treats failure as terminal — mid-stream Anthropic `error`
   frames and truncated bodies fail the provider call. The agent loop re-requests the

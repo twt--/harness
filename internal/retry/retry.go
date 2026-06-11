@@ -1,7 +1,7 @@
 // Package retry holds the backoff policy and Retry-After parsing. Next is a
 // pure function of the attempt number and a Retry-After floor; the retry loop
-// (success/give-up/ctx handling) lives in each provider, which owns
-// APIError.Retryable and injects a sleeper.
+// (success/give-up/ctx handling) is llm.Connect, shared by every dialect,
+// which owns APIError.Retryable and injects a sleeper.
 package retry
 
 import (
