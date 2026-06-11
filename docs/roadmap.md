@@ -20,6 +20,9 @@ line-level claims before starting one.
 3. **Defensive usage accounting.** Usage events are documented as cumulative
    snapshots and merged element-wise (max) in the loop and compaction, so a
    zeroed or partial late frame cannot erase earlier numbers.
+4. **Per-tool-call timeout ceiling in `Dispatch`.** Every tool call gets an
+   11-minute ceiling (largest self-limit + grace); Dispatch unblocks even for
+   tools that ignore ctx, returning a timed-out is_error result.
 
 ## High value — loop reliability
 
@@ -34,10 +37,7 @@ line-level claims before starting one.
 2. **`maxSteps` auto-continue.** Exhausting the 50-step cap stops with a "say
    continue" notice. Optionally summarize-and-continue, or make the behavior
    configurable.
-3. **Per-tool-call timeout ceiling in `Dispatch`.** `run_command`/`exec`
-   self-limit, but a hanging `web_fetch` (or future tool) blocks the turn
-   until ^C. A default ceiling in the dispatch layer covers every tool.
-4. **Anthropic cache-breakpoint tuning.** Only two breakpoints today (system
+3. **Anthropic cache-breakpoint tuning.** Only two breakpoints today (system
    block + last message, `anthropic/wire.go`). A breakpoint after the static
    tool-schema array could improve cache hit rates in long sessions.
 
@@ -46,8 +46,8 @@ line-level claims before starting one.
 Deliberate non-goals (AGENTS.md, design §1). Revisit the stance explicitly
 before implementing; do not slip these in as incidental changes.
 
-5. **Parallel dispatch of read-only tool calls.** The loop serializes
+4. **Parallel dispatch of read-only tool calls.** The loop serializes
    parallel tool calls emitted in one step; independent reads (grep,
    read_file, list_dir) are the obvious latency win.
-6. **`.gitignore`-aware grep.** The fixed denylist is predictable and
+5. **`.gitignore`-aware grep.** The fixed denylist is predictable and
    stdlib-trivial; a correct `.gitignore` parser is a real subsystem.

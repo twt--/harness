@@ -13,6 +13,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"harness/internal/llm"
 )
@@ -29,9 +30,20 @@ type Tool interface {
 // Registry is an ordered set of tools. Order is preserved so Specs and the
 // model-facing tool list are stable across runs.
 type Registry struct {
-	order []string
-	tools map[string]Tool
+	order           []string
+	tools           map[string]Tool
+	dispatchTimeout time.Duration // zero = defaultDispatchTimeout
 }
+
+// defaultDispatchTimeout caps any single tool call: the largest tool
+// self-limit (run_command/exec cap timeout_seconds at 600s) plus a one-minute
+// grace, so the ceiling never fires first for well-behaved tools. It exists to
+// stop tools with no self-limit from hanging the turn (spec §6).
+const defaultDispatchTimeout = 11 * time.Minute
+
+// SetDispatchTimeout overrides the per-call ceiling applied by Dispatch.
+// Non-positive values reset to the default.
+func (r *Registry) SetDispatchTimeout(d time.Duration) { r.dispatchTimeout = d }
 
 // RegisterFileTools registers the built-in file tools (read_file, list_dir,
 // grep, edit, write_file, apply_patch) on r, in that order. It is the only
@@ -134,9 +146,13 @@ func (r *Registry) Specs() []llm.ToolSchema {
 }
 
 // Dispatch runs one tool call and always returns a result (design §8.2). It
-// recovers panics, maps unknown tools and decode/run errors to is_error result
-// strings, and applies the central output cap (design §8.3).
-func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) (res llm.ToolResult) {
+// runs Tool.Run under a per-call timeout ceiling in a goroutine, recovers
+// panics (inside that goroutine), maps unknown tools and decode/run errors to
+// is_error result strings, and applies the central output cap (design §8.3).
+// On ceiling expiry it returns a timeout is_error result even for a tool that
+// ignores its context; an outer cancellation is reported as cancellation, not
+// a timeout (spec §6).
+func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.ToolResult) {
 	res.ForID = call.ID
 
 	t, ok := r.tools[call.Name]
@@ -151,17 +167,60 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) (res llm.Too
 		input = json.RawMessage("{}")
 	}
 
-	defer func() {
-		if rec := recover(); rec != nil {
-			log.Printf("tool %q panicked: %v", call.Name, rec)
-			res.Text = fmt.Sprintf("error: tool panicked: %v", rec)
-			res.IsError = true
-		}
+	timeout := r.dispatchTimeout
+	if timeout <= 0 {
+		timeout = defaultDispatchTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	type outcome struct {
+		out string
+		err error
+	}
+	done := make(chan outcome, 1) // buffered: an abandoned Run can still send and exit
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("tool %q panicked: %v", call.Name, rec)
+				done <- outcome{err: fmt.Errorf("tool panicked: %v", rec)}
+			}
+		}()
+		out, err := t.Run(ctx, input)
+		done <- outcome{out: out, err: err}
 	}()
 
-	out, err := t.Run(ctx, input)
+	var out string
+	var err error
+	select {
+	case o := <-done:
+		out, err = o.out, o.err
+	case <-ctx.Done():
+		// The Run goroutine is abandoned (standard cost of a timeout shim);
+		// its eventual send lands in the buffered channel and is dropped. The
+		// abandoned Run may still mutate external state (write files, leave a
+		// subprocess running) after we return — acceptable for the built-in
+		// tools, which either finish fast or self-terminate on ctx (exec uses
+		// CommandContext, web_fetch caps itself well under the ceiling).
+		if parent.Err() != nil {
+			res.Text = "error: " + parent.Err().Error()
+		} else {
+			res.Text = fmt.Sprintf("error: tool timed out after %s", timeout)
+		}
+		res.IsError = true
+		return res
+	}
+
 	if err != nil {
-		if _, bad := err.(*invalidArgsError); bad {
+		// Report a timeout only when the ceiling itself expired (the derived
+		// context's deadline fired) and it was not an outer cancellation. A
+		// tool's own internal deadline (e.g. http.Client.Timeout) also yields
+		// a DeadlineExceeded error, but with the ceiling unfired it must pass
+		// through as a plain tool error — not be relabeled as a dispatch
+		// timeout with the wrong duration (spec §6).
+		if ctx.Err() == context.DeadlineExceeded && parent.Err() == nil {
+			res.Text = fmt.Sprintf("error: tool timed out after %s", timeout)
+		} else if _, bad := err.(*invalidArgsError); bad {
 			res.Text = "error: invalid arguments: " + err.Error()
 		} else if isJSONError(err) {
 			res.Text = "error: invalid arguments: " + err.Error()
