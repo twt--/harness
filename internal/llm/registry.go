@@ -24,11 +24,12 @@ type ModelInfo struct {
 
 // ProviderConfig is the on-disk schema for a provider JSON file.
 type ProviderConfig struct {
-	Name    string       `json:"name"`
-	APIType string       `json:"api_type"`
-	BaseURL string       `json:"base_url"`
-	APIKey  string       `json:"api_key"`
-	Models  []ModelEntry `json:"models"`
+	Name      string       `json:"name"`
+	APIType   string       `json:"api_type"`
+	BaseURL   string       `json:"base_url"`
+	APIKey    string       `json:"api_key"`
+	APIKeyEnv []string     `json:"api_key_env"`
+	Models    []ModelEntry `json:"models"`
 }
 
 // ModelEntry is one model inside a ProviderConfig.
@@ -99,6 +100,39 @@ func LoadProviderConfigs(configDir string, files []string, warn func(string)) (*
 	return NewRegistry(models), providers, nil
 }
 
+// Lookup returns the configured info for model, if any. The returned bool only
+// says an entry exists; the entry may still omit context or price fields.
+func (r *Registry) Lookup(model string) (ModelInfo, bool) {
+	if r == nil {
+		return ModelInfo{}, false
+	}
+	info, ok := r.models[model]
+	return info, ok
+}
+
+// HasPrice reports whether model has any non-zero configured price component.
+func (r *Registry) HasPrice(model string) bool {
+	info, ok := r.Lookup(model)
+	return ok && !priceZero(info.Price)
+}
+
+// MergeModel fills missing registry metadata for model. Explicit provider
+// config values win; discovered data is used only where the registry has no
+// context window or no price at all.
+func (r *Registry) MergeModel(model string, info ModelInfo) {
+	if r == nil || model == "" {
+		return
+	}
+	current := r.models[model]
+	if current.ContextWindow <= 0 && info.ContextWindow > 0 {
+		current.ContextWindow = info.ContextWindow
+	}
+	if priceZero(current.Price) && !priceZero(info.Price) {
+		current.Price = info.Price
+	}
+	r.models[model] = current
+}
+
 // SetDefaultContextWindow sets the fallback window used when a model has no
 // configured context window. Non-positive values reset to the built-in default.
 func (r *Registry) SetDefaultContextWindow(window int) {
@@ -152,6 +186,10 @@ func (r *Registry) Cost(model string, u Usage) (usd float64, known bool) {
 		float64(u.CacheReadTokens)/perMillion*p.CacheRead +
 		float64(u.CacheWriteTokens)/perMillion*p.CacheWrite
 	return usd, true
+}
+
+func priceZero(p Price) bool {
+	return p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0
 }
 
 // ContextWindow returns the model's context window from the registry, or the

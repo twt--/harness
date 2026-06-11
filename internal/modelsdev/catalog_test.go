@@ -1,0 +1,124 @@
+package modelsdev
+
+import (
+	"strings"
+	"testing"
+)
+
+const testCatalog = `{
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "api": "https://openrouter.ai/api/v1",
+    "env": ["OPENROUTER_API_KEY"],
+    "npm": "@openrouter/ai-sdk-provider",
+    "models": {
+      "openai/gpt-5.5": {
+        "id": "openai/gpt-5.5",
+        "name": "GPT-5.5",
+        "limit": {"context": 1050000},
+        "cost": {"input": 5, "output": 30, "cache_read": 0.5}
+      }
+    }
+  },
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "env": ["OPENAI_API_KEY"],
+    "npm": "@ai-sdk/openai",
+    "models": {
+      "gpt-5.5": {
+        "id": "gpt-5.5",
+        "name": "GPT-5.5",
+        "limit": {"context": 1050000},
+        "cost": {"input": 5, "output": 30, "cache_read": 0.5}
+      }
+    }
+  },
+  "anthropic": {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "env": ["ANTHROPIC_API_KEY"],
+    "npm": "@ai-sdk/anthropic",
+    "models": {
+      "claude-opus-4-8": {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "limit": {"context": 1000000},
+        "cost": {"input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25}
+      }
+    }
+  }
+}`
+
+func TestDecodeProviderBaseURLAndModelPricing(t *testing.T) {
+	c, err := Decode(strings.NewReader(testCatalog))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	p, ok := c.Provider("openrouter")
+	if !ok {
+		t.Fatal("openrouter provider not found")
+	}
+	if got := p.BaseURL(); got != "https://openrouter.ai/api/v1" {
+		t.Fatalf("BaseURL = %q", got)
+	}
+	if got := p.APIType(); got != "openai" {
+		t.Fatalf("APIType = %q, want openai", got)
+	}
+	info, ok := p.ModelInfo("openai/gpt-5.5")
+	if !ok {
+		t.Fatal("model not found")
+	}
+	if info.ContextWindow != 1_050_000 || info.Price.Input != 5 || info.Price.Output != 30 || info.Price.CacheRead != 0.5 {
+		t.Fatalf("model info = %+v", info)
+	}
+}
+
+func TestFirstPartyProviderFallbacks(t *testing.T) {
+	c, err := Decode(strings.NewReader(testCatalog))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	openai, _ := c.Provider("openai")
+	if got := openai.BaseURL(); got != "https://api.openai.com/v1" {
+		t.Fatalf("openai BaseURL = %q", got)
+	}
+	if got := openai.APIType(); got != "openai" {
+		t.Fatalf("openai APIType = %q", got)
+	}
+	anthropic, _ := c.Provider("anthropic")
+	if got := anthropic.BaseURL(); got != "https://api.anthropic.com" {
+		t.Fatalf("anthropic BaseURL = %q", got)
+	}
+	if got := anthropic.APIType(); got != "anthropic" {
+		t.Fatalf("anthropic APIType = %q", got)
+	}
+}
+
+func TestResolveProviderPrefix(t *testing.T) {
+	c, err := Decode(strings.NewReader(testCatalog))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	p, matches, ok := c.ResolveProvider("openr")
+	if !ok || len(matches) != 0 || p.ID != "openrouter" {
+		t.Fatalf("ResolveProvider(openr) = provider=%+v matches=%v ok=%v", p, matches, ok)
+	}
+	_, matches, ok = c.ResolveProvider("open")
+	if ok || len(matches) != 2 {
+		t.Fatalf("ResolveProvider(open) ok=%v matches=%v, want ambiguous openai/openrouter", ok, matches)
+	}
+}
+
+func TestResolveModelPrefix(t *testing.T) {
+	c, err := Decode(strings.NewReader(testCatalog))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	p, _ := c.Provider("openrouter")
+	m, matches, ok := p.ResolveModel("openai/gpt-5")
+	if !ok || len(matches) != 0 || m.ID != "openai/gpt-5.5" {
+		t.Fatalf("ResolveModel = model=%+v matches=%v ok=%v", m, matches, ok)
+	}
+}

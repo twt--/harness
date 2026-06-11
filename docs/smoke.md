@@ -67,9 +67,9 @@ go build ./cmd/harness
 ./harness -model claude-opus-4-8
 ```
 
-Expect: a per-turn usage line on stderr with a dollar cost (claude models are in
-the price registry), tool one-liners on stderr, the final answer on stdout, and a
-session auto-saved under `~/.local/state/harness/sessions/`.
+Expect: a per-turn usage line on stderr with a dollar cost (from configured
+pricing or models.dev), tool one-liners on stderr, the final answer on stdout,
+and a session auto-saved under `~/.local/state/harness/sessions/`.
 
 ### OpenAI Chat Completions API
 
@@ -81,8 +81,9 @@ go build ./cmd/harness
 ./harness -model gpt-5.5            # interactive
 ```
 
-Expect: same behavior as above. Cost appears only if the model is in the price
-registry; unknown model names show token counts without a dollar figure.
+Expect: same behavior as above. Cost appears when the model has configured pricing
+or pricing can be found through models.dev; unknown model names show token counts
+without a dollar figure.
 
 ### Local Ollama (OpenAI-compatible, no key)
 
@@ -97,8 +98,8 @@ go build ./cmd/harness
 
 Expect: provider inferred as `openai` (non-`claude*` model), empty API key
 accepted because the base URL is non-default, token counts with no dollar figure
-(local model not in the price registry). Tool reliability depends on the local
-model's tool-calling support.
+(localhost skips models.dev pricing lookup). Tool reliability depends on the
+local model's tool-calling support.
 
 ### Interrupt and resume against a real provider
 

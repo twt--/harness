@@ -109,7 +109,8 @@ interrupted.
 -v                show tool result snippets (first ~5 lines, dimmed)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
 -config <file>    alternate config path
---setup           create a basic config in ~/.config/harness
+--setup           create or update config in ~/.config/harness
+--force           with --setup, overwrite existing provider files and defaults
 -h, --help        print this usage screen and exit 0
 ```
 
@@ -127,12 +128,20 @@ Precedence is **flags > environment > config file > built-in defaults**.
 - Optional config file at `~/.config/harness/config.json` (override with
   `-config`): `provider`, `model`, `provider_configs`, and flag defaults. Provider
   config paths are resolved relative to the config file and may define `api_type`,
-  `base_url`, `api_key`, models, context windows, and pricing. The
+  `base_url`, `api_key`, `api_key_env`, models, context windows, and pricing. The
   `default_context_window` fallback is used only when a model has no configured
   context window; `context_window` forces an override. See
   `examples/config/` for sample files.
-- Run `./harness --setup` to create a basic default config and provider config.
-  It prompts for provider name, provider URL, API type, API key, and model name.
+- If a model is missing context-window or pricing metadata locally, harness makes a
+  best-effort lookup against `https://models.dev/api.json` and uses the discovered
+  model metadata when available. Localhost base URLs skip this lookup.
+- Run `./harness --setup` to create a basic default config and provider config,
+  or append a new provider config to an existing default config without changing
+  existing defaults.
+  It uses models.dev when reachable so provider/model prefixes can resolve to full
+  ids, and provider URL, API type, key env vars, context windows, and prices can be
+  filled in automatically. Existing provider config files and existing default
+  provider/model settings are not overwritten unless `--force` is set.
 
 ## Meta-commands (REPL)
 

@@ -479,7 +479,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-	"-v", "-no-color", "-config", "-setup", "-prompt",
+	"-v", "-no-color", "-config", "-setup", "-force", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the
@@ -503,6 +503,16 @@ func TestSetupFlagReturnsSetupWithoutReadingConfig(t *testing.T) {
 	}
 	if c.Model != "" || c.Provider != "" {
 		t.Fatalf("setup config should not resolve model/provider, got %+v", c)
+	}
+}
+
+func TestSetupForceFlag(t *testing.T) {
+	c, err := Load([]string{"--setup", "--force"}, noEnv, filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("Load --setup --force: %v", err)
+	}
+	if !c.Setup || !c.SetupForce {
+		t.Fatalf("setup force flags = Setup:%v SetupForce:%v, want both true", c.Setup, c.SetupForce)
 	}
 }
 

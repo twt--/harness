@@ -72,6 +72,7 @@ internal/agent           turn loop, interrupt state machine, compaction
 internal/tools           Tool interface, registry, dispatch (recover + central truncation), the 9 tools
 internal/session         transcript persistence (atomic save/load)
 internal/config          flags > env > config-file resolution
+internal/modelsdev       optional models.dev catalog reduction for setup/pricing metadata
 internal/ui              REPL, streaming renderer, tool summaries, usage line
 internal/sysprompt       builtin instructions + environment context (cwd/os/date/git summary)
 ```
@@ -403,22 +404,30 @@ Unknown models (arbitrary names on OpenAI-compatible servers) display token coun
 without a dollar figure, and use a conservative 256k context-window default,
 configurable with `-default-context-window` and overridable for a run with
 `-context-window`. Model prices and context windows are loaded from provider
-config files referenced by the main config.
+config files referenced by the main config, then filled from a best-effort
+`https://models.dev/api.json` lookup when local metadata is missing. Localhost base
+URLs skip the online lookup.
 
 ## 7. Configuration and provider selection
 
 Precedence: **flags > environment > config file > built-in defaults.**
 
 - Environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_BASE_URL`,
-  `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags. Environment API
-  keys override provider-config keys.
+  `ANTHROPIC_BASE_URL`, plus `HARNESS_*` equivalents for most flags. Provider configs
+  may also name provider-specific `api_key_env` variables such as
+  `OPENROUTER_API_KEY`. Environment API keys override provider-config keys.
 - Config file (optional): `~/.config/harness/config.json` — provider, model,
   provider_configs, and flag defaults. Provider config paths are resolved relative to
-  the config file and may define api_type, base_url, api_key, models, context windows,
-  and pricing.
-- `--setup` creates a basic config in the default directory. It prompts for provider
-  name, provider URL, api_type, API key, and model name, then writes the main config
-  plus one provider config.
+  the config file and may define api_type, base_url, api_key, api_key_env, models,
+  context windows, and pricing.
+- `--setup` creates a basic config in the default directory, or appends a new provider
+  config to an existing default config. It prompts for provider name and model name,
+  resolving unique models.dev prefixes when available. It fills provider URL from the
+  models.dev `api` field, falls back to first-party defaults for OpenAI and Anthropic,
+  infers api_type/key env vars, and writes context/pricing for the selected model when
+  known. Without `--force`, setup refuses to overwrite existing provider files and
+  preserves existing default provider/model fields; `--force` opts into those
+  overwrites.
 - **Selection rule:** `-model` is primary. Provider is inferred — model names starting
   with `claude` → Anthropic, everything else → OpenAI-compatible (the right fallback for
   arbitrary local model names). Explicit `-provider` overrides inference and may name a
@@ -759,6 +768,8 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 -v                show tool result snippets
 -no-color
 -config <file>    alternate config path
+--setup           create or update config in ~/.config/harness
+--force           with --setup, overwrite existing provider files and defaults
 ```
 
 ### One-shot mode (`-p`)

@@ -6,10 +6,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -21,6 +24,7 @@ import (
 	"harness/internal/config"
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
+	"harness/internal/modelsdev"
 	"harness/internal/session"
 	"harness/internal/skills"
 	"harness/internal/sysprompt"
@@ -34,15 +38,16 @@ func main() {
 	defer signal.Stop(sigCh)
 
 	os.Exit(run(environment{
-		args:       os.Args[1:],
-		stdin:      os.Stdin,
-		stdout:     os.Stdout,
-		stderr:     os.Stderr,
-		getenv:     os.Getenv,
-		now:        time.Now,
-		colorTTY:   isTTY(os.Stdout),
-		stdinPiped: pipedStdin(os.Stdin),
-		sigCh:      sigCh,
+		args:             os.Args[1:],
+		stdin:            os.Stdin,
+		stdout:           os.Stdout,
+		stderr:           os.Stderr,
+		getenv:           os.Getenv,
+		now:              time.Now,
+		colorTTY:         isTTY(os.Stdout),
+		stdinPiped:       pipedStdin(os.Stdin),
+		sigCh:            sigCh,
+		modelsDevCatalog: defaultModelsDevCatalog,
 	}))
 }
 
@@ -64,6 +69,10 @@ type environment struct {
 	// newProvider builds the llm.Provider; nil uses factory.New. Tests inject a
 	// scripted provider so run is exercised without real network calls.
 	newProvider func(factory.Options) (llm.Provider, error)
+
+	// modelsDevCatalog fetches optional model metadata. A nil fetcher disables
+	// online enrichment, which keeps tests and offline runs deterministic.
+	modelsDevCatalog func(context.Context) (*modelsdev.Catalog, error)
 }
 
 // run wires everything together and returns the process exit code (design §10
@@ -92,7 +101,7 @@ func run(env environment) int {
 		return ui.ExitUsage
 	}
 	if cfg.Setup {
-		if err := runSetup(env); err != nil {
+		if err := runSetup(env, cfg.SetupForce); err != nil {
 			fmt.Fprintf(stderr, "harness: setup: %v\n", err)
 			return ui.ExitUsage
 		}
@@ -111,7 +120,8 @@ func run(env environment) int {
 		return ui.ExitUsage
 	}
 	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
-	effectiveProvider, effectiveBaseURL, effectiveAPIKey := resolveProvider(cfg, providerConfigs)
+	effectiveProvider, effectiveBaseURL, effectiveAPIKey := resolveProvider(cfg, providerConfigs, getenv)
+	enrichRegistryFromModelsDev(modelRegistry, cfg.Model, cfg.Provider, effectiveProvider, effectiveBaseURL, env.modelsDevCatalog, cfg.Verbose, stderr)
 	effectiveContextWindow := cfg.ContextWindow
 	if effectiveContextWindow <= 0 {
 		effectiveContextWindow = modelRegistry.ContextWindow(cfg.Model)
@@ -310,6 +320,63 @@ func configDir(path string) string {
 	return filepath.Dir(path)
 }
 
+func defaultModelsDevCatalog(ctx context.Context) (*modelsdev.Catalog, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return modelsdev.Fetch(ctx, http.DefaultClient, modelsdev.DefaultURL)
+}
+
+func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiType, baseURL string, fetch func(context.Context) (*modelsdev.Catalog, error), verbose bool, errw io.Writer) {
+	if registry == nil || fetch == nil || model == "" {
+		return
+	}
+	if isLocalBaseURL(baseURL) {
+		return
+	}
+	if info, ok := registry.Lookup(model); ok && info.ContextWindow > 0 && registry.HasPrice(model) {
+		return
+	}
+
+	catalog, err := fetch(context.Background())
+	if err != nil {
+		if verbose {
+			fmt.Fprintf(errw, "harness: warning: models.dev lookup skipped: %v\n", err)
+		}
+		return
+	}
+	provider, ok := catalog.Provider(providerID)
+	if !ok {
+		provider, ok = catalog.ProviderByAPI(baseURL)
+	}
+	if !ok {
+		provider, ok = catalog.Provider(apiType)
+	}
+	if !ok {
+		return
+	}
+	info, ok := provider.ModelInfo(model)
+	if !ok && apiType != "" && provider.ID != apiType {
+		if fallback, found := catalog.Provider(apiType); found {
+			info, ok = fallback.ModelInfo(model)
+		}
+	}
+	if ok {
+		registry.MergeModel(model, info)
+	}
+}
+
+func isLocalBaseURL(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 type setupMainConfig struct {
 	Provider             string   `json:"provider"`
 	Model                string   `json:"model"`
@@ -318,44 +385,61 @@ type setupMainConfig struct {
 }
 
 type setupProviderConfig struct {
-	Name    string             `json:"name"`
-	APIType string             `json:"api_type"`
-	BaseURL string             `json:"base_url"`
-	APIKey  string             `json:"api_key"`
-	Models  []setupModelConfig `json:"models"`
+	Name      string             `json:"name"`
+	APIType   string             `json:"api_type"`
+	BaseURL   string             `json:"base_url"`
+	APIKey    string             `json:"api_key"`
+	APIKeyEnv []string           `json:"api_key_env,omitempty"`
+	Models    []setupModelConfig `json:"models"`
 }
 
 type setupModelConfig struct {
-	Name string `json:"name"`
+	Name          string     `json:"name"`
+	ContextWindow int        `json:"context_window,omitempty"`
+	Price         *llm.Price `json:"price,omitempty"`
 }
 
-func runSetup(env environment) error {
+func runSetup(env environment, force bool) error {
 	dir := defaultConfigDir(env.getenv)
 	configPath := filepath.Join(dir, "config.json")
-	if exists, err := pathExists(configPath); err != nil {
+	configExists, err := pathExists(configPath)
+	if err != nil {
 		return err
-	} else if exists {
-		return fmt.Errorf("%s already exists", configPath)
 	}
 
 	reader := bufio.NewReader(env.stdin)
-	providerName, err := promptRequired(reader, env.stdout, "Provider name: ", "provider name")
+	catalog, err := setupCatalog(env)
+	if err != nil {
+		fmt.Fprintf(env.stderr, "harness: setup: warning: models.dev lookup skipped: %v\n", err)
+	}
+
+	providerName, providerMeta, err := promptProviderName(reader, env.stdout, catalog)
 	if err != nil {
 		return err
 	}
 	providerFile := providerConfigFilename(providerName)
 	providerPath := filepath.Join(dir, providerFile)
-	if exists, err := pathExists(providerPath); err != nil {
-		return err
-	} else if exists {
-		return fmt.Errorf("%s already exists", providerPath)
-	}
-
-	baseURL, err := promptRequired(reader, env.stdout, "Provider URL: ", "provider url")
+	providerExists, err := pathExists(providerPath)
 	if err != nil {
 		return err
 	}
-	apiType, err := promptRequired(reader, env.stdout, "API type (openai/anthropic): ", "api type")
+	if providerExists && !force {
+		return fmt.Errorf("%s already exists", providerPath)
+	}
+
+	baseURLDefault := ""
+	apiTypeDefault := ""
+	var apiKeyEnv []string
+	if providerMeta != nil {
+		baseURLDefault = providerMeta.BaseURL()
+		apiTypeDefault = providerMeta.APIType()
+		apiKeyEnv = append(apiKeyEnv, providerMeta.Env...)
+	}
+	baseURL, err := promptWithDefault(reader, env.stdout, "Provider URL", baseURLDefault, baseURLDefault == "")
+	if err != nil {
+		return err
+	}
+	apiType, err := promptWithDefault(reader, env.stdout, "API type (openai/anthropic)", apiTypeDefault, apiTypeDefault == "")
 	if err != nil {
 		return err
 	}
@@ -363,11 +447,15 @@ func runSetup(env environment) error {
 	if apiType != "openai" && apiType != "anthropic" {
 		return fmt.Errorf("api type %q is not supported (want openai or anthropic)", apiType)
 	}
-	apiKey, err := promptLine(reader, env.stdout, "API key (optional): ")
+	apiKeyLabel := "API key (optional)"
+	if len(apiKeyEnv) > 0 {
+		apiKeyLabel = fmt.Sprintf("API key (optional; env %s also works)", strings.Join(apiKeyEnv, "/"))
+	}
+	apiKey, err := promptLine(reader, env.stdout, apiKeyLabel+": ")
 	if err != nil {
 		return err
 	}
-	modelName, err := promptRequired(reader, env.stdout, "Model name: ", "model name")
+	model, err := promptModelName(reader, env.stdout, providerMeta)
 	if err != nil {
 		return err
 	}
@@ -377,30 +465,291 @@ func runSetup(env environment) error {
 	}
 
 	provider := setupProviderConfig{
-		Name:    providerName,
-		APIType: apiType,
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-		Models:  []setupModelConfig{{Name: modelName}},
-	}
-	if err := writeJSONFileExclusive(providerPath, provider); err != nil {
-		return err
+		Name:      providerName,
+		APIType:   apiType,
+		BaseURL:   baseURL,
+		APIKey:    apiKey,
+		APIKeyEnv: apiKeyEnv,
+		Models:    []setupModelConfig{model},
 	}
 
 	mainConfig := setupMainConfig{
 		Provider:             providerName,
-		Model:                modelName,
+		Model:                model.Name,
 		ProviderConfigs:      []string{providerFile},
 		DefaultContextWindow: llm.DefaultContextWindow,
 	}
-	if err := writeJSONFileExclusive(configPath, mainConfig); err != nil {
-		_ = os.Remove(providerPath)
+
+	var configBody any = mainConfig
+	if configExists {
+		updated, err := updatedSetupConfig(configPath, providerFile, providerName, model.Name, force)
+		if err != nil {
+			return err
+		}
+		configBody = updated
+	}
+
+	if err := writeSetupProviderConfig(providerPath, provider, force); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(env.stdout, "Wrote %s\n", configPath)
-	fmt.Fprintf(env.stdout, "Wrote %s\n", providerPath)
+	writeConfig := writeJSONFileExclusive
+	configVerb := "Wrote"
+	if configExists {
+		writeConfig = writeJSONFileAtomic
+		configVerb = "Updated"
+	}
+	if err := writeConfig(configPath, configBody); err != nil {
+		if !providerExists {
+			_ = os.Remove(providerPath)
+		}
+		return err
+	}
+
+	providerVerb := "Wrote"
+	if providerExists {
+		providerVerb = "Overwrote"
+	}
+	fmt.Fprintf(env.stdout, "%s %s\n", configVerb, configPath)
+	fmt.Fprintf(env.stdout, "%s %s\n", providerVerb, providerPath)
 	return nil
+}
+
+func updatedSetupConfig(path, providerFile, providerName, modelName string, force bool) (map[string]json.RawMessage, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		cfg = map[string]json.RawMessage{}
+	}
+
+	configs, err := setupProviderConfigs(cfg["provider_configs"])
+	if err != nil {
+		return nil, err
+	}
+	if containsString(configs, providerFile) && !force {
+		return nil, fmt.Errorf("%s already references provider config %s", path, providerFile)
+	}
+	if !containsString(configs, providerFile) {
+		configs = append(configs, providerFile)
+	}
+	if err := setJSONField(cfg, "provider_configs", configs); err != nil {
+		return nil, err
+	}
+
+	if err := setSetupStringField(cfg, "provider", providerName, force); err != nil {
+		return nil, err
+	}
+	if err := setSetupStringField(cfg, "model", modelName, force); err != nil {
+		return nil, err
+	}
+	if _, ok := cfg["default_context_window"]; !ok || force {
+		if err := setJSONField(cfg, "default_context_window", llm.DefaultContextWindow); err != nil {
+			return nil, err
+		}
+	}
+	return cfg, nil
+}
+
+func setupProviderConfigs(raw json.RawMessage) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var configs []string
+	if err := json.Unmarshal(raw, &configs); err != nil {
+		return nil, fmt.Errorf("provider_configs must be an array of strings: %w", err)
+	}
+	return configs, nil
+}
+
+func setSetupStringField(cfg map[string]json.RawMessage, key, value string, force bool) error {
+	if _, ok := cfg[key]; ok && !force {
+		return nil
+	}
+	return setJSONField(cfg, key, value)
+}
+
+func setJSONField(cfg map[string]json.RawMessage, key string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	cfg[key] = data
+	return nil
+}
+
+func writeSetupProviderConfig(path string, provider setupProviderConfig, force bool) error {
+	if force {
+		return writeJSONFileAtomic(path, provider)
+	}
+	return writeJSONFileExclusive(path, provider)
+}
+
+func writeJSONFileAtomic(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func setupCatalog(env environment) (*modelsdev.Catalog, error) {
+	if env.modelsDevCatalog == nil {
+		return nil, nil
+	}
+	return env.modelsDevCatalog(context.Background())
+}
+
+func promptProviderName(r *bufio.Reader, w io.Writer, catalog *modelsdev.Catalog) (string, *modelsdev.Provider, error) {
+	if catalog == nil {
+		value, err := promptRequired(r, w, "Provider name: ", "provider name")
+		return value, nil, err
+	}
+	for {
+		value, err := promptRequired(r, w, "Provider name: ", "provider name")
+		if err != nil {
+			return "", nil, err
+		}
+		provider, matches, ok := catalog.ResolveProvider(value)
+		if ok {
+			if provider.ID != value {
+				fmt.Fprintf(w, "Using provider %s%s\n", provider.ID, displayNameSuffix(provider.Name, provider.ID))
+			}
+			return provider.ID, &provider, nil
+		}
+		if len(matches) > 0 {
+			fmt.Fprintf(w, "Matches: %s\n", providerMatches(matches, 8))
+			continue
+		}
+		return value, nil, nil
+	}
+}
+
+func promptModelName(r *bufio.Reader, w io.Writer, provider *modelsdev.Provider) (setupModelConfig, error) {
+	if provider == nil || len(provider.Models) == 0 {
+		value, err := promptRequired(r, w, "Model name: ", "model name")
+		return setupModelConfig{Name: value}, err
+	}
+	for {
+		value, err := promptRequired(r, w, "Model name: ", "model name")
+		if err != nil {
+			return setupModelConfig{}, err
+		}
+		model, matches, ok := provider.ResolveModel(value)
+		if ok {
+			if model.ID != value {
+				fmt.Fprintf(w, "Using model %s%s\n", model.ID, displayNameSuffix(model.Name, model.ID))
+			}
+			return setupModelFromModelsDev(model), nil
+		}
+		if len(matches) > 0 {
+			fmt.Fprintf(w, "Matches: %s\n", modelMatches(matches, 8))
+			continue
+		}
+		return setupModelConfig{Name: value}, nil
+	}
+}
+
+func promptWithDefault(r *bufio.Reader, w io.Writer, label, def string, required bool) (string, error) {
+	prompt := label + ": "
+	if def != "" {
+		prompt = fmt.Sprintf("%s [%s]: ", label, def)
+	}
+	value, err := promptLine(r, w, prompt)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		value = def
+	}
+	if required && value == "" {
+		return "", fmt.Errorf("%s is required", strings.ToLower(label))
+	}
+	return value, nil
+}
+
+func setupModelFromModelsDev(model modelsdev.Model) setupModelConfig {
+	cfg := setupModelConfig{
+		Name:          model.ID,
+		ContextWindow: model.Limit.Context,
+	}
+	if setupPriceKnown(model.Cost) {
+		price := model.Cost
+		cfg.Price = &price
+	}
+	return cfg
+}
+
+func providerMatches(matches []modelsdev.Provider, limit int) string {
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	parts := make([]string, 0, len(matches))
+	for _, p := range matches {
+		parts = append(parts, p.ID+displayNameSuffix(p.Name, p.ID))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func modelMatches(matches []modelsdev.Model, limit int) string {
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	parts := make([]string, 0, len(matches))
+	for _, m := range matches {
+		parts = append(parts, m.ID+displayNameSuffix(m.Name, m.ID))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func displayNameSuffix(name, id string) string {
+	if name == "" || name == id {
+		return ""
+	}
+	return " (" + name + ")"
+}
+
+func setupPriceKnown(p llm.Price) bool {
+	return p.Input != 0 || p.Output != 0 || p.CacheRead != 0 || p.CacheWrite != 0
 }
 
 func promptRequired(r *bufio.Reader, w io.Writer, label, field string) (string, error) {
@@ -476,7 +825,7 @@ func providerConfigFilename(name string) string {
 	return s + ".json"
 }
 
-func resolveProvider(cfg config.Config, providers []llm.ProviderConfig) (provider, baseURL, apiKey string) {
+func resolveProvider(cfg config.Config, providers []llm.ProviderConfig, getenv func(string) string) (provider, baseURL, apiKey string) {
 	provider = cfg.Provider
 	baseURL = cfg.BaseURL
 	apiKey = cfg.APIKey
@@ -489,6 +838,12 @@ func resolveProvider(cfg config.Config, providers []llm.ProviderConfig) (provide
 	}
 	if baseURL == "" {
 		baseURL = pc.BaseURL
+	}
+	for _, name := range pc.APIKeyEnv {
+		if value := getenv(name); value != "" {
+			apiKey = value
+			break
+		}
 	}
 	if apiKey == "" {
 		apiKey = pc.APIKey

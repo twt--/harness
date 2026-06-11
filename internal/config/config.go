@@ -27,7 +27,8 @@ var ErrHelp = flag.ErrHelp
 
 // Config is the fully resolved, provider-neutral configuration.
 type Config struct {
-	Setup bool // -setup: create a basic config in the default config directory
+	Setup      bool // -setup: create or update config in the default config directory
+	SetupForce bool // -force: allow setup to overwrite existing setup-managed files/fields
 
 	// Provider selection.
 	Provider string // provider config name or api type; resolved after inference
@@ -54,9 +55,9 @@ type Config struct {
 	PromptSet bool   // -p was supplied (distinguishes "" from absent)
 
 	// UI.
-	Verbose     bool   // -v
-	NoColor     bool   // -no-color or NO_COLOR
-	ReplPrompt  string // -prompt: REPL input prompt (default "> ")
+	Verbose    bool   // -v
+	NoColor    bool   // -no-color or NO_COLOR
+	ReplPrompt string // -prompt: REPL input prompt (default "> ")
 
 	// Provider configs: filenames resolved relative to the config file's directory.
 	ProviderConfigs []string
@@ -100,11 +101,11 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		return Config{}, err
 	}
 
-	// -setup is intentionally independent of any existing config file: it is the
-	// path for creating the default config, so a malformed or missing explicit
+	// -setup is intentionally independent of any resolved config file: it manages
+	// the default config directory directly, so a malformed or missing explicit
 	// config should not block setup from running.
 	if *f.setup {
-		return Config{Setup: true}, nil
+		return Config{Setup: true, SetupForce: *f.force}, nil
 	}
 
 	fc, err := readConfigFile(configPath)
@@ -210,6 +211,7 @@ type flags struct {
 	verbose, noColor         *bool
 	config                   *string
 	setup                    *bool
+	force                    *bool
 }
 
 // newFlagSet defines every design §10 flag on a fresh FlagSet, used by both Load
@@ -235,7 +237,8 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	// -config is consumed by the caller before Load (it picks the file Load
 	// reads); accepted here so it is not rejected as an unknown flag.
 	f.config = fs.String("config", "", "alternate config path")
-	f.setup = fs.Bool("setup", false, "create a basic config in the default config directory")
+	f.setup = fs.Bool("setup", false, "create or update config in the default config directory")
+	f.force = fs.Bool("force", false, "with -setup, allow overwriting existing provider files and default provider/model fields")
 	return fs, f
 }
 
