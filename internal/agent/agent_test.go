@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -382,6 +383,55 @@ func TestUsageAccumulatedAcrossSteps(t *testing.T) {
 	if tu.Steps != 2 {
 		t.Errorf("turn steps = %d, want 2", tu.Steps)
 	}
+}
+
+// SetTools swaps the registry that backs both the advertised specs and
+// dispatch, so a mode switch immediately changes what the model sees and can
+// call.
+func TestSetToolsChangesAdvertisedAndDispatchableTools(t *testing.T) {
+	full, err := tools.Catalog().Subset([]string{"read_file", "grep"})
+	if err != nil {
+		t.Fatalf("subset: %v", err)
+	}
+	restricted, err := tools.Catalog().Subset([]string{"read_file"})
+	if err != nil {
+		t.Fatalf("subset: %v", err)
+	}
+
+	fp := llmtest.New("fake",
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("a")}, Stop: llm.StopEndTurn},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("b")}, Stop: llm.StopEndTurn},
+	)
+	a := newAgent(fp, full, Options{})
+
+	if err := a.RunTurn(context.Background(), "one", &recordSink{}); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	a.SetTools(restricted)
+	if err := a.RunTurn(context.Background(), "two", &recordSink{}); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	if names := specNames(fp.Requests[0].Tools); !slices.Contains(names, "grep") {
+		t.Errorf("first request should advertise grep, got %v", names)
+	}
+	if names := specNames(fp.Requests[1].Tools); slices.Contains(names, "grep") {
+		t.Errorf("after SetTools, grep should no longer be advertised, got %v", names)
+	}
+
+	// A call to the now-removed tool must be undispatchable.
+	res := a.tools.Dispatch(context.Background(), llm.ToolCall{ID: "1", Name: "grep", Input: json.RawMessage(`{}`)})
+	if !res.IsError || !strings.Contains(res.Text, "unknown tool") {
+		t.Errorf("removed tool should be undispatchable, got %+v", res)
+	}
+}
+
+func specNames(specs []llm.ToolSchema) []string {
+	names := make([]string, len(specs))
+	for i, s := range specs {
+		names[i] = s.Name
+	}
+	return names
 }
 
 func TestRequestCarriesResolvedModel(t *testing.T) {

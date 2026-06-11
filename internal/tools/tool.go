@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
+	"slices"
+	"strings"
 
 	"harness/internal/llm"
 )
@@ -58,6 +61,49 @@ func Default() *Registry {
 	RegisterFileTools(r)
 	RegisterExecTools(r)
 	return r
+}
+
+// DefaultNames returns the names of the Default tool set in registration
+// order. Run-mode definitions use it as the baseline allowed-tool list.
+func DefaultNames() []string { return Default().Names() }
+
+// Catalog returns a Registry with every constructible tool: the Default set
+// plus the mode-oriented tools (git_readonly, write_tmp_file), which run modes
+// select from by name. Build it once per process — write_tmp_file holds the
+// per-run temp directory.
+func Catalog() *Registry {
+	r := Default()
+	r.Register(gitReadonly{})
+	r.Register(newWriteTmpFile())
+	return r
+}
+
+// Names returns the registered tool names in registration order.
+func (r *Registry) Names() []string {
+	return append([]string(nil), r.order...)
+}
+
+// Subset returns a new Registry containing exactly the named tools, in this
+// registry's order. Unknown names are an error so a config typo fails fast
+// instead of silently dropping a tool.
+func (r *Registry) Subset(names []string) (*Registry, error) {
+	want := make(map[string]bool, len(names))
+	for _, name := range names {
+		want[name] = true
+	}
+	sub := &Registry{}
+	for _, name := range r.order {
+		if want[name] {
+			sub.Register(r.tools[name])
+			delete(want, name)
+		}
+	}
+	if len(want) > 0 {
+		unknown := slices.Sorted(maps.Keys(want))
+		return nil, fmt.Errorf("unknown tools: %s (valid tools: %s)",
+			strings.Join(unknown, ", "), strings.Join(r.Names(), ", "))
+	}
+	return sub, nil
 }
 
 // Register adds a tool. A later registration with the same name replaces the

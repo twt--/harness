@@ -15,6 +15,7 @@ import (
 	"harness/internal/session"
 	"harness/internal/skills"
 	"harness/internal/term"
+	"harness/internal/tools"
 )
 
 // ModelSelection is the runtime model/provider bundle returned by App.SwitchModel.
@@ -25,6 +26,15 @@ type ModelSelection struct {
 	BaseURL       string
 	Runtime       llm.Provider
 	ContextWindow int // agent override; 0 means use the registry
+}
+
+// ModeSelection is the runtime run-mode bundle returned by App.SwitchMode: the
+// new tool registry to advertise/dispatch from and the fully reassembled system
+// prompt (with the mode's section) to send.
+type ModeSelection struct {
+	Name   string
+	Tools  *tools.Registry
+	System string
 }
 
 // App bundles the dependencies the REPL and one-shot driver need. main builds it
@@ -46,6 +56,10 @@ type App struct {
 
 	AvailableModels []string
 	SwitchModel     func(model string) (ModelSelection, error)
+
+	Mode           string   // current run mode name
+	AvailableModes []string // sorted mode names for /mode listing
+	SwitchMode     func(name string) (ModeSelection, error)
 
 	SessionPath string    // current save path; /clear rotates it
 	StateDir    string    // for rotating to a fresh auto-save path on /clear
@@ -80,6 +94,7 @@ const helpText = `commands:
   /usage           cumulative session tokens and cost
   /save [file]     force save (optionally elsewhere)
   /model [model]   list models, or switch to model
+  /mode [name]     list run modes, or switch to mode
   /skills          list available skills
   $skillName       invoke a skill (reads SKILL.md and sends as prompt)
 lines starting with / are commands; // sends a literal leading slash`
@@ -225,6 +240,12 @@ func (app *App) command(line string) (exit bool) {
 		} else {
 			app.switchModel(arg)
 		}
+	case "/mode":
+		if arg == "" {
+			fmt.Fprintln(app.Errw, app.modeSummary())
+		} else {
+			app.switchMode(arg)
+		}
 	case "/skills":
 		fmt.Fprintln(app.Errw, app.skillsSummary())
 	default:
@@ -307,6 +328,43 @@ func (app *App) switchModel(model string) {
 	app.RegistryModel = selection.RegistryModel
 	app.BaseURL = selection.BaseURL
 	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s base-url=%s]\n", app.Provider, app.Model, app.BaseURL)
+}
+
+// modeSummary renders the current run mode plus the modes available for
+// switching, marking the current one.
+func (app *App) modeSummary() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "current mode: %s\n", app.Mode)
+	b.WriteString("available modes:")
+	if len(app.AvailableModes) == 0 {
+		b.WriteString(" none configured")
+		return b.String()
+	}
+	for _, name := range app.AvailableModes {
+		if name == app.Mode {
+			fmt.Fprintf(&b, "\n  %s (current)", name)
+		} else {
+			fmt.Fprintf(&b, "\n  %s", name)
+		}
+	}
+	return b.String()
+}
+
+func (app *App) switchMode(name string) {
+	if app.SwitchMode == nil {
+		fmt.Fprintln(app.Errw, "[mode switch unavailable]")
+		return
+	}
+	selection, err := app.SwitchMode(name)
+	if err != nil {
+		fmt.Fprintf(app.Errw, "[mode switch failed: %v]\n", err)
+		return
+	}
+	app.Agent.SetTools(selection.Tools)
+	app.Agent.SetSystem(selection.System)
+	app.Mode = selection.Name
+	app.System = selection.System // so saved sessions capture the mode's prompt
+	fmt.Fprintf(app.Errw, "[mode switched: %s]\n", selection.Name)
 }
 
 // clear resets the conversation and rotates to a fresh auto-save file (design
@@ -434,6 +492,7 @@ func (app *App) save(path string) error {
 		Created:  app.Created,
 		Updated:  app.clock()(),
 		System:   app.System,
+		Mode:     app.Mode,
 		Messages: app.Agent.Transcript(),
 		Usage:    app.usage,
 	}

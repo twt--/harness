@@ -109,6 +109,7 @@ interrupted.
 -default-context-window <n>   fallback window for unknown/unconfigured models (default 256000)
 -context-window <n>   override the model's context window (tokens)
 -reasoning-effort <level>   reasoning/thinking effort when supported
+-mode <name>      run mode: auto (default), plan, independent, or a config-defined mode
 -v                show tool result snippets (first ~5 lines, dimmed)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
 -config <file>    alternate config path
@@ -130,7 +131,8 @@ Precedence is **flags > environment > config file > built-in defaults**.
   (`HARNESS_MODEL`, `HARNESS_MAX_STEPS`, `HARNESS_DEFAULT_CONTEXT_WINDOW`, …).
   Environment API keys override keys from provider config files.
 - Optional config file at `~/.config/harness/config.json` (override with
-  `-config`): `provider`, `model`, `provider_configs`, and flag defaults. Provider
+  `-config`): `provider`, `model`, `provider_configs`, `mode`, `modes` (see
+  [Run modes](#run-modes)), and flag defaults. Provider
   config paths are resolved relative to the config file and may define `api_type`,
   `base_url`, `api_key`, `api_key_env`, models, context windows, reasoning metadata,
   and pricing. The `default_context_window` fallback is used only when a model has no
@@ -172,6 +174,46 @@ Lines starting with `/` are commands; `//` sends a literal leading slash.
 | `/model` | show current provider/model/base URL and configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
+| `/mode` | list run modes, marking the current one |
+| `/mode <name>` | switch the active run mode |
+
+## Run modes
+
+A **run mode** bundles a set of allowed tools with extra system-prompt
+instructions, so the same harness can plan, work autonomously, or run wide open.
+Select one with `-mode <name>`, `HARNESS_MODE`, or `mode` in the config file
+(default `auto`); switch mid-session with `/mode <name>`. The active mode is
+saved with the session and restored on `-resume` (a `-mode` flag still wins).
+
+Three modes are built in:
+
+| mode | tools | behavior |
+|---|---|---|
+| `auto` | all tools | the default — the model decides what to do (unchanged behavior) |
+| `plan` | read-only (`read_file`, `list_dir`, `grep`, `web_fetch`, `git_readonly`, `write_tmp_file`) | collaborate on a plan without modifying the project |
+| `independent` | all tools | complete the task end-to-end without pausing for input; stop only on a hard blocker or the step limit |
+
+Define new modes or override built-ins in the config file under `modes`. Entries
+**field-level merge** onto a built-in of the same name — an omitted field keeps
+the built-in value, so you can retune just a prompt or just a tool list:
+
+```json
+{
+  "mode": "plan",
+  "modes": {
+    "plan":   { "prompt": "@~/.config/harness/plan-prompt.md" },
+    "review": {
+      "allowed_tools": ["read_file", "list_dir", "grep", "git_readonly"],
+      "prompt": "You are a code reviewer. Read the diff and surrounding code, then report findings. Do not modify files."
+    }
+  }
+}
+```
+
+A mode with no `allowed_tools` gets the full tool set; a mode `prompt` may be a
+`@file` reference. Unknown mode names and unknown tool names are reported at
+startup. This tool gating is the one place the harness restricts tools — the
+underlying tools still assume an external sandbox for real isolation.
 
 ## Sessions
 
@@ -217,5 +259,8 @@ so a visible context-length error is preferred over silent data loss.
 ## Tools
 
 `read_file`, `list_dir`, `grep`, `edit`, `write_file`, `apply_patch`,
-`run_command`, `exec`, `git`, `web_fetch`. See [`docs/design.md`](docs/design.md)
+`run_command`, `exec`, `git`, `web_fetch`, plus two used by restricted modes:
+`git_readonly` (read-only git subcommands — `status`, `log`, `diff`, `show`,
+`grep`, `blame`, `bisect`) and `write_tmp_file` (write scratch files under a
+private per-run temp directory). See [`docs/design.md`](docs/design.md)
 §9 for each tool's schema and exact behavior.

@@ -622,3 +622,73 @@ func TestMissingExplicitConfigFileIsError(t *testing.T) {
 		t.Fatalf("expected error for missing explicit config file")
 	}
 }
+
+func TestModePrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mode":"plan"}`)
+	env := envFrom(map[string]string{"HARNESS_MODE": "independent"})
+
+	c, err := Load([]string{"-model", "gpt-5.5", "-mode", "AUTO"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Mode != "auto" {
+		t.Fatalf("flag precedence (lowercased): got mode %q, want auto", c.Mode)
+	}
+
+	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Mode != "independent" {
+		t.Fatalf("env precedence: got mode %q, want independent", c.Mode)
+	}
+
+	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Mode != "plan" {
+		t.Fatalf("file precedence: got mode %q, want plan", c.Mode)
+	}
+}
+
+// An unspecified mode stays empty so main can distinguish "not specified"
+// (session resume may supply the mode) from an explicit choice.
+func TestModeUnspecifiedIsEmpty(t *testing.T) {
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Mode != "" {
+		t.Fatalf("mode %q, want empty when unspecified", c.Mode)
+	}
+}
+
+func TestModesObjectDecodes(t *testing.T) {
+	cfgPath := writeConfig(t, `{
+		"modes": {
+			"review": {"allowed_tools": ["read_file", "grep"], "prompt": "review the diff"},
+			"plan": {"prompt": "custom plan prompt"}
+		}
+	}`)
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	review, ok := c.Modes["review"]
+	if !ok {
+		t.Fatal("modes.review not decoded")
+	}
+	if len(review.AllowedTools) != 2 || review.AllowedTools[0] != "read_file" || review.AllowedTools[1] != "grep" {
+		t.Errorf("review.AllowedTools = %v", review.AllowedTools)
+	}
+	if review.Prompt != "review the diff" {
+		t.Errorf("review.Prompt = %q", review.Prompt)
+	}
+	if c.Modes["plan"].Prompt != "custom plan prompt" {
+		t.Errorf("plan.Prompt = %q", c.Modes["plan"].Prompt)
+	}
+	if len(c.Modes["plan"].AllowedTools) != 0 {
+		t.Errorf("plan.AllowedTools should be empty (inherit), got %v", c.Modes["plan"].AllowedTools)
+	}
+}

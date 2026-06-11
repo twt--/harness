@@ -42,7 +42,13 @@ func (gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 		return "", badArgs("args is required and must be a non-empty array")
 	}
 
-	cmd := buildGitCommand(ctx, args.Args)
+	return runGitArgs(ctx, args.Args)
+}
+
+// runGitArgs executes git with userArgs and formats the combined output plus
+// the exit-code marker; shared by git and git_readonly.
+func runGitArgs(ctx context.Context, userArgs []string) (string, error) {
+	cmd := buildGitCommand(ctx, userArgs)
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

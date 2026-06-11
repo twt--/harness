@@ -28,6 +28,7 @@ type Session struct {
 	Created  time.Time     `json:"created"`
 	Updated  time.Time     `json:"updated"`
 	System   string        `json:"system"`
+	Mode     string        `json:"mode,omitempty"`
 	Messages []llm.Message `json:"messages"`
 	Usage    UsageTotals   `json:"usage"`
 }
