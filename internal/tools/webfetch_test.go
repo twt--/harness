@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +9,7 @@ import (
 )
 
 func runWebFetch(t *testing.T, args map[string]any) (string, error) {
-	t.Helper()
-	b, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	return webFetch{}.Run(context.Background(), b)
+	return runTool(t, webFetch{}, args)
 }
 
 func TestWebFetchTextPlainRaw(t *testing.T) {

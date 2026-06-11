@@ -11,12 +11,7 @@ import (
 )
 
 func runGrep(t *testing.T, args map[string]any) (string, error) {
-	t.Helper()
-	b, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	return grep{}.Run(context.Background(), b)
+	return runTool(t, grep{}, args)
 }
 
 func TestGrepRunsHostGrep(t *testing.T) {

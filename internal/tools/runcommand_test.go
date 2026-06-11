@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,12 +8,7 @@ import (
 )
 
 func runRunCommand(t *testing.T, args map[string]any) (string, error) {
-	t.Helper()
-	b, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	return runCommand{}.Run(context.Background(), b)
+	return runTool(t, runCommand{}, args)
 }
 
 func TestRunCommandEchoExitZero(t *testing.T) {

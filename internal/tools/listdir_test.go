@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,12 +9,7 @@ import (
 )
 
 func runListDir(t *testing.T, args map[string]any) (string, error) {
-	t.Helper()
-	b, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	return listDir{}.Run(context.Background(), b)
+	return runTool(t, listDir{}, args)
 }
 
 func TestListDirOrdering(t *testing.T) {

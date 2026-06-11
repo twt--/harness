@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,12 +8,7 @@ import (
 )
 
 func runEdit(t *testing.T, args map[string]any) (string, error) {
-	t.Helper()
-	b, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	return edit{}.Run(context.Background(), b)
+	return runTool(t, edit{}, args)
 }
 
 func TestEditSingleReplacement(t *testing.T) {

@@ -57,6 +57,34 @@ func fakeProviderEnv(t *testing.T, args []string, fp *llmtest.FakeProvider, stdi
 	return env, &out, &errw, getenv
 }
 
+// okStep is the canned single-step script most wiring tests use: one "ok"
+// text delta, then end_turn.
+func okStep() llmtest.Step {
+	return llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
+		Stop:   llm.StopEndTurn,
+	}
+}
+
+// okStepWithUsage is okStep with reported token counts attached.
+func okStepWithUsage(in, out int) llmtest.Step {
+	s := okStep()
+	s.Usage = llm.Usage{InputTokens: in, OutputTokens: out}
+	return s
+}
+
+// captureOptions replaces env's provider factory with one that records the
+// factory.Options it receives (still returning fp), so tests can assert on the
+// resolved wiring through the returned pointer after run() completes.
+func captureOptions(env *environment, fp *llmtest.FakeProvider) *factory.Options {
+	var got factory.Options
+	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
+		got = opts
+		return fp, nil
+	}
+	return &got
+}
+
 func testModelsDevCatalog(t *testing.T) *modelsdev.Catalog {
 	t.Helper()
 	catalog, err := modelsdev.Decode(strings.NewReader(`{
@@ -146,10 +174,7 @@ func TestRunOneShotAssistantToStdout(t *testing.T) {
 
 func TestRunREPLModelCommandSwitchesProvider(t *testing.T) {
 	initial := llmtest.New("initial")
-	switched := llmtest.New("switched", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	switched := llmtest.New("switched", okStep())
 	env, _, errw, _ := fakeProviderEnv(t,
 		[]string{"-model", "claude-opus-4-8"},
 		initial,
@@ -212,10 +237,7 @@ func TestRunREPLModelCommandAcceptsProviderQualifiedModel(t *testing.T) {
 	}
 
 	initial := llmtest.New("initial")
-	switched := llmtest.New("switched", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	switched := llmtest.New("switched", okStep())
 	env, _, errw, _ := fakeProviderEnv(t,
 		[]string{"-config", cfgPath},
 		initial,
@@ -251,11 +273,7 @@ func TestRunREPLModelCommandAcceptsProviderQualifiedModel(t *testing.T) {
 // main must populate EnvOptions.Dir via os.Getwd so the system prompt the model
 // receives names a real absolute path it can reason about.
 func TestRunEnvBlockReportsAbsoluteCwd(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -753,16 +771,9 @@ func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
 		t.Fatalf("write provider config: %v", err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -782,19 +793,12 @@ func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
 }
 
 func TestRunModelsDevOpenAIDefaultsToResponses(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-p", "hi"}, fp, "")
 	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
 		return testModelsDevCatalog(t), nil
 	}
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -805,19 +809,12 @@ func TestRunModelsDevOpenAIDefaultsToResponses(t *testing.T) {
 }
 
 func TestRunModelsDevOpenAICompatibleBaseURLStaysChatCompletions(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-base-url", "https://proxy.example/v1", "-p", "hi"}, fp, "")
 	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
 		return testModelsDevCatalog(t), nil
 	}
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -828,19 +825,12 @@ func TestRunModelsDevOpenAICompatibleBaseURLStaysChatCompletions(t *testing.T) {
 }
 
 func TestRunExplicitResponsesUsesOpenAIModelsDevMetadata(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-provider", "responses", "-model", "gpt-5.5", "-p", "hi"}, fp, "")
 	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
 		return testModelsDevCatalog(t), nil
 	}
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -875,16 +865,9 @@ func TestRunProviderConfigCanSelectResponses(t *testing.T) {
 		t.Fatalf("write provider config: %v", err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -917,16 +900,9 @@ func TestRunReasoningEffortUsesOpenRouterModeAndRequestConfig(t *testing.T) {
 		t.Fatalf("write provider config: %v", err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -1035,10 +1011,7 @@ func TestRunProviderConfigUsesProviderSpecificAPIKeyEnv(t *testing.T) {
 		t.Fatalf("write provider config: %v", err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
 	baseGetenv := env.getenv
 	env.getenv = func(k string) string {
@@ -1050,11 +1023,7 @@ func TestRunProviderConfigUsesProviderSpecificAPIKeyEnv(t *testing.T) {
 		}
 		return baseGetenv(k)
 	}
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -1065,21 +1034,13 @@ func TestRunProviderConfigUsesProviderSpecificAPIKeyEnv(t *testing.T) {
 }
 
 func TestRunEnrichesUnknownModelFromModelsDev(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1_000_000, 1_000_000))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-p", "hi"}, fp, "")
 	catalog := testModelsDevCatalog(t)
 	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
 		return catalog, nil
 	}
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -1093,21 +1054,14 @@ func TestRunEnrichesUnknownModelFromModelsDev(t *testing.T) {
 }
 
 func TestRunDefaultContextWindowUsedForUnknownModel(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{
 		"-model", "local-model",
 		"-base-url", "http://localhost:11434/v1",
 		"-default-context-window", "512000",
 		"-p", "hi",
 	}, fp, "")
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -1118,10 +1072,7 @@ func TestRunDefaultContextWindowUsedForUnknownModel(t *testing.T) {
 }
 
 func TestRunSkipsModelsDevForLocalBaseURL(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{
 		"-model", "local-model",
 		"-base-url", "http://localhost:11434/v1",
@@ -1161,16 +1112,9 @@ func TestRunContextWindowOverrideStillWins(t *testing.T) {
 		t.Fatalf("write provider config: %v", err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
+	got := captureOptions(&env, fp)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
@@ -1192,10 +1136,7 @@ func TestRunMissingProviderConfigWarnsAndSkips(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -1247,10 +1188,7 @@ func TestRunResumeFlagsWinWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t,
 		[]string{"-model", "claude-opus-4-8", "-provider", "anthropic", "-resume", sessPath, "-p", "continue"},
 		fp, "")
@@ -1293,10 +1231,7 @@ func TestRunOneShotConcatenatesFlagAndStdin(t *testing.T) {
 }
 
 func TestRunSavesSessionToDefaultPath(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-	})
+	fp := llmtest.New("fake", okStep())
 	env, _, errw, getenv := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d", code)
@@ -1457,15 +1392,11 @@ func TestLoadAgentsMD_EmptyDir(t *testing.T) {
 	}
 }
 
-func TestMain_IntegrationAgentsMDIncluded(t *testing.T) {
-	// Create a temp directory with an AGENTS.md file.
-	dir := t.TempDir()
-	agentsMD := "# Custom Rules\n\nUse camelCase variables."
-	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(agentsMD), 0o644); err != nil {
-		t.Fatalf("write AGENTS.md: %v", err)
-	}
-
-	// Change to the temp directory.
+// runInDirSystemPrompt runs a one-shot turn from dir (the chdir is load-bearing:
+// AGENTS.md auto-discovery reads the real working directory) and returns the
+// system prompt the fake provider received.
+func runInDirSystemPrompt(t *testing.T, dir string) string {
+	t.Helper()
 	originalDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get cwd: %v", err)
@@ -1475,11 +1406,7 @@ func TestMain_IntegrationAgentsMDIncluded(t *testing.T) {
 	}
 	defer os.Chdir(originalDir)
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -1488,48 +1415,34 @@ func TestMain_IntegrationAgentsMDIncluded(t *testing.T) {
 	if len(fp.Requests) != 1 {
 		t.Fatalf("want 1 request, got %d", len(fp.Requests))
 	}
-	system := fp.Requests[0].System
-
-	if !strings.Contains(system, agentsMD) {
-		t.Errorf("system prompt should include AGENTS.md content %q; system=%q", agentsMD, system)
-	}
+	return fp.Requests[0].System
 }
 
-func TestMain_IntegrationNoAgentsMDWhenMissing(t *testing.T) {
-	// Create a temp directory without AGENTS.md.
-	dir := t.TempDir()
-
-	// Change to the temp directory.
-	originalDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
+func TestRunAgentsMDDiscovery(t *testing.T) {
+	agentsMD := "# Custom Rules\n\nUse camelCase variables."
+	cases := []struct {
+		name         string
+		writeAgents  bool
+		wantContains []string
+	}{
+		{name: "included when present", writeAgents: true, wantContains: []string{agentsMD}},
+		{name: "builtin prompt when missing", writeAgents: false, wantContains: []string{"You are a coding agent", "<env>"}},
 	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(originalDir)
-
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
-	}
-	if len(fp.Requests) != 1 {
-		t.Fatalf("want 1 request, got %d", len(fp.Requests))
-	}
-	system := fp.Requests[0].System
-
-	// Should contain the builtin instructions and env block.
-	if !strings.Contains(system, "You are a coding agent") {
-		t.Errorf("system prompt should contain builtin instructions; system=%q", system)
-	}
-	if !strings.Contains(system, "<env>") {
-		t.Errorf("system prompt should contain env block; system=%q", system)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.writeAgents {
+				if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(agentsMD), 0o644); err != nil {
+					t.Fatalf("write AGENTS.md: %v", err)
+				}
+			}
+			system := runInDirSystemPrompt(t, dir)
+			for _, want := range tc.wantContains {
+				if !strings.Contains(system, want) {
+					t.Errorf("system prompt should contain %q; system=%q", want, system)
+				}
+			}
+		})
 	}
 }
 
@@ -1545,11 +1458,7 @@ func toolNames(req llm.Request) []string {
 // Default (auto) mode must advertise the current default tool set and carry no
 // mode section — a regression guard that run modes don't change the default.
 func TestRunDefaultModeUnchanged(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -1566,11 +1475,7 @@ func TestRunDefaultModeUnchanged(t *testing.T) {
 
 func TestRunLogsUnavailableToolsAtLaunch(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -1595,11 +1500,7 @@ func TestRunLogsUnavailableToolsAtLaunch(t *testing.T) {
 
 func TestRunQuietSuppressesUnavailableToolWarnings(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "--quiet", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -1612,11 +1513,7 @@ func TestRunQuietSuppressesUnavailableToolWarnings(t *testing.T) {
 
 func TestRunLogLevelSuppressesUnavailableToolWarnings(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "--log-level", "error", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -1629,11 +1526,7 @@ func TestRunLogLevelSuppressesUnavailableToolWarnings(t *testing.T) {
 
 // Plan mode advertises only its read-only tool set and includes its prompt.
 func TestRunPlanModeRestrictsToolsAndAddsPrompt(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-mode", "plan", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
@@ -1667,11 +1560,7 @@ func TestRunUnknownModeIsUsageError(t *testing.T) {
 
 // A config mode entry overriding only the prompt keeps the built-in tool list.
 func TestRunConfigModePromptOverrideKeepsTools(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(cfgPath, []byte(`{"mode":"plan","modes":{"plan":{"prompt":"CUSTOM PLAN GUIDANCE"}}}`), 0644); err != nil {
@@ -1693,11 +1582,7 @@ func TestRunConfigModePromptOverrideKeepsTools(t *testing.T) {
 
 // /mode in the REPL switches the advertised tool set on the next turn.
 func TestRunREPLModeCommandSwitchesTools(t *testing.T) {
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
@@ -1738,11 +1623,7 @@ func TestRunResumeRestoresMode(t *testing.T) {
 		t.Fatalf("save prior session: %v", err)
 	}
 
-	fp := llmtest.New("fake", llmtest.Step{
-		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "ok"}},
-		Stop:   llm.StopEndTurn,
-		Usage:  llm.Usage{InputTokens: 1, OutputTokens: 1},
-	})
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-resume", sessPath, "-p", "again"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {

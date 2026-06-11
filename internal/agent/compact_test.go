@@ -512,13 +512,12 @@ func dumpShort(msgs []llm.Message) string {
 }
 
 // seedTurns returns n complete small turns so compaction has history to fold.
+// The 1-byte "q"/"a" bodies are deliberate: TestProactiveCompactionMidTurn does
+// byte-estimate threshold math against them.
 func seedTurns(n int) []llm.Message {
 	var msgs []llm.Message
-	for i := 0; i < n; i++ {
-		msgs = append(msgs,
-			llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "q"}}},
-			llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "a"}}},
-		)
+	for range n {
+		msgs = append(msgs, userText("q"), asstText("a"))
 	}
 	return msgs
 }

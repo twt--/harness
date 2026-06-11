@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,12 +8,7 @@ import (
 )
 
 func runExec(t *testing.T, args map[string]any) (string, error) {
-	t.Helper()
-	b, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	return execTool{}.Run(context.Background(), b)
+	return runTool(t, execTool{}, args)
 }
 
 func TestExecEchoExitZero(t *testing.T) {

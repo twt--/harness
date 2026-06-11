@@ -2,8 +2,6 @@ package tools
 
 import (
 	"bufio"
-	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,12 +11,7 @@ import (
 )
 
 func runReadFile(t *testing.T, args map[string]any) (string, error) {
-	t.Helper()
-	b, err := json.Marshal(args)
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	return readFile{}.Run(context.Background(), b)
+	return runTool(t, readFile{}, args)
 }
 
 func TestReadFileNumbering(t *testing.T) {
