@@ -527,6 +527,28 @@ func TestTruncatedStreamRetried(t *testing.T) {
 	}
 }
 
+func TestZeroedFinalUsageFrameDoesNotEraseEarlier(t *testing.T) {
+	// The Done event carries zero usage (FakeProvider appends Done with
+	// step.Usage, here the zero value); the mid-stream snapshot must survive.
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{
+			{Kind: llm.EventUsage, Usage: &llm.Usage{InputTokens: 100, OutputTokens: 10, CacheReadTokens: 7}},
+			textDelta("hi"),
+		},
+		Stop: llm.StopEndTurn,
+	})
+	a := newAgent(fp, tools.Default(), Options{})
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "hi", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	u := sink.turnUsage[0].Usage
+	if u.InputTokens != 100 || u.OutputTokens != 10 || u.CacheReadTokens != 7 {
+		t.Errorf("usage = %+v, want the mid-stream snapshot preserved", u)
+	}
+}
+
 func specNames(specs []llm.ToolSchema) []string {
 	names := make([]string, len(specs))
 	for i, s := range specs {

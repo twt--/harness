@@ -457,6 +457,26 @@ func TestContextWindowOverrideMovesDegradeBudget(t *testing.T) {
 	}
 }
 
+func TestSummarizeUsageSurvivesZeroedDoneFrame(t *testing.T) {
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{
+			{Kind: llm.EventUsage, Usage: &llm.Usage{InputTokens: 55, OutputTokens: 5}},
+			textDelta("summary"),
+		},
+		Stop: llm.StopEndTurn,
+	})
+	a := newAgent(fp, tools.Default(), Options{})
+	_, usage, err := a.summarize(context.Background(), []llm.Message{
+		{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "old"}}},
+	})
+	if err != nil {
+		t.Fatalf("summarize: %v", err)
+	}
+	if usage.InputTokens != 55 || usage.OutputTokens != 5 {
+		t.Errorf("usage = %+v, want 55 in / 5 out preserved", usage)
+	}
+}
+
 func dumpShort(msgs []llm.Message) string {
 	var b strings.Builder
 	for i, m := range msgs {

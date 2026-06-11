@@ -14,6 +14,9 @@ type Provider interface {
 	// Stream runs one model call. The iterator yields events until a Done
 	// event or a terminal error (yielded at most once, last). Consumer break
 	// or ctx cancellation aborts the underlying HTTP request.
+	//
+	// Usage events carry cumulative snapshots of the whole call, never
+	// deltas; consumers may merge them with element-wise max.
 	Stream(ctx context.Context, req Request) iter.Seq2[StreamEvent, error]
 }
 

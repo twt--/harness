@@ -297,11 +297,11 @@ func (a *Agent) stream(ctx context.Context, req llm.Request, sink EventSink) (st
 			})
 		case llm.EventUsage:
 			if ev.Usage != nil {
-				res.usage = *ev.Usage
+				res.usage = mergeUsage(res.usage, *ev.Usage)
 			}
 		case llm.EventDone:
 			if ev.Usage != nil {
-				res.usage = *ev.Usage
+				res.usage = mergeUsage(res.usage, *ev.Usage)
 			}
 			res.stopReason = ev.StopReason
 		}
@@ -341,5 +341,17 @@ func add(a, b llm.Usage) llm.Usage {
 		OutputTokens:     a.OutputTokens + b.OutputTokens,
 		CacheReadTokens:  a.CacheReadTokens + b.CacheReadTokens,
 		CacheWriteTokens: a.CacheWriteTokens + b.CacheWriteTokens,
+	}
+}
+
+// mergeUsage merges a cumulative usage snapshot into acc element-wise. The
+// provider contract says snapshots are cumulative; max keeps a zeroed or
+// partial late frame from erasing earlier numbers (spec §3).
+func mergeUsage(acc, in llm.Usage) llm.Usage {
+	return llm.Usage{
+		InputTokens:      max(acc.InputTokens, in.InputTokens),
+		OutputTokens:     max(acc.OutputTokens, in.OutputTokens),
+		CacheReadTokens:  max(acc.CacheReadTokens, in.CacheReadTokens),
+		CacheWriteTokens: max(acc.CacheWriteTokens, in.CacheWriteTokens),
 	}
 }
