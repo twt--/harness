@@ -1,12 +1,14 @@
 // Package agent runs one user turn as a loop of model steps until the model
-// stops asking for tools, executing tool calls sequentially in emission order
-// and upholding the transcript invariant after every mutation (design §8, §4).
+// stops asking for tools, executing each step's tool calls in emission order
+// (concurrently when they are all read-only) and upholding the transcript
+// invariant after every mutation (design §8, §4).
 package agent
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"harness/internal/llm"
@@ -25,6 +27,9 @@ const streamRetries = 2
 // maxAutoContinues bounds AutoContinue budgets per turn so a pathological
 // loop still terminates (spec §5).
 const maxAutoContinues = 3
+
+// maxParallelTools bounds concurrent read-only dispatch (spec §8).
+const maxParallelTools = 8
 
 // EventSink receives the turn's observable events for rendering. The agent loop
 // owns the transcript and the control flow; the sink only reports. Phase 10's
@@ -235,18 +240,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			break
 		}
 
-		results := make([]llm.ContentBlock, 0, len(res.toolCalls))
-		for _, call := range res.toolCalls {
-			sink.ToolStart(call)
-			result := a.tools.Dispatch(ctx, call)
-			sink.ToolResult(result)
-			results = append(results, llm.ContentBlock{
-				Kind:        llm.BlockToolResult,
-				ResultForID: result.ForID,
-				ResultText:  result.Text,
-				ResultError: result.IsError,
-			})
-		}
+		results := a.dispatchCalls(ctx, res.toolCalls, sink)
 		a.transcript = append(a.transcript, llm.Message{
 			Role:    llm.RoleUser,
 			Content: results,
@@ -275,6 +269,55 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 
 	sink.TurnComplete(TurnUsage{Steps: steps, Usage: total})
 	return nil
+}
+
+// dispatchCalls runs one step's tool calls: concurrently when the step is
+// all-read-only with 2+ calls, sequentially otherwise. Sink events and the
+// returned blocks are in emission order either way, and the sink is only
+// ever called from this goroutine (spec §8).
+func (a *Agent) dispatchCalls(ctx context.Context, calls []llm.ToolCall, sink EventSink) []llm.ContentBlock {
+	blocks := make([]llm.ContentBlock, len(calls))
+
+	if len(calls) >= 2 && a.tools.AllReadOnly(calls) {
+		for _, call := range calls {
+			sink.ToolStart(call)
+		}
+		results := make([]llm.ToolResult, len(calls))
+		sem := make(chan struct{}, maxParallelTools)
+		var wg sync.WaitGroup
+		for i, call := range calls {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				results[i] = a.tools.Dispatch(ctx, call)
+			}()
+		}
+		wg.Wait()
+		for i, r := range results {
+			sink.ToolResult(r)
+			blocks[i] = resultBlock(r)
+		}
+		return blocks
+	}
+
+	for i, call := range calls {
+		sink.ToolStart(call)
+		r := a.tools.Dispatch(ctx, call)
+		sink.ToolResult(r)
+		blocks[i] = resultBlock(r)
+	}
+	return blocks
+}
+
+func resultBlock(r llm.ToolResult) llm.ContentBlock {
+	return llm.ContentBlock{
+		Kind:        llm.BlockToolResult,
+		ResultForID: r.ForID,
+		ResultText:  r.Text,
+		ResultError: r.IsError,
+	}
 }
 
 // streamWithRetry runs stream, re-requesting the step from scratch when it
