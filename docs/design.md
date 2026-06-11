@@ -22,7 +22,11 @@ tool-using LLM loop against local files, shell commands, and git.
 - CLI-subprocess backends (`codex`, `claude -p`) — cut from scope; they run their own
   agent loops and are fundamentally different from a model API.
 - OpenAI Responses API (future work; Chat Completions is the compatibility standard).
-- `.gitignore`-aware search, markdown rendering, parallel tool execution, MCP, sub-agents.
+- Markdown rendering, MCP, sub-agents.
+- Adopted in v1.1 (no longer non-goals; see
+  `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`): parallel
+  dispatch of read-only tool calls, and gitignore-aware search delegated
+  to `git ls-files` rather than an in-tree matcher.
 
 ## 2. Constraints
 

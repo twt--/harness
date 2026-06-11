@@ -100,7 +100,7 @@ Keep provider state in the dialect package; the loop imports only `internal/llm`
 ## What not to do
 
 - Do not add a dependency. If stdlib is missing something, we've probably written it already — check sibling packages first.
-- Do not add parallel tool execution, sub-agents, MCP, `.gitignore`-aware search, or markdown rendering. All explicit v1 non-goals (see `docs/design.md` §1).
+- Do not add sub-agents, MCP, or markdown rendering. Explicit non-goals (see `docs/design.md` §1). Parallel read-only tool dispatch and gitignore-aware grep (via `git ls-files`) were adopted in v1.1 — see `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`.
 - Do not sandbox or permission-prompt. If the caller wants safety, they sandbox the process.
 - Do not let `internal/llm` import a dialect or the factory. That direction would create a cycle and break the provider-agnostic loop.
 
