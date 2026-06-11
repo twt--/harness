@@ -298,8 +298,8 @@ func TestDispatchTruncateLinesStillRespectsBytes(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Text)
 	}
-	if len(res.Text) > maxResultBytes {
-		t.Errorf("output %d bytes exceeds byte cap %d after line truncation", len(res.Text), maxResultBytes)
+	if len(res.Text) > defaultMaxResultBytes {
+		t.Errorf("output %d bytes exceeds byte cap %d after line truncation", len(res.Text), defaultMaxResultBytes)
 	}
 	if !strings.Contains(res.Text, "[truncated:") {
 		t.Errorf("missing truncation marker")

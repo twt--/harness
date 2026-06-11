@@ -64,6 +64,7 @@ type App struct {
 	SessionPath string    // current save path; /clear rotates it
 	StateDir    string    // for rotating to a fresh auto-save path on /clear
 	Created     time.Time // session creation time (preserved across saves)
+	Turn        int       // last started user turn, persisted for replay numbering
 	Now         func() time.Time
 
 	// Interrupt is the optional SIGINT state machine. When set, the REPL marks
@@ -373,6 +374,7 @@ func (app *App) clear() {
 	app.Agent.SetTranscript(nil)
 	app.usage = session.UsageTotals{}
 	app.Created = app.clock()()
+	app.Turn = 0
 	app.SessionPath = session.DefaultPath(app.StateDir, app.Created)
 	fmt.Fprintf(app.Errw, "[cleared; new session %s]\n", app.SessionPath)
 }
@@ -412,6 +414,7 @@ func (app *App) invokeSkill(line string) bool {
 // runTurn runs one user turn, accumulates usage, and saves the session. A turn
 // error is reported but does not end the REPL (the next prompt may recover).
 func (app *App) runTurn(prompt string) {
+	turn := app.beginTurn(prompt)
 	ctx := context.Background()
 	if app.Interrupt != nil {
 		var cancel context.CancelFunc
@@ -424,7 +427,7 @@ func (app *App) runTurn(prompt string) {
 	}
 
 	app.Renderer.StartTurn()
-	sink := &accumulatingSink{r: app.Renderer, app: app}
+	sink := newAccumulatingSink(app.Renderer, app, turn)
 	err := app.Agent.RunTurn(ctx, prompt, sink)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		fmt.Fprintf(app.Errw, "[error: %v]\n", err)
@@ -438,7 +441,7 @@ func (app *App) runTurn(prompt string) {
 // warned about via the sink by Compact; the transcript is left intact.
 func (app *App) compact() {
 	ctx := context.Background()
-	sink := &accumulatingSink{r: app.Renderer, app: app}
+	sink := newAccumulatingSink(app.Renderer, app, app.Turn)
 	u, err := app.Agent.Compact(ctx, sink)
 	if err != nil {
 		return
@@ -493,10 +496,34 @@ func (app *App) save(path string) error {
 		Updated:  app.clock()(),
 		System:   app.System,
 		Mode:     app.Mode,
+		Turn:     app.Turn,
 		Messages: app.Agent.Transcript(),
 		Usage:    app.usage,
 	}
 	return s.Save(path)
+}
+
+func (app *App) beginTurn(prompt string) int {
+	app.Turn++
+	app.recordEvent(session.Event{
+		Time: app.clock()(),
+		Type: session.EventUser,
+		Turn: app.Turn,
+		Text: prompt,
+	})
+	return app.Turn
+}
+
+func (app *App) recordEvent(ev session.Event) {
+	if app.SessionPath == "" {
+		return
+	}
+	if ev.Time.IsZero() {
+		ev.Time = app.clock()()
+	}
+	if err := session.AppendEvent(app.SessionPath, ev); err != nil {
+		fmt.Fprintf(app.Errw, "[session event log failed: %v]\n", err)
+	}
 }
 
 // usageSummary renders the cumulative session usage for /usage (design §10).
@@ -569,16 +596,63 @@ func (app *App) skillsSummary() string {
 // accumulatingSink forwards events to the renderer while accumulating cumulative
 // token totals and cost for the session (design §10 /usage, §11 saved totals).
 type accumulatingSink struct {
-	r   *Renderer
-	app *App
+	r       *Renderer
+	app     *App
+	turn    int
+	pending map[string]llm.ToolCall
 }
 
-func (s *accumulatingSink) TextDelta(text string)         { s.r.TextDelta(text) }
-func (s *accumulatingSink) ToolStart(c llm.ToolCall)      { s.r.ToolStart(c) }
-func (s *accumulatingSink) ToolResult(res llm.ToolResult) { s.r.ToolResult(res) }
-func (s *accumulatingSink) Notice(msg string)             { s.r.Notice(msg) }
+func newAccumulatingSink(r *Renderer, app *App, turn int) *accumulatingSink {
+	return &accumulatingSink{r: r, app: app, turn: turn, pending: make(map[string]llm.ToolCall)}
+}
+
+func (s *accumulatingSink) TextDelta(text string) {
+	s.r.TextDelta(text)
+	s.app.recordEvent(session.Event{Type: session.EventAssistantDelta, Turn: s.turn, Text: text})
+}
+
+func (s *accumulatingSink) ToolStart(c llm.ToolCall) {
+	s.pending[c.ID] = c
+	s.r.ToolStart(c)
+	s.app.recordEvent(session.Event{Type: session.EventToolStart, Turn: s.turn, ToolID: c.ID, Tool: c.Name, Input: c.Input})
+}
+
+func (s *accumulatingSink) ToolResult(res llm.ToolResult) {
+	call := s.pending[res.ForID]
+	delete(s.pending, res.ForID)
+	line := ToolResultLine(call, res)
+	s.r.ToolResult(res)
+	s.app.recordEvent(session.Event{Type: session.EventToolResult, Turn: s.turn, ToolID: res.ForID, Tool: call.Name, Display: line})
+	if res.Truncated {
+		ref, err := session.SaveToolResultArtifact(s.app.SessionPath, s.turn, res)
+		if err != nil {
+			s.Notice(fmt.Sprintf("[tool result truncated; full output archive failed: %v]", err))
+			return
+		}
+		msg := fmt.Sprintf("[tool result truncated: showing %s of %s", humanBytes(res.ShownBytes), humanBytes(res.OriginalBytes))
+		if ref != "" {
+			msg += "; full output: " + ref
+		}
+		msg += "]"
+		s.Notice(msg)
+	}
+}
+
+func (s *accumulatingSink) Notice(msg string) {
+	s.r.Notice(msg)
+	s.app.recordEvent(session.Event{Type: session.EventNotice, Turn: s.turn, Display: msg})
+}
 
 func (s *accumulatingSink) TurnComplete(u agent.TurnUsage) {
 	s.app.addUsage(u)
+	line := usageLine(s.r.registry, s.r.model, u, s.r.now().Sub(s.r.turnStart))
 	s.r.TurnComplete(u)
+	usage := u.Usage
+	s.app.recordEvent(session.Event{
+		Type:    session.EventTurnUsage,
+		Turn:    s.turn,
+		Display: line,
+		Usage:   &usage,
+		Steps:   u.Steps,
+	})
 }

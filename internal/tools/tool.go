@@ -36,6 +36,7 @@ type Registry struct {
 	order           []string
 	tools           map[string]Tool
 	dispatchTimeout time.Duration // zero = defaultDispatchTimeout
+	resultLimits    resultLimits
 }
 
 // defaultDispatchTimeout caps any single tool call: the largest tool
@@ -43,6 +44,13 @@ type Registry struct {
 // grace, so the ceiling never fires first for well-behaved tools. It exists to
 // stop tools with no self-limit from hanging the turn (spec §6).
 const defaultDispatchTimeout = 11 * time.Minute
+
+// Options configures a tool registry. Zero values keep package defaults.
+type Options struct {
+	MaxResultBytes       int
+	MaxResultLines       int
+	ReadFileDefaultLimit int
+}
 
 // DisabledTool describes an optional built-in tool that was not registered.
 type DisabledTool struct {
@@ -63,15 +71,21 @@ func missingBinaryTool(name, binary string) DisabledTool {
 // Non-positive values reset to the default.
 func (r *Registry) SetDispatchTimeout(d time.Duration) { r.dispatchTimeout = d }
 
+// SetResultLimits overrides the central tool-result truncation caps. Non-positive
+// fields keep their defaults.
+func (r *Registry) SetResultLimits(maxBytes, maxLines int) {
+	r.resultLimits = resultLimits{maxBytes: maxBytes, maxLines: maxLines}
+}
+
 // RegisterFileTools registers the built-in file tools (read_file, list_dir,
 // grep, optional rg, edit, write_file, apply_patch) on r, in that order. It is
 // the only exported path to these tools; their types are unexported by design.
 func RegisterFileTools(r *Registry) {
-	registerFileTools(r, nil)
+	registerFileTools(r, nil, Options{})
 }
 
-func registerFileTools(r *Registry, disabled *[]DisabledTool) {
-	r.Register(readFile{})
+func registerFileTools(r *Registry, disabled *[]DisabledTool, opts Options) {
+	r.Register(readFile{defaultLimit: opts.ReadFileDefaultLimit})
 	r.Register(listDir{})
 	r.Register(grep{})
 	if rg, ok := newRipgrep(); ok {
@@ -111,9 +125,16 @@ func Default() *Registry {
 // DefaultWithDiagnostics returns the default tool registry plus diagnostics for
 // optional tools that were not registered.
 func DefaultWithDiagnostics() (*Registry, []DisabledTool) {
+	return DefaultWithOptions(Options{})
+}
+
+// DefaultWithOptions returns the default tool registry with configurable result
+// and read_file limits.
+func DefaultWithOptions(opts Options) (*Registry, []DisabledTool) {
 	r := &Registry{}
+	r.SetResultLimits(opts.MaxResultBytes, opts.MaxResultLines)
 	var disabled []DisabledTool
-	registerFileTools(r, &disabled)
+	registerFileTools(r, &disabled, opts)
 	registerExecTools(r, &disabled)
 	return r, disabled
 }
@@ -134,7 +155,13 @@ func Catalog() *Registry {
 // CatalogWithDiagnostics returns the complete constructible tool catalog plus
 // diagnostics for optional tools that were not registered.
 func CatalogWithDiagnostics() (*Registry, []DisabledTool) {
-	r, disabled := DefaultWithDiagnostics()
+	return CatalogWithOptions(Options{})
+}
+
+// CatalogWithOptions returns the complete constructible tool catalog with
+// configurable limits.
+func CatalogWithOptions(opts Options) (*Registry, []DisabledTool) {
+	r, disabled := DefaultWithOptions(opts)
 	if git, ok := newGitReadonly(); ok {
 		r.Register(git)
 	} else {
@@ -157,7 +184,7 @@ func (r *Registry) Subset(names []string) (*Registry, error) {
 	for _, name := range names {
 		want[name] = true
 	}
-	sub := &Registry{}
+	sub := &Registry{resultLimits: r.resultLimits}
 	for _, name := range r.order {
 		if want[name] {
 			sub.Register(r.tools[name])
@@ -298,7 +325,14 @@ func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.
 		return res
 	}
 
-	res.Text = truncate(out)
+	var info truncationInfo
+	res.Text, info = truncate(out, r.resultLimits)
+	if info.truncated {
+		res.Truncated = true
+		res.OriginalText = out
+		res.OriginalBytes = info.originalBytes
+		res.ShownBytes = info.shownBytes
+	}
 	return res
 }
 

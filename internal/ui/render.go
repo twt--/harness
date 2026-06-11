@@ -94,8 +94,7 @@ func (r *Renderer) ToolResult(result llm.ToolResult) {
 	call := r.pending[result.ForID]
 	delete(r.pending, result.ForID)
 
-	line := fmt.Sprintf("[%s]%s → %s", call.Name, formatArgs(call.Input), resultSummary(result))
-	r.dimLine(line)
+	r.dimLine(ToolResultLine(call, result))
 
 	if r.verbose {
 		for _, s := range snippet(result.Text) {
@@ -179,13 +178,27 @@ func resultSummary(result llm.ToolResult) string {
 	n := len(result.Text)
 	lines := countLines(result.Text)
 	size := humanBytes(n)
+	prefix := ""
+	if result.Truncated {
+		if result.OriginalBytes > 0 {
+			prefix = fmt.Sprintf("truncated %s of %s, ", humanBytes(result.ShownBytes), humanBytes(result.OriginalBytes))
+		} else {
+			prefix = "truncated, "
+		}
+	}
 	if lines <= 1 {
 		if n == 0 {
-			return "(empty), " + size
+			return prefix + "(empty), " + size
 		}
-		return size
+		return prefix + size
 	}
-	return fmt.Sprintf("%d lines, %s", lines, size)
+	return fmt.Sprintf("%s%d lines, %s", prefix, lines, size)
+}
+
+// ToolResultLine renders the one-line tool summary used by live output and
+// session replay.
+func ToolResultLine(call llm.ToolCall, result llm.ToolResult) string {
+	return fmt.Sprintf("[%s]%s → %s", call.Name, formatArgs(call.Input), resultSummary(result))
 }
 
 // usageLine renders the per-turn summary (design §10):
@@ -199,6 +212,13 @@ func usageLine(registry *llm.Registry, model string, u agent.TurnUsage, elapsed 
 	if registry != nil {
 		if usd, known := registry.Cost(model, u.Usage); known {
 			fmt.Fprintf(&b, " · $%.3f", usd)
+		}
+	}
+	if u.Context.Total > 0 {
+		fmt.Fprintf(&b, " · ctx %s/%s", humanTokens(u.Context.Total), humanTokens(u.Context.Window))
+		if u.Context.System > 0 || u.Context.Tools > 0 || u.Context.Messages > 0 {
+			fmt.Fprintf(&b, " (sys %s tools %s msgs %s)",
+				humanTokens(u.Context.System), humanTokens(u.Context.Tools), humanTokens(u.Context.Messages))
 		}
 	}
 	fmt.Fprintf(&b, " · %s]", humanDuration(elapsed))

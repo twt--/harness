@@ -76,7 +76,7 @@ internal/sse             generic SSE frame reader
 internal/retry           backoff + jitter + Retry-After parsing
 internal/agent           turn loop, interrupt state machine, compaction
 internal/tools           Tool interface, registry, dispatch (recover + central truncation), built-in tools
-internal/session         transcript persistence (atomic save/load)
+internal/session         session state, replay log, compaction archives, tool artifacts
 internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for setup/pricing metadata
 internal/ui              REPL, streaming renderer, tool summaries, usage line
@@ -434,9 +434,12 @@ Precedence: **flags > environment > config file > built-in defaults.**
   may also name provider-specific `api_key_env` variables such as
   `OPENROUTER_API_KEY`. Environment API keys override provider-config keys.
 - Config file (optional): `~/.config/harness/config.json` — provider, model,
-  provider_configs, and flag defaults. Provider config paths are resolved relative to
-  the config file and may define api_type, base_url, api_key, api_key_env, models,
-  context windows, reasoning metadata, and pricing.
+  provider_configs, run modes, flag defaults, and config-only context-efficiency knobs:
+  `agents_md_warn_bytes`, `tool_result_max_bytes`, `tool_result_max_lines`,
+  `read_file_default_limit`, `compact_keep_turns`, `compact_summary_max_tokens`, and
+  `compact_tool_result_max_bytes`. Provider config paths are resolved relative to the
+  config file and may define api_type, base_url, api_key, api_key_env, models, context
+  windows, reasoning metadata, and pricing.
 - `--setup` creates a config in the default directory, or appends a new provider config
   to an existing default config. It fetches models.dev provider metadata, falls back to a
   vendored models.dev snapshot when the live catalog is unreachable, lists
@@ -510,14 +513,16 @@ string fed back to the model so it can self-correct:
 ### 8.3 Output truncation
 
 A central cap in `Dispatch` (backstop for every tool): **64 KB or 1000 lines per
-result**, whichever hits first, with a teaching marker:
+result** by default, configurable with `tool_result_max_bytes` and
+`tool_result_max_lines`. The first cap hit adds a teaching marker:
 
 ```
 [truncated: showing first 1000 of 4213 lines; use read_file offset/limit or grep to narrow]
 ```
 
 Individual tools may also apply their own natural limits, but the central cap is the
-backstop for every result.
+backstop for every result. Truncated results carry metadata so the UI can warn and write
+the full output to the session's `artifacts/tool-results/` directory.
 
 ### 8.4 Interrupts
 
@@ -586,7 +591,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 |---|---|---|
 | `path` | string, required | file path |
 | `offset` | int | 1-based starting line |
-| `limit` | int | max lines, default 1000 |
+| `limit` | int | max lines, default 1000 or `read_file_default_limit` |
 
 - Output is line-numbered (`cat -n` style: right-aligned number, tab, line). Line
   numbers make `edit` targeting and grep cross-referencing far more reliable.
@@ -903,12 +908,14 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 
 ```go
 type Session struct {
-    Version  int           `json:"version"` // 1
+    Version  int           `json:"version"` // 2
     Provider string        `json:"provider"`
     Model    string        `json:"model"`
     Created  time.Time     `json:"created"`
     Updated  time.Time     `json:"updated"`
     System   string        `json:"system"`
+    Mode     string        `json:"mode,omitempty"`
+    Turn     int           `json:"turn,omitempty"`
     Messages []llm.Message `json:"messages"`
     Usage    UsageTotals   `json:"usage"`
 }
@@ -919,31 +926,45 @@ type UsageTotals struct {
 }
 ```
 
-- **Saved after every turn**, atomically (write `<path>.tmp`, `os.Rename`). Cheap
+- A session path is a directory. `state.json` is the compact resumable state,
+  `raw.ndjson` is append-only replay data, `compactions/` stores raw messages removed
+  from active context, and `artifacts/tool-results/` stores full truncated tool output.
+- **Saved after every turn**, atomically (write `state.json.tmp`, `os.Rename`). Cheap
   relative to a model call; crash-safe for long sessions.
-- Auto-save to `~/.local/state/harness/sessions/<timestamp>.json`; the path is printed
-  at startup. `-session` chooses the path; `-resume` loads any transcript (applying the
-  dangling-tool-use repair, §4). `/clear` rotates to a fresh file.
+- Auto-save to `~/.local/state/harness/sessions/<timestamp>`; the path is printed at
+  startup. `-session` chooses a directory; `-resume` loads `state.json` (applying the
+  dangling-tool-use repair, §4). `/clear` rotates to a fresh directory.
+- `harness session replay <session-dir>` prints `raw.ndjson` as the familiar
+  user-facing terminal view.
 - Transcripts are provider-neutral; resuming under a different provider/model works.
-  When flags disagree with the file, flags win with a warning.
+  When flags disagree with the state, flags win with a warning.
 
 ## 12. Compaction (`internal/agent/compact.go`)
 
-- **Trigger:** after a turn whose reported input tokens ≥ **78%** of the model's context
-  window (headroom for the summary call plus the next turn). Also manual `/compact`.
-- **Mechanism:** keep the system prompt and the **last 4 turns verbatim** (a turn = a
-  user message through the following end-turn). Send everything older to the model with
-  a summarization instruction: preserve the task/goal, decisions made, files
-  created/modified and their current state, key facts learned, open TODOs; do not
-  invent. Replace the old messages with a single user message:
+- **Trigger:** after a turn whose reported input tokens or estimated full-request
+  footprint reaches **78%** of the model's context window (headroom for the summary
+  call plus the next turn). Also manual `/compact`.
+- **Mechanism:** keep the system prompt and the configured number of recent turns
+  verbatim (`compact_keep_turns`, default 4; a turn = a user message through the
+  following end-turn). Send everything older to the model with a summarization
+  instruction: preserve the task/goal, decisions made, files created/modified and their
+  current state, key facts learned, open TODOs; do not invent. Summary output is capped
+  by `compact_summary_max_tokens` (default 2048). Replace the old messages with a
+  single user message:
   `=== Summary of earlier conversation ===\n<summary>`.
+- Before summarization, large old tool results are reduced to previews
+  (`compact_tool_result_max_bytes`, default 4096). If older history is too large for
+  one summary request, it is summarized in chunks, then the chunk summaries are
+  summarized.
+- Before replacing active history, raw removed messages are archived under
+  `compactions/`; the active summary includes the archive reference.
 - The summary call's tokens and cost are added to session totals and reported:
   `[compacted: 38 messages → summary · 9.1k in / 0.4k out · $0.05]`.
 - **Degradation:** if still over budget, keep only the last turn; if still over,
   hard-truncate the largest tool results in place with markers. Never wedge.
-- **Failure:** if the summary call errors, abort compaction, warn, and keep the full
-  transcript — the next call may fail visibly on context length, which beats silent
-  data loss.
+- **Failure:** if the summary or archive step errors, abort compaction, warn, and keep
+  the full transcript — the next call may fail visibly on context length, which beats
+  silent data loss.
 - Compacted transcripts must still satisfy the §4 invariant (kept turns are whole turns,
   so no tool_use/tool_result pair is ever split).
 

@@ -386,7 +386,7 @@ func TestSmokeResumeInterrupted(t *testing.T) {
 
 	// Craft a session that stops right after an assistant tool_use (mid-turn save).
 	dir := t.TempDir()
-	priorPath := filepath.Join(dir, "interrupted.json")
+	priorPath := filepath.Join(dir, "interrupted")
 	prior := session.Session{
 		Version:  session.Version,
 		Provider: "openai",
@@ -400,8 +400,7 @@ func TestSmokeResumeInterrupted(t *testing.T) {
 			}},
 		},
 	}
-	data, _ := json.Marshal(prior)
-	if err := os.WriteFile(priorPath, data, 0o644); err != nil {
+	if err := prior.Save(priorPath); err != nil {
 		t.Fatal(err)
 	}
 

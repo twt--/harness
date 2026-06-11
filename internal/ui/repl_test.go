@@ -35,7 +35,7 @@ func newTestApp(t *testing.T, out, errw *bytes.Buffer, fp *llmtest.FakeProvider)
 		Model:       "claude-opus-4-8",
 		BaseURL:     "https://api.anthropic.com/v1",
 		System:      "you are a test",
-		SessionPath: filepath.Join(stateDir, "session.json"),
+		SessionPath: filepath.Join(stateDir, "session"),
 		StateDir:    stateDir,
 	}
 }
@@ -83,7 +83,7 @@ func TestREPLSavesSessionAfterTurn(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("session should be saved to %s: %v", path, err)
 	}
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(filepath.Join(path, "state.json"))
 	if !strings.Contains(string(data), "hello") {
 		t.Errorf("saved session should contain the user prompt, got %s", data)
 	}
@@ -467,7 +467,7 @@ func unsavablePath(t *testing.T) string {
 		t.Fatalf("write blocker: %v", err)
 	}
 	// blocker is a file, so MkdirAll(blocker/sub) cannot create the parent.
-	return filepath.Join(blocker, "sub", "session.json")
+	return filepath.Join(blocker, "sub", "session")
 }
 
 // TestREPLAutoSaveFailureWarned is the regression test for after-every-turn

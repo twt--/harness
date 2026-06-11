@@ -49,11 +49,18 @@ type Config struct {
 	Session string // -session: explicit save path
 
 	// Loop / model limits.
-	MaxSteps             int // -max-steps, default 50
-	DefaultContextWindow int // -default-context-window, fallback for unknown/unconfigured models
-	ContextWindow        int // -context-window, 0 = registry/default
-	ReasoningEffort      string
-	OnMaxSteps           string // -on-max-steps: "stop" (default) or "continue"
+	MaxSteps                  int // -max-steps, default 50
+	DefaultContextWindow      int // -default-context-window, fallback for unknown/unconfigured models
+	ContextWindow             int // -context-window, 0 = registry/default
+	ReasoningEffort           string
+	OnMaxSteps                string // -on-max-steps: "stop" (default) or "continue"
+	AgentsMDWarnBytes         int    // config-only warning threshold; 0 disables
+	ToolResultMaxBytes        int    // config-only; 0 = tool default
+	ToolResultMaxLines        int    // config-only; 0 = tool default
+	ReadFileDefaultLimit      int    // config-only; 0 = tool default
+	CompactKeepTurns          int    // config-only; 0 = agent default
+	CompactSummaryMaxTokens   int    // config-only; 0 = agent default
+	CompactToolResultMaxBytes int    // config-only; 0 = agent default, negative disables
 
 	// Run mode. Empty means "not specified" so main can let a resumed
 	// session supply the mode before falling back to the default.
@@ -92,21 +99,28 @@ type FileModeConfig struct {
 // API keys are intentionally absent here; provider config files carry provider
 // connection settings and optional keys.
 type fileConfig struct {
-	Provider             string   `json:"provider"`
-	Model                string   `json:"model"`
-	BaseURL              string   `json:"base_url"`
-	System               string   `json:"system"`
-	NoEnv                *bool    `json:"no_env"`
-	MaxSteps             *int     `json:"max_steps"`
-	DefaultContextWindow *int     `json:"default_context_window"`
-	ContextWindow        *int     `json:"context_window"`
-	ReasoningEffort      string   `json:"reasoning_effort"`
-	OnMaxSteps           string   `json:"on_max_steps"`
-	Verbose              *bool    `json:"verbose"`
-	LogLevel             string   `json:"log_level"`
-	NoColor              *bool    `json:"no_color"`
-	Prompt               string   `json:"prompt"`
-	ProviderConfigs      []string `json:"provider_configs"`
+	Provider                  string   `json:"provider"`
+	Model                     string   `json:"model"`
+	BaseURL                   string   `json:"base_url"`
+	System                    string   `json:"system"`
+	NoEnv                     *bool    `json:"no_env"`
+	MaxSteps                  *int     `json:"max_steps"`
+	DefaultContextWindow      *int     `json:"default_context_window"`
+	ContextWindow             *int     `json:"context_window"`
+	ReasoningEffort           string   `json:"reasoning_effort"`
+	OnMaxSteps                string   `json:"on_max_steps"`
+	AgentsMDWarnBytes         *int     `json:"agents_md_warn_bytes"`
+	ToolResultMaxBytes        *int     `json:"tool_result_max_bytes"`
+	ToolResultMaxLines        *int     `json:"tool_result_max_lines"`
+	ReadFileDefaultLimit      *int     `json:"read_file_default_limit"`
+	CompactKeepTurns          *int     `json:"compact_keep_turns"`
+	CompactSummaryMaxTokens   *int     `json:"compact_summary_max_tokens"`
+	CompactToolResultMaxBytes *int     `json:"compact_tool_result_max_bytes"`
+	Verbose                   *bool    `json:"verbose"`
+	LogLevel                  string   `json:"log_level"`
+	NoColor                   *bool    `json:"no_color"`
+	Prompt                    string   `json:"prompt"`
+	ProviderConfigs           []string `json:"provider_configs"`
 
 	Mode  string                    `json:"mode"`
 	Modes map[string]FileModeConfig `json:"modes"`
@@ -198,6 +212,13 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	if c.OnMaxSteps != "stop" && c.OnMaxSteps != "continue" {
 		return Config{}, fmt.Errorf("invalid -on-max-steps %q (valid: stop, continue)", c.OnMaxSteps)
 	}
+	c.AgentsMDWarnBytes = intValue(fc.AgentsMDWarnBytes, 8192)
+	c.ToolResultMaxBytes = intValue(fc.ToolResultMaxBytes, 0)
+	c.ToolResultMaxLines = intValue(fc.ToolResultMaxLines, 0)
+	c.ReadFileDefaultLimit = intValue(fc.ReadFileDefaultLimit, 0)
+	c.CompactKeepTurns = intValue(fc.CompactKeepTurns, 0)
+	c.CompactSummaryMaxTokens = intValue(fc.CompactSummaryMaxTokens, 0)
+	c.CompactToolResultMaxBytes = intValue(fc.CompactToolResultMaxBytes, 0)
 	c.Mode = strings.ToLower(strings.TrimSpace(resolveString(set["mode"], *f.mode,
 		getenv("HARNESS_MODE"), fc.Mode, "")))
 	c.Modes = fc.Modes
@@ -316,6 +337,7 @@ func Usage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  harness [flags]            interactive REPL")
 	fmt.Fprintln(w, "  harness -p \"prompt\" [flags]  one-shot: prints the assistant's answer to stdout")
+	fmt.Fprintln(w, "  harness session replay <session-dir>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "API keys come from environment variables or provider config files; env wins.")
 	fmt.Fprintln(w)
@@ -372,6 +394,13 @@ func resolveInt(flagSet bool, flagVal int, envVal string, fileVal *int, def int)
 		return *fileVal
 	}
 	return def
+}
+
+func intValue(v *int, def int) int {
+	if v == nil {
+		return def
+	}
+	return *v
 }
 
 // resolveBool mirrors resolveString for booleans. fileVal of nil means unset.

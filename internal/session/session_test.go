@@ -17,7 +17,7 @@ import (
 func sampleSession() Session {
 	created := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	return Session{
-		Version:  1,
+		Version:  Version,
 		Provider: "anthropic",
 		Model:    "claude-opus-4-8",
 		Created:  created,
@@ -51,7 +51,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("sample transcript invalid: %v", err)
 	}
 
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := filepath.Join(t.TempDir(), "session")
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestSaveLoadPreservesMode(t *testing.T) {
 	s := sampleSession()
 	s.Mode = "plan"
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := filepath.Join(t.TempDir(), "session")
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestSaveLoadPreservesMode(t *testing.T) {
 // A second save over the same path (the after-every-turn case) round-trips too.
 func TestSaveLoadSaveRoundTrip(t *testing.T) {
 	s := sampleSession()
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := filepath.Join(t.TempDir(), "session")
 	if err := s.Save(path); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestSaveLoadSaveRoundTrip(t *testing.T) {
 
 func TestSaveLeavesNoTmpFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "session.json")
+	path := filepath.Join(dir, "session")
 	if err := sampleSession().Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -125,18 +125,25 @@ func TestSaveLeavesNoTmpFile(t *testing.T) {
 			t.Fatalf("temp file left behind: %s", e.Name())
 		}
 	}
-	if len(entries) != 1 {
+	if len(entries) != 1 || entries[0].Name() != "session" {
 		t.Fatalf("expected exactly one file after save, got %d: %v", len(entries), entries)
+	}
+	stateEntries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatalf("ReadDir session: %v", err)
+	}
+	if len(stateEntries) != 1 || stateEntries[0].Name() != stateFile {
+		t.Fatalf("expected only %s after save, got %v", stateFile, stateEntries)
 	}
 }
 
 // Save creates parent directories so DefaultPath's nested sessions dir works.
 func TestSaveCreatesParentDirs(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "a", "b", "session.json")
+	path := filepath.Join(t.TempDir(), "a", "b", "session")
 	if err := sampleSession().Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(filepath.Join(path, stateFile)); err != nil {
 		t.Fatalf("session not written: %v", err)
 	}
 }
@@ -146,7 +153,7 @@ func TestSaveCreatesParentDirs(t *testing.T) {
 // yielding a transcript that passes ValidateTranscript.
 func TestLoadRepairsDanglingToolUse(t *testing.T) {
 	dangling := Session{
-		Version:  1,
+		Version:  Version,
 		Provider: "anthropic",
 		Model:    "claude-opus-4-8",
 		Created:  time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC),
@@ -166,7 +173,7 @@ func TestLoadRepairsDanglingToolUse(t *testing.T) {
 		t.Fatalf("expected dangling transcript to be invalid before repair")
 	}
 
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := filepath.Join(t.TempDir(), "session")
 	if err := dangling.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -207,7 +214,7 @@ func TestLoadRepairsDanglingToolUse(t *testing.T) {
 // A complete transcript is loaded unchanged (no spurious repair message).
 func TestLoadDoesNotRepairCompleteTranscript(t *testing.T) {
 	s := sampleSession()
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := filepath.Join(t.TempDir(), "session")
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -223,11 +230,11 @@ func TestLoadDoesNotRepairCompleteTranscript(t *testing.T) {
 // Saved files are provider-neutral: the internal JSON tags (kind, tool_use_id,
 // ...) must appear, and no OpenAI wire strings (function, tool_calls) may leak.
 func TestSavedFileIsProviderNeutral(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := filepath.Join(t.TempDir(), "session")
 	if err := sampleSession().Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join(path, stateFile))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -250,7 +257,7 @@ func TestSavedFileIsProviderNeutral(t *testing.T) {
 // preserved as recorded.
 func TestCrossProviderResume(t *testing.T) {
 	s := sampleSession()
-	path := filepath.Join(t.TempDir(), "session.json")
+	path := filepath.Join(t.TempDir(), "session")
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -267,15 +274,18 @@ func TestCrossProviderResume(t *testing.T) {
 }
 
 func TestLoadMissingFileIsError(t *testing.T) {
-	_, err := Load(filepath.Join(t.TempDir(), "nope.json"))
+	_, err := Load(filepath.Join(t.TempDir(), "nope"))
 	if err == nil {
 		t.Fatalf("expected error loading missing session file")
 	}
 }
 
 func TestLoadMalformedFileIsError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "bad.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+	path := filepath.Join(t.TempDir(), "bad")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, stateFile), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	_, err := Load(path)
@@ -284,8 +294,33 @@ func TestLoadMalformedFileIsError(t *testing.T) {
 	}
 }
 
-// DefaultPath builds a timestamped path under an injectable state dir, ending in
-// .json under sessions/.
+func TestReplayPrintsUserFacingView(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "session")
+	events := []Event{
+		{Type: EventUser, Turn: 1, Text: "fix it"},
+		{Type: EventAssistantDelta, Turn: 1, Text: "I'll check.\n"},
+		{Type: EventToolResult, Turn: 1, Display: `[rg pattern="panic" .] → 2 lines, 80B`},
+		{Type: EventNotice, Turn: 1, Display: "[compacted: 6 messages → summary]"},
+		{Type: EventTurnUsage, Turn: 1, Display: "[turn: 2 steps · 1.0k in / 100 out]"},
+	}
+	for _, ev := range events {
+		if err := AppendEvent(dir, ev); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	var out strings.Builder
+	if err := Replay(dir, &out, ReplayOptions{}); err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"> fix it", "I'll check.", `[rg pattern="panic" .]`, "[compacted:", "[turn:"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("replay missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// DefaultPath builds a timestamped directory path under an injectable state dir.
 func TestDefaultPath(t *testing.T) {
 	stateDir := t.TempDir()
 	at := time.Date(2026, 6, 9, 14, 30, 15, 0, time.UTC)
@@ -293,8 +328,8 @@ func TestDefaultPath(t *testing.T) {
 	if filepath.Dir(p) != filepath.Join(stateDir, "harness", "sessions") {
 		t.Fatalf("DefaultPath dir %q unexpected", filepath.Dir(p))
 	}
-	if !strings.HasSuffix(p, ".json") {
-		t.Fatalf("DefaultPath %q does not end in .json", p)
+	if strings.HasSuffix(p, ".json") {
+		t.Fatalf("DefaultPath %q should be a directory path, not a .json file", p)
 	}
 	// The timestamp must round to a path that does not collide minute-to-minute.
 	p2 := DefaultPath(stateDir, at.Add(time.Second))

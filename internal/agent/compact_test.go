@@ -325,6 +325,31 @@ func TestCompactUsageReported(t *testing.T) {
 	}
 }
 
+func TestCompactArchivesRemovedMessages(t *testing.T) {
+	transcript := makeTurns(10)
+	fp := llmtest.New("fake", summaryStep("S", 100, 10))
+	a := newAgent(fp, tools.Default(), Options{Model: "claude-opus-4-8"})
+	a.SetTranscript(transcript)
+	var archived CompactionArchive
+	a.SetCompactionArchiver(func(ctx context.Context, archive CompactionArchive) (string, error) {
+		archived = archive
+		return "compactions/0001.input.json", nil
+	})
+
+	if _, err := a.Compact(context.Background(), &recordSink{}); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if len(archived.Messages) != 12 {
+		t.Fatalf("archived %d messages, want older six turns (12 messages)", len(archived.Messages))
+	}
+	if archived.Summary != "S" {
+		t.Fatalf("archived summary %q, want S", archived.Summary)
+	}
+	if !strings.Contains(a.Transcript()[0].Content[0].Text, "Raw compacted transcript archive: compactions/0001.input.json") {
+		t.Fatalf("active summary missing archive reference: %q", a.Transcript()[0].Content[0].Text)
+	}
+}
+
 func TestMaybeCompactReturnsUsageForTotals(t *testing.T) {
 	// The summary call's tokens are returned so the caller can fold them into the
 	// session totals (design §12, §6).

@@ -64,7 +64,11 @@ type ToolCall struct {
 // ToolResult is a flat view that becomes a BlockToolResult, carried from the
 // tool layer back into the agent loop.
 type ToolResult struct {
-	ForID   string
-	Text    string
-	IsError bool
+	ForID         string
+	Text          string
+	IsError       bool
+	Truncated     bool
+	OriginalText  string
+	OriginalBytes int
+	ShownBytes    int
 }

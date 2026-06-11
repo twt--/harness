@@ -93,6 +93,9 @@ func run(env environment) int {
 	if now == nil {
 		now = time.Now
 	}
+	if len(args) > 0 && args[0] == "session" {
+		return runSessionCommand(args[1:], stdout, stderr)
+	}
 
 	cfgPath := resolveConfigPath(args, getenv)
 
@@ -181,6 +184,9 @@ func run(env environment) int {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitRuntime
 	}
+	if cfg.AgentsMDWarnBytes > 0 && len(agentsMD) > cfg.AgentsMDWarnBytes {
+		fmt.Fprintf(stderr, "harness: warning: AGENTS.md is %d bytes, above agents_md_warn_bytes=%d; including it in full\n", len(agentsMD), cfg.AgentsMDWarnBytes)
+	}
 	// Skills discovery: scan project and user-level .agents/skills/ directories
 	// for SKILL.md files, build a catalog for the system prompt, and surface
 	// any warnings to stderr. Skills are disclosed via file-read activation so
@@ -220,7 +226,11 @@ func run(env environment) int {
 	// constructible tool; each mode selects a subset, realized by Subset so the
 	// agent advertises and dispatches only the mode's tools. Built once and
 	// shared with the /mode switch (write_tmp_file holds a per-run temp dir).
-	toolCatalog, disabledTools := tools.CatalogWithDiagnostics()
+	toolCatalog, disabledTools := tools.CatalogWithOptions(tools.Options{
+		MaxResultBytes:       cfg.ToolResultMaxBytes,
+		MaxResultLines:       cfg.ToolResultMaxLines,
+		ReadFileDefaultLimit: cfg.ReadFileDefaultLimit,
+	})
 	for _, disabled := range disabledTools {
 		logger.Warn(disabled.Message(), logging.Category("cli_tools"))
 	}
@@ -349,12 +359,15 @@ func run(env environment) int {
 	}
 
 	ag := agent.New(provider, toolRegistry, agent.Options{
-		MaxSteps:      cfg.MaxSteps,
-		Model:         cfg.Model,
-		ContextWindow: cfg.ContextWindow,
-		Registry:      modelRegistry,
-		Reasoning:     reasoning,
-		AutoContinue:  cfg.OnMaxSteps == "continue",
+		MaxSteps:                  cfg.MaxSteps,
+		Model:                     cfg.Model,
+		ContextWindow:             cfg.ContextWindow,
+		Registry:                  modelRegistry,
+		Reasoning:                 reasoning,
+		AutoContinue:              cfg.OnMaxSteps == "continue",
+		CompactKeepTurns:          cfg.CompactKeepTurns,
+		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
+		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,
 	})
 
 	created := now()
@@ -425,6 +438,17 @@ func run(env environment) int {
 		Skills:          discoveredSkills,
 		SkillDirs:       skillDirs,
 	}
+	if resumed != nil {
+		app.Turn = resumed.Turn
+	}
+	ag.SetCompactionArchiver(func(ctx context.Context, archive agent.CompactionArchive) (string, error) {
+		return session.SaveCompaction(app.SessionPath, session.Compaction{
+			Time:     now(),
+			Summary:  archive.Summary,
+			Usage:    archive.Usage,
+			Messages: archive.Messages,
+		})
+	})
 	app.SetUsage(totals)
 
 	// SIGINT wiring (design §8.4): a single handler cancels the active turn or,
@@ -471,6 +495,29 @@ func configDir(path string) string {
 		return "."
 	}
 	return filepath.Dir(path)
+}
+
+func runSessionCommand(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		fmt.Fprintln(stderr, "usage: harness session replay <session-dir>")
+		return ui.ExitUsage
+	}
+	switch args[0] {
+	case "replay":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, "usage: harness session replay <session-dir>")
+			return ui.ExitUsage
+		}
+		if err := session.Replay(args[1], stdout, session.ReplayOptions{}); err != nil {
+			fmt.Fprintf(stderr, "harness: session replay: %v\n", err)
+			return ui.ExitRuntime
+		}
+		return ui.ExitOK
+	default:
+		fmt.Fprintf(stderr, "harness: unknown session command %q\n", args[0])
+		fmt.Fprintln(stderr, "usage: harness session replay <session-dir>")
+		return ui.ExitUsage
+	}
 }
 
 func defaultModelsDevCatalog(ctx context.Context) (*modelsdev.Catalog, error) {

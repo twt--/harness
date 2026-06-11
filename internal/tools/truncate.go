@@ -5,29 +5,59 @@ import (
 	"strings"
 )
 
-// Central output caps, applied in Dispatch as a backstop for every tool
-// (design §8.3): 64 KB or 1000 lines per result, whichever hits first.
+// Central output caps, applied in Dispatch as a backstop for every tool by
+// default. A Registry can override these limits.
 const (
-	maxResultBytes = 64 * 1024
-	maxResultLines = 1000
+	defaultMaxResultBytes = 64 * 1024
+	defaultMaxResultLines = 1000
 )
 
-// truncate caps s to the central limits, appending a teaching marker that
+type resultLimits struct {
+	maxBytes int
+	maxLines int
+}
+
+type truncationInfo struct {
+	truncated     bool
+	originalBytes int
+	shownBytes    int
+	originalLines int
+	shownLines    int
+}
+
+func (l resultLimits) withDefaults() resultLimits {
+	if l.maxBytes <= 0 {
+		l.maxBytes = defaultMaxResultBytes
+	}
+	if l.maxLines <= 0 {
+		l.maxLines = defaultMaxResultLines
+	}
+	return l
+}
+
+// truncate caps s to the configured limits, appending a teaching marker that
 // reports the original size and advises how to narrow. Both caps always hold:
 // the line cap applies first, then the byte cap is re-applied to whatever
 // remains so that many long lines cannot bypass the payload-size backstop. If
 // neither cap triggers, s is returned unchanged.
-func truncate(s string) string {
+func truncate(s string, limits resultLimits) (string, truncationInfo) {
+	limits = limits.withDefaults()
+	info := truncationInfo{
+		originalBytes: len(s),
+		shownBytes:    len(s),
+		originalLines: countResultLines(s),
+		shownLines:    countResultLines(s),
+	}
 	totalLines := strings.Count(s, "\n")
 	if !strings.HasSuffix(s, "\n") && len(s) > 0 {
 		totalLines++
 	}
 
-	if totalLines > maxResultLines {
-		// Keep the first maxResultLines lines.
+	if totalLines > limits.maxLines {
+		// Keep the first maxLines lines.
 		idx := 0
 		count := 0
-		for count < maxResultLines {
+		for count < limits.maxLines {
 			nl := strings.IndexByte(s[idx:], '\n')
 			if nl < 0 {
 				idx = len(s)
@@ -40,28 +70,61 @@ func truncate(s string) string {
 		if !strings.HasSuffix(kept, "\n") {
 			kept += "\n"
 		}
-		marker := fmt.Sprintf("[truncated: showing first %d of %d lines; use read_file offset/limit or grep to narrow]", maxResultLines, totalLines)
+		marker := fmt.Sprintf("[truncated: showing first %d of %d lines; use read_file offset/limit or grep to narrow]", limits.maxLines, totalLines)
 		// The byte cap is a payload-size backstop: re-apply it so that many
 		// large lines under the line cap cannot bust the 64KB limit.
-		return capBytes(kept+marker, len(s))
+		out, byteTrunc := capBytes(kept+marker, len(s), limits.maxBytes)
+		info.truncated = true
+		info.shownBytes = len(out)
+		info.shownLines = countResultLines(out)
+		if byteTrunc.truncated {
+			info.shownBytes = byteTrunc.shownBytes
+			info.shownLines = byteTrunc.shownLines
+		}
+		return out, info
 	}
 
-	return capBytes(s, len(s))
+	out, byteTrunc := capBytes(s, len(s), limits.maxBytes)
+	if byteTrunc.truncated {
+		return out, byteTrunc
+	}
+	return out, info
 }
 
-// capBytes enforces maxResultBytes on s, appending a marker that reports the
+// capBytes enforces maxBytes on s, appending a marker that reports the
 // original byte size (origBytes) when it trims. If s already carries a
 // line-truncation marker, capBytes trims the kept body, not the marker tail.
-func capBytes(s string, origBytes int) string {
-	if len(s) <= maxResultBytes {
-		return s
+func capBytes(s string, origBytes, maxBytes int) (string, truncationInfo) {
+	info := truncationInfo{
+		originalBytes: origBytes,
+		shownBytes:    len(s),
+		originalLines: countResultLines(s),
+		shownLines:    countResultLines(s),
 	}
-	marker := fmt.Sprintf("\n[truncated: showing first %s of %s; use read_file offset/limit or grep to narrow]", humanBytes(maxResultBytes), humanBytes(origBytes))
-	keep := maxResultBytes - len(marker)
+	if len(s) <= maxBytes {
+		return s, info
+	}
+	marker := fmt.Sprintf("\n[truncated: showing first %s of %s; use read_file offset/limit or grep to narrow]", humanBytes(maxBytes), humanBytes(origBytes))
+	keep := maxBytes - len(marker)
 	if keep < 0 {
 		keep = 0
 	}
-	return s[:keep] + marker
+	out := s[:keep] + marker
+	info.truncated = true
+	info.shownBytes = len(out)
+	info.shownLines = countResultLines(out)
+	return out, info
+}
+
+func countResultLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }
 
 // humanBytes renders a byte count as a short human-readable size.

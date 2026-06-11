@@ -68,6 +68,12 @@ ollama pull llama3.2
 ./harness -model llama3.2 -base-url http://localhost:11434/v1
 ```
 
+### Session replay
+
+```sh
+./harness session replay ~/.local/state/harness/sessions/20260611T123456Z
+```
+
 The base URL supplies scheme/host/prefix only; the dialect appends its standard
 path (`/chat/completions` or `/messages`).
 
@@ -142,6 +148,11 @@ Precedence is **flags > environment > config file > built-in defaults**.
   and pricing. The `default_context_window` fallback is used only when a model has no
   configured context window; `context_window` forces an override. See
   `examples/config/` for sample files.
+- Context-efficiency knobs are config-file only: `agents_md_warn_bytes`
+  (default `8192`, warning only; `AGENTS.md` is still included in full),
+  `tool_result_max_bytes`, `tool_result_max_lines`, `read_file_default_limit`,
+  `compact_keep_turns`, `compact_summary_max_tokens`, and
+  `compact_tool_result_max_bytes`.
 - If `reasoning_effort` / `HARNESS_REASONING_EFFORT` / `-reasoning-effort` is set,
   harness sends the provider-specific effort field only when requested. Known
   models.dev metadata is used to reject unsupported models or effort values; unknown
@@ -171,7 +182,7 @@ Lines starting with `/` are commands; `//` sends a literal leading slash.
 |---|---|
 | `/help` | list commands |
 | `/exit`, `/quit` | save and exit |
-| `/clear` | reset the conversation; rotate to a fresh session file |
+| `/clear` | reset the conversation; rotate to a fresh session directory |
 | `/compact` | force compaction now |
 | `/usage` | cumulative session tokens and cost |
 | `/save [file]` | force save (optionally elsewhere) |
@@ -221,35 +232,54 @@ underlying tools still assume an external sandbox for real isolation.
 
 ## Sessions
 
-- The transcript is **saved after every turn**, atomically (write a `.tmp`, then
-  rename). It auto-saves to `~/.local/state/harness/sessions/<timestamp>.json`
-  (honoring `$XDG_STATE_HOME`); the path is printed at startup.
-- `-session <file>` chooses an explicit path. `-resume <file>` loads any prior
-  transcript and continues; `/clear` rotates to a fresh file.
+- A session path is a **directory**. `state.json` is the compact resumable state,
+  `raw.ndjson` is an append-only replay log, `compactions/` stores raw messages
+  removed from active context, and `artifacts/tool-results/` stores full outputs
+  omitted from model context.
+- The compact state is **saved after every turn**, atomically (write a `.tmp`,
+  then rename `state.json`). Auto-save uses
+  `~/.local/state/harness/sessions/<timestamp>` (honoring `$XDG_STATE_HOME`);
+  the path is printed at startup.
+- `-session <dir>` chooses an explicit session directory. `-resume <dir>` loads
+  its `state.json` and continues; `/clear` rotates to a fresh directory.
 - Transcripts are **provider-neutral**, so a session started against Anthropic
   resumes against an OpenAI-compatible server and vice versa. When flags disagree
-  with a resumed file's provider/model, the flags win with a warning.
+  with a resumed directory's provider/model, the flags win with a warning.
 - A session saved mid-turn (a dangling `tool_use`) is repaired on load by
   synthesizing an `interrupted` tool result, so the resumed transcript is always
   valid for both APIs.
+- `harness session replay <session-dir>` prints the user-facing session view to
+  stdout for inspection or grep.
 
 ## Compaction
 
 When a turn's reported input tokens reach **78%** of the model's context window
-(or on `/compact`), the harness summarizes the conversation to free context. It
-keeps the system prompt and the **last 4 turns verbatim**, sends everything older
-to the model with a summarization instruction, and replaces the old messages with
-a single summary message. The summary call's tokens and cost are folded into the
-session totals and reported:
+(or on `/compact`), the harness summarizes the conversation to free context. The
+trigger uses an approximate full-request footprint (system prompt, tools, and
+messages). It keeps the system prompt and the configured number of recent turns
+(`compact_keep_turns`, default `4`) verbatim, sends everything older to the model
+with a summarization instruction, and replaces the old messages with a single
+summary message. Summary output is capped by `compact_summary_max_tokens`
+(default `2048`). The summary call's tokens and cost are folded into the session
+totals and reported:
 
 ```
 [compacted: 38 messages → summary · 9.1k in / 0.4k out · $0.05]
 ```
 
-If the transcript is still over budget it degrades further (keep only the last
-turn, then hard-truncate the largest tool results) — it never wedges. If the
-summary call itself fails, compaction is aborted and the full transcript is kept,
-so a visible context-length error is preferred over silent data loss.
+Before summarization, large old tool results are reduced to previews
+(`compact_tool_result_max_bytes`, default `4096`) and the raw removed messages are
+archived under `compactions/`. If the old history is too large for one summary
+call, harness summarizes chunks and then summarizes the chunk summaries. If the
+transcript is still over budget it degrades further (keep only the last turn,
+then hard-truncate the largest tool results) — it never wedges. If the summary or
+archive step fails, compaction is aborted and the full transcript is kept.
+
+Turn summaries include an approximate context footprint, for example:
+
+```text
+[turn: 3 steps · 12.4k in / 1.8k out · $0.071 · ctx 42.0k/256.0k (sys 2.0k tools 1.5k msgs 38.5k) · 4.3s]
+```
 
 ## Interrupts
 
@@ -274,3 +304,8 @@ unless `-q`/`--quiet` or `--log-level error` suppresses the warning. `grep`,
 `rg`, and `git` are thin argv wrappers around the host CLIs. See
 [`docs/design.md`](docs/design.md) §9 for each tool's schema and exact
 behavior.
+
+Tool results are centrally capped (default 64 KB or 1000 lines; configurable via
+`tool_result_max_bytes` / `tool_result_max_lines`). Truncated results include a
+marker in the model-visible text, a warning in the UI, and the full output is
+archived under the session directory when available.

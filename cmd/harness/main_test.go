@@ -1118,7 +1118,7 @@ func TestRunOneShotProviderErrorExit1(t *testing.T) {
 // rendered to stderr.
 func TestRunResumeFlagsWinWarning(t *testing.T) {
 	dir := t.TempDir()
-	sessPath := filepath.Join(dir, "prior.json")
+	sessPath := filepath.Join(dir, "prior")
 	prior := session.Session{
 		Version:  session.Version,
 		Provider: "openai",
@@ -1130,8 +1130,7 @@ func TestRunResumeFlagsWinWarning(t *testing.T) {
 			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "reply"}}},
 		},
 	}
-	data, _ := json.Marshal(prior)
-	if err := os.WriteFile(sessPath, data, 0o644); err != nil {
+	if err := prior.Save(sessPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1194,6 +1193,30 @@ func TestRunSavesSessionToDefaultPath(t *testing.T) {
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("expected a saved session under %s: %v (errw=%q)", sessionsDir, err, errw.String())
+	}
+}
+
+func TestRunSessionReplaySubcommand(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "session")
+	if err := session.AppendEvent(dir, session.Event{Type: session.EventUser, Turn: 1, Text: "hello"}); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	if err := session.AppendEvent(dir, session.Event{Type: session.EventAssistantDelta, Turn: 1, Text: "world"}); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	var out, errw bytes.Buffer
+	code := run(environment{
+		args:   []string{"session", "replay", dir},
+		stdout: &out,
+		stderr: &errw,
+		getenv: func(string) string { return "" },
+		now:    time.Now,
+	})
+	if code != ui.ExitOK {
+		t.Fatalf("exit = %d; stderr=%q", code, errw.String())
+	}
+	if !strings.Contains(out.String(), "> hello") || !strings.Contains(out.String(), "world") {
+		t.Fatalf("unexpected replay output: %q", out.String())
 	}
 }
 
@@ -1586,7 +1609,7 @@ func TestRunREPLModeCommandSwitchesTools(t *testing.T) {
 // when no -mode flag overrides it.
 func TestRunResumeRestoresMode(t *testing.T) {
 	dir := t.TempDir()
-	sessPath := filepath.Join(dir, "prior.json")
+	sessPath := filepath.Join(dir, "prior")
 	prior := session.Session{
 		Version:  session.Version,
 		Provider: "anthropic",

@@ -44,8 +44,18 @@ type EventSink interface {
 
 // TurnUsage is the per-turn summary handed to the sink (design §10 usage line).
 type TurnUsage struct {
-	Steps int
-	Usage llm.Usage
+	Steps   int
+	Usage   llm.Usage
+	Context ContextEstimate
+}
+
+// ContextEstimate is a coarse request-footprint estimate for UI diagnostics.
+type ContextEstimate struct {
+	Total    int
+	Window   int
+	System   int
+	Tools    int
+	Messages int
 }
 
 // Options configures an Agent. The zero value is valid; MaxSteps falls back to
@@ -72,22 +82,34 @@ type Options struct {
 	// AutoContinue grants up to maxAutoContinues fresh step budgets when the
 	// model still wants tools at the cap, instead of stopping (spec §5).
 	AutoContinue bool
+	// CompactKeepTurns controls how many whole recent turns remain verbatim after
+	// compaction. Zero uses the default.
+	CompactKeepTurns int
+	// CompactSummaryMaxTokens caps summarization output. Zero uses the default.
+	CompactSummaryMaxTokens int
+	// CompactToolResultMaxBytes caps old tool-result bodies before they are sent
+	// to the summarizer. Zero uses the default; negative disables this pre-pass.
+	CompactToolResultMaxBytes int
 }
 
 // Agent drives the turn loop against one provider and tool registry, owning the
 // running transcript.
 type Agent struct {
-	provider      llm.Provider
-	tools         *tools.Registry
-	registry      *llm.Registry
-	transcript    []llm.Message
-	system        string
-	model         string
-	maxSteps      int
-	contextWindow int // -context-window override; 0 = use the registry default
-	reasoning     llm.ReasoningConfig
-	autoContinue  bool                // grant fresh step budgets at the cap (spec §5)
-	sleep         func(time.Duration) // mid-stream retry backoff; nil-free, set in New
+	provider                  llm.Provider
+	tools                     *tools.Registry
+	registry                  *llm.Registry
+	transcript                []llm.Message
+	system                    string
+	model                     string
+	maxSteps                  int
+	contextWindow             int // -context-window override; 0 = use the registry default
+	reasoning                 llm.ReasoningConfig
+	autoContinue              bool                // grant fresh step budgets at the cap (spec §5)
+	sleep                     func(time.Duration) // mid-stream retry backoff; nil-free, set in New
+	compactKeepTurns          int
+	compactSummaryMaxTokens   int
+	compactToolResultMaxBytes int
+	archiveCompaction         CompactionArchiver
 }
 
 // New constructs an Agent. A non-positive Options.MaxSteps uses the default.
@@ -101,15 +123,18 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		modelRegistry = llm.NewRegistry(nil)
 	}
 	return &Agent{
-		provider:      provider,
-		tools:         registry,
-		registry:      modelRegistry,
-		model:         opts.Model,
-		maxSteps:      maxSteps,
-		contextWindow: opts.ContextWindow,
-		reasoning:     opts.Reasoning,
-		autoContinue:  opts.AutoContinue,
-		sleep:         time.Sleep,
+		provider:                  provider,
+		tools:                     registry,
+		registry:                  modelRegistry,
+		model:                     opts.Model,
+		maxSteps:                  maxSteps,
+		contextWindow:             opts.ContextWindow,
+		reasoning:                 opts.Reasoning,
+		autoContinue:              opts.AutoContinue,
+		sleep:                     time.Sleep,
+		compactKeepTurns:          opts.CompactKeepTurns,
+		compactSummaryMaxTokens:   opts.CompactSummaryMaxTokens,
+		compactToolResultMaxBytes: opts.CompactToolResultMaxBytes,
 	}
 }
 
@@ -162,9 +187,25 @@ func (a *Agent) SetSleep(sleep func(time.Duration)) {
 	}
 }
 
+// SetCompactionArchiver installs the callback used to preserve raw messages
+// removed from the active transcript. A nil callback disables archiving.
+func (a *Agent) SetCompactionArchiver(archive CompactionArchiver) {
+	a.archiveCompaction = archive
+}
+
 // Transcript returns the current transcript. The slice is owned by the Agent;
 // callers must not mutate it.
 func (a *Agent) Transcript() []llm.Message { return a.transcript }
+
+// EstimateContext estimates the next request footprint using the current
+// transcript, system prompt, and advertised tools.
+func (a *Agent) EstimateContext() ContextEstimate {
+	return estimateRequest(llm.Request{
+		System:   a.system,
+		Messages: a.transcript,
+		Tools:    a.tools.Specs(),
+	}, a.window())
+}
 
 // stepResult holds what one stream produced after assembly.
 type stepResult struct {
@@ -186,6 +227,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 
 	var total llm.Usage
 	var lastInput int // input tokens the final step reported (drives the trigger)
+	var lastContext ContextEstimate
 	steps := 0
 	budget := a.maxSteps
 	continues := 0
@@ -194,7 +236,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		// Proactive trigger (spec §4): a turn whose tool results balloon the
 		// context compacts before the next request, not after the turn. The
 		// estimate catches growth the last reported count knows nothing about.
-		if trigger := max(lastInput, estimateTokens(a.transcript)); trigger*100 >= a.window()*compactThresholdPct {
+		if trigger := max(lastInput, a.EstimateContext().Total); trigger*100 >= a.window()*compactThresholdPct {
 			if compUsage, err := a.Compact(ctx, sink); err == nil {
 				total = add(total, compUsage)
 				// The old reported count no longer describes the compacted
@@ -210,6 +252,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Tools:     a.tools.Specs(),
 			Reasoning: a.reasoning,
 		}
+		lastContext = estimateRequest(req, a.window())
 
 		res, wasted, err := a.streamWithRetry(ctx, req, sink)
 		steps++
@@ -230,7 +273,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				sink.Notice("[cancelled]")
 			}
-			sink.TurnComplete(TurnUsage{Steps: steps, Usage: total})
+			sink.TurnComplete(TurnUsage{Steps: steps, Usage: total, Context: lastContext})
 			return err
 		}
 
@@ -265,9 +308,10 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 	// the transcript was kept intact.
 	if compUsage, err := a.MaybeCompact(ctx, lastInput, sink); err == nil {
 		total = add(total, compUsage)
+		lastContext = a.EstimateContext()
 	}
 
-	sink.TurnComplete(TurnUsage{Steps: steps, Usage: total})
+	sink.TurnComplete(TurnUsage{Steps: steps, Usage: total, Context: lastContext})
 	return nil
 }
 

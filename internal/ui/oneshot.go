@@ -26,6 +26,7 @@ func OneShot(app *App, prompt string) int {
 	if app.Created.IsZero() {
 		app.Created = app.clock()()
 	}
+	turn := app.beginTurn(prompt)
 
 	ctx := context.Background()
 	if app.Interrupt != nil {
@@ -39,7 +40,7 @@ func OneShot(app *App, prompt string) int {
 	}
 
 	app.Renderer.StartTurn()
-	sink := &accumulatingSink{r: app.Renderer, app: app}
+	sink := newAccumulatingSink(app.Renderer, app, turn)
 	err := app.Agent.RunTurn(ctx, prompt, sink)
 
 	// Save before deciding the exit code so a session is never lost (design §11).

@@ -8,9 +8,9 @@ import (
 	"harness/internal/llm"
 )
 
-// keepTurns is how many whole turns compaction preserves verbatim; everything
+// defaultKeepTurns is how many whole turns compaction preserves verbatim; everything
 // older is summarized into one message (design §12).
-const keepTurns = 4
+const defaultKeepTurns = 4
 
 // compactThresholdPct is the fraction of the context window at which the
 // post-turn trigger fires: reported input tokens ≥ 78% leaves headroom for the
@@ -21,6 +21,23 @@ const compactThresholdPct = 78
 // which must decide whether a compacted transcript still overflows without a
 // tokenizer or another model round-trip (design §12).
 const bytesPerToken = 4
+
+const (
+	defaultSummaryMaxTokens      = 2048
+	defaultSummaryToolResultSize = 4096
+)
+
+// CompactionArchive is handed to the optional archive callback before old
+// messages are removed from the active transcript.
+type CompactionArchive struct {
+	Messages []llm.Message
+	Summary  string
+	Usage    llm.Usage
+}
+
+// CompactionArchiver preserves raw compacted messages and returns a reference
+// suitable for inclusion in the active summary.
+type CompactionArchiver func(context.Context, CompactionArchive) (string, error)
 
 // summaryInstruction is the system prompt for the summarization call. It asks
 // the model to preserve everything the loop needs to continue and to invent
@@ -57,6 +74,7 @@ func (a *Agent) MaybeCompact(ctx context.Context, lastInputTokens int, sink Even
 // no tool_use/tool_result pair is ever split.
 func (a *Agent) Compact(ctx context.Context, sink EventSink) (llm.Usage, error) {
 	starts := turnStarts(a.transcript)
+	keepTurns := a.keepTurns()
 	if len(starts) <= keepTurns {
 		// Nothing older than the kept turns to summarize.
 		return llm.Usage{}, nil
@@ -70,6 +88,20 @@ func (a *Agent) Compact(ctx context.Context, sink EventSink) (llm.Usage, error) 
 	if err != nil {
 		sink.Notice(fmt.Sprintf("[compact failed: %v; keeping full transcript]", err))
 		return llm.Usage{}, err
+	}
+	if a.archiveCompaction != nil {
+		ref, err := a.archiveCompaction(ctx, CompactionArchive{
+			Messages: older,
+			Summary:  summary,
+			Usage:    usage,
+		})
+		if err != nil {
+			sink.Notice(fmt.Sprintf("[compact archive failed: %v; keeping full transcript]", err))
+			return llm.Usage{}, err
+		}
+		if ref != "" {
+			summary += "\n\nRaw compacted transcript archive: " + ref
+		}
 	}
 
 	collapsed := len(older)
@@ -89,10 +121,41 @@ func (a *Agent) Compact(ctx context.Context, sink EventSink) (llm.Usage, error) 
 // summarize runs one tool-less model call over the older messages and returns
 // the summary text and the call's usage.
 func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm.Usage, error) {
+	prepared := prepareSummaryMessages(older, a.summaryToolResultMaxBytes())
+	chunks := splitSummaryChunks(prepared, a.summaryChunkBudget())
+	if len(chunks) <= 1 {
+		return a.summarizeOne(ctx, prepared)
+	}
+
+	var total llm.Usage
+	summaries := make([]llm.Message, 0, len(chunks))
+	for i, chunk := range chunks {
+		summary, usage, err := a.summarizeOne(ctx, chunk)
+		if err != nil {
+			return "", llm.Usage{}, err
+		}
+		total = add(total, usage)
+		summaries = append(summaries, llm.Message{
+			Role: llm.RoleUser,
+			Content: []llm.ContentBlock{{
+				Kind: llm.BlockText,
+				Text: fmt.Sprintf("Chunk %d summary:\n%s", i+1, summary),
+			}},
+		})
+	}
+	final, usage, err := a.summarizeOne(ctx, summaries)
+	if err != nil {
+		return "", llm.Usage{}, err
+	}
+	return final, add(total, usage), nil
+}
+
+func (a *Agent) summarizeOne(ctx context.Context, older []llm.Message) (string, llm.Usage, error) {
 	req := llm.Request{
 		Model:     a.model,
 		System:    summaryInstruction,
 		Messages:  older,
+		MaxTokens: a.summaryMaxTokens(),
 		Reasoning: a.reasoning,
 	}
 	var text []byte
@@ -115,6 +178,87 @@ func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm
 		}
 	}
 	return string(text), usage, nil
+}
+
+func (a *Agent) keepTurns() int {
+	if a.compactKeepTurns > 0 {
+		return a.compactKeepTurns
+	}
+	return defaultKeepTurns
+}
+
+func (a *Agent) summaryMaxTokens() int {
+	if a.compactSummaryMaxTokens > 0 {
+		return a.compactSummaryMaxTokens
+	}
+	return defaultSummaryMaxTokens
+}
+
+func (a *Agent) summaryToolResultMaxBytes() int {
+	if a.compactToolResultMaxBytes < 0 {
+		return 0
+	}
+	if a.compactToolResultMaxBytes > 0 {
+		return a.compactToolResultMaxBytes
+	}
+	return defaultSummaryToolResultSize
+}
+
+func (a *Agent) summaryChunkBudget() int {
+	budget := a.window() * compactThresholdPct / 100
+	if budget <= 0 {
+		return llm.DefaultContextWindow * compactThresholdPct / 100
+	}
+	// Use half the trigger budget so the summary instruction and provider
+	// overhead have room even when estimates are optimistic.
+	return max(budget/2, 1000)
+}
+
+func prepareSummaryMessages(msgs []llm.Message, maxToolResultBytes int) []llm.Message {
+	if maxToolResultBytes == 0 {
+		return msgs
+	}
+	out := make([]llm.Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = llm.Message{Role: m.Role, Content: make([]llm.ContentBlock, len(m.Content))}
+		copy(out[i].Content, m.Content)
+		for j, b := range out[i].Content {
+			if b.Kind != llm.BlockToolResult || len(b.ResultText) <= maxToolResultBytes {
+				continue
+			}
+			out[i].Content[j].ResultText = b.ResultText[:maxToolResultBytes] +
+				fmt.Sprintf("\n[summary input truncated: showing first %d of %d bytes; raw content archived if compaction succeeds]", maxToolResultBytes, len(b.ResultText))
+		}
+	}
+	return out
+}
+
+func splitSummaryChunks(msgs []llm.Message, budget int) [][]llm.Message {
+	if len(msgs) == 0 || estimateTokens(msgs) <= budget {
+		return [][]llm.Message{msgs}
+	}
+	starts := turnStarts(msgs)
+	if len(starts) == 0 {
+		return [][]llm.Message{msgs}
+	}
+	var chunks [][]llm.Message
+	var current []llm.Message
+	for i, start := range starts {
+		end := len(msgs)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		turn := msgs[start:end]
+		if len(current) > 0 && estimateTokens(append(append([]llm.Message(nil), current...), turn...)) > budget {
+			chunks = append(chunks, current)
+			current = nil
+		}
+		current = append(current, turn...)
+	}
+	if len(current) > 0 {
+		chunks = append(chunks, current)
+	}
+	return chunks
 }
 
 // degrade applies the lower rungs of the ladder when the compacted transcript's
@@ -224,6 +368,30 @@ func estimateTokens(msgs []llm.Message) int {
 		}
 	}
 	return bytes / bytesPerToken
+}
+
+func estimateRequest(req llm.Request, window int) ContextEstimate {
+	systemBytes := len(req.System)
+	toolBytes := 0
+	for _, t := range req.Tools {
+		toolBytes += len(t.Name) + len(t.Description) + len(t.Parameters)
+	}
+	messageBytes := 0
+	for _, m := range req.Messages {
+		messageBytes += len(m.Role)
+		for _, b := range m.Content {
+			messageBytes += len(b.Kind) + len(b.Text) + len(b.ToolUseID) + len(b.ToolName) + len(b.ToolInput) +
+				len(b.ResultForID) + len(b.ResultText)
+		}
+	}
+	est := ContextEstimate{
+		System:   systemBytes / bytesPerToken,
+		Tools:    toolBytes / bytesPerToken,
+		Messages: messageBytes / bytesPerToken,
+		Window:   window,
+	}
+	est.Total = est.System + est.Tools + est.Messages
+	return est
 }
 
 // compactionReport is the exact post-compaction notice (design §12):

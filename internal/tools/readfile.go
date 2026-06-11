@@ -15,8 +15,8 @@ import (
 // file as binary (design §9.1).
 const binarySniffBytes = 8 * 1024
 
-// readFileDefaultLimit is the default number of lines returned (design §9.1).
-const readFileDefaultLimit = 1000
+// defaultReadFileLimit is the default number of lines returned (design §9.1).
+const defaultReadFileLimit = 1000
 
 const readFileSchema = `{
   "type": "object",
@@ -28,7 +28,9 @@ const readFileSchema = `{
   "required": ["path"]
 }`
 
-type readFile struct{}
+type readFile struct {
+	defaultLimit int
+}
 
 func (readFile) Name() string { return "read_file" }
 
@@ -40,7 +42,7 @@ func (readFile) Schema() json.RawMessage { return json.RawMessage(readFileSchema
 
 func (readFile) ReadOnly() bool { return true }
 
-func (readFile) Run(ctx context.Context, input json.RawMessage) (string, error) {
+func (r readFile) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -88,13 +90,16 @@ func (readFile) Run(ctx context.Context, input json.RawMessage) (string, error) 
 	}
 	limit := args.Limit
 	if limit == 0 {
-		limit = readFileDefaultLimit
+		limit = r.defaultLimit
+		if limit == 0 {
+			limit = defaultReadFileLimit
+		}
 	}
 
 	// Always read line-by-line and stop after the window so a small window (or
-	// the default 1000-line cap) of a huge file never loads the whole thing
+	// the default line cap) of a huge file never loads the whole thing
 	// into memory. This subsumes the design's >10MB guard: an unwindowed read
-	// returns at most readFileDefaultLimit lines regardless of file size.
+	// returns at most the configured default limit regardless of file size.
 	lines, total, err := readWindowLines(br, offset, limit)
 	if err != nil {
 		return "", err
