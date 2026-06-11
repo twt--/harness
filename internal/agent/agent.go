@@ -175,6 +175,18 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 	steps := 0
 
 	for steps < a.maxSteps {
+		// Proactive trigger (spec §4): a turn whose tool results balloon the
+		// context compacts before the next request, not after the turn. The
+		// estimate catches growth the last reported count knows nothing about.
+		if trigger := max(lastInput, estimateTokens(a.transcript)); trigger*100 >= a.window()*compactThresholdPct {
+			if compUsage, err := a.Compact(ctx, sink); err == nil {
+				total = add(total, compUsage)
+				// The old reported count no longer describes the compacted
+				// transcript and would re-trigger every step.
+				lastInput = 0
+			}
+		}
+
 		req := llm.Request{
 			Model:     a.model,
 			System:    a.system,
@@ -186,7 +198,8 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		res, wasted, err := a.streamWithRetry(ctx, req, sink)
 		steps++
 		total = add(total, add(res.usage, wasted))
-		lastInput = res.usage.InputTokens
+		// Context-size signal, not billing: cached tokens occupy the window too.
+		lastInput = res.usage.InputTokens + res.usage.CacheReadTokens + res.usage.CacheWriteTokens
 
 		if err != nil {
 			// Cancellation repair: keep streamed partial text as a text-only
