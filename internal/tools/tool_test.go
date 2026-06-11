@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -296,6 +297,71 @@ func TestDispatchTruncateLinesStillRespectsBytes(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "[truncated:") {
 		t.Errorf("missing truncation marker")
+	}
+}
+
+func TestDefaultNamesMatchDefaultRegistry(t *testing.T) {
+	want := []string{"read_file", "list_dir", "grep", "edit", "write_file", "apply_patch", "run_command", "exec", "git", "web_fetch"}
+	if got := DefaultNames(); !slices.Equal(got, want) {
+		t.Errorf("DefaultNames() = %v, want %v", got, want)
+	}
+	if got := Default().Names(); !slices.Equal(got, DefaultNames()) {
+		t.Errorf("Default().Names() = %v, want DefaultNames() %v", got, DefaultNames())
+	}
+}
+
+func TestCatalogRegistersDefaultPlusModeTools(t *testing.T) {
+	r := Catalog()
+	want := append(append([]string{}, DefaultNames()...), "git_readonly", "write_tmp_file")
+	if got := r.Names(); !slices.Equal(got, want) {
+		t.Errorf("Catalog().Names() = %v, want %v", got, want)
+	}
+	for _, s := range r.Specs() {
+		if len(s.Parameters) == 0 {
+			t.Errorf("tool %q has empty schema", s.Name)
+		}
+	}
+}
+
+// Subset gating must be airtight: an excluded tool is neither advertised in
+// Specs nor dispatchable — both read the same filtered registry.
+func TestSubsetFiltersSpecsAndDispatch(t *testing.T) {
+	sub, err := Catalog().Subset([]string{"grep", "read_file"}) // deliberately out of order
+	if err != nil {
+		t.Fatalf("Subset: %v", err)
+	}
+	// Catalog order is preserved regardless of the requested order.
+	if got := sub.Names(); !slices.Equal(got, []string{"read_file", "grep"}) {
+		t.Errorf("Subset names = %v, want [read_file grep]", got)
+	}
+	for _, s := range sub.Specs() {
+		if s.Name == "edit" {
+			t.Error("excluded tool advertised in Specs")
+		}
+	}
+	res := sub.Dispatch(context.Background(), llm.ToolCall{ID: "1", Name: "edit", Input: json.RawMessage(`{}`)})
+	if !res.IsError || !strings.Contains(res.Text, "unknown tool") {
+		t.Errorf("excluded tool should be undispatchable, got %+v", res)
+	}
+}
+
+func TestSubsetOfDefaultNamesEqualsDefault(t *testing.T) {
+	sub, err := Catalog().Subset(DefaultNames())
+	if err != nil {
+		t.Fatalf("Subset: %v", err)
+	}
+	if got := sub.Names(); !slices.Equal(got, Default().Names()) {
+		t.Errorf("Subset(DefaultNames()) = %v, want %v", got, Default().Names())
+	}
+}
+
+func TestSubsetUnknownNameErrors(t *testing.T) {
+	_, err := Catalog().Subset([]string{"read_file", "bogus"})
+	if err == nil {
+		t.Fatal("expected error for unknown tool name")
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("error should name the unknown tool: %v", err)
 	}
 }
 
