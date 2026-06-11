@@ -34,6 +34,8 @@ func (gitReadonly) Description() string {
 
 func (gitReadonly) Schema() json.RawMessage { return json.RawMessage(gitReadonlySchema) }
 
+func (gitReadonly) ReadOnly() bool { return true }
+
 func (gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Args []string `json:"args"`

@@ -39,6 +39,8 @@ func (runCommand) Description() string {
 
 func (runCommand) Schema() json.RawMessage { return json.RawMessage(runCommandSchema) }
 
+func (runCommand) ReadOnly() bool { return false }
+
 func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Command        string `json:"command"`

@@ -27,6 +27,8 @@ func (applyPatch) Description() string {
 
 func (applyPatch) Schema() json.RawMessage { return json.RawMessage(applyPatchSchema) }
 
+func (applyPatch) ReadOnly() bool { return false }
+
 func (applyPatch) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Patch string `json:"patch"`

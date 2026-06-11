@@ -31,6 +31,8 @@ func (gitTool) Description() string {
 
 func (gitTool) Schema() json.RawMessage { return json.RawMessage(gitSchema) }
 
+func (gitTool) ReadOnly() bool { return false }
+
 func (gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Args []string `json:"args"`

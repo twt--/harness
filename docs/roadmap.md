@@ -35,12 +35,6 @@ line-level claims before starting one.
    reported-tokens signal now counts cached tokens too.
 8. **maxSteps auto-continue.** `on_max_steps = continue` grants up to 3 fresh
    step budgets before stopping; default behavior is unchanged.
-
-## Flagged — conflicts with documented v1 non-goals
-
-Deliberate non-goals (AGENTS.md, design §1). Revisit the stance explicitly
-before implementing; do not slip these in as incidental changes.
-
-3. **Parallel dispatch of read-only tool calls.** The loop serializes
-   parallel tool calls emitted in one step; independent reads (grep,
-   read_file, list_dir) are the obvious latency win.
+9. **Parallel dispatch of read-only tool calls.** Steps whose calls are all
+   read-only dispatch concurrently (bounded at 8); ordering of sink events,
+   results, and transcript blocks is unchanged. Mixed steps stay sequential.

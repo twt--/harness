@@ -28,6 +28,8 @@ func (writeFile) Description() string {
 
 func (writeFile) Schema() json.RawMessage { return json.RawMessage(writeFileSchema) }
 
+func (writeFile) ReadOnly() bool { return false }
+
 func (writeFile) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Path    string `json:"path"`

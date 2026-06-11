@@ -53,6 +53,8 @@ func (grep) Description() string {
 
 func (grep) Schema() json.RawMessage { return json.RawMessage(grepSchema) }
 
+func (grep) ReadOnly() bool { return true }
+
 func (grep) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Pattern    string `json:"pattern"`

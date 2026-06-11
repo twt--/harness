@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,18 +38,24 @@ func (s *recordSink) TurnComplete(u TurnUsage) {
 }
 
 // recordTool is a fake tool whose Run is scriptable; it records the inputs it
-// received in call order.
+// received in call order. The mutex guards inputs because read-only steps now
+// dispatch Run concurrently.
 type recordTool struct {
-	name   string
-	run    func(ctx context.Context, input json.RawMessage) (string, error)
-	inputs []string
+	name     string
+	readOnly bool
+	run      func(ctx context.Context, input json.RawMessage) (string, error)
+	mu       sync.Mutex
+	inputs   []string
 }
 
 func (t *recordTool) Name() string            { return t.name }
 func (t *recordTool) Description() string     { return "fake tool" }
 func (t *recordTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *recordTool) ReadOnly() bool          { return t.readOnly }
 func (t *recordTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
+	t.mu.Lock()
 	t.inputs = append(t.inputs, string(input))
+	t.mu.Unlock()
 	return t.run(ctx, input)
 }
 
@@ -646,5 +653,106 @@ func TestRequestCarriesResolvedModel(t *testing.T) {
 	}
 	if got := fp.Requests[0].Model; got != "claude-opus-4-8" {
 		t.Errorf("Request.Model = %q, want %q", got, "claude-opus-4-8")
+	}
+}
+
+// barrierRun returns a Run that only completes once n calls have entered it —
+// it deadlocks (then errors via timeout) under sequential dispatch.
+func barrierRun(n int) func(context.Context, json.RawMessage) (string, error) {
+	var wg sync.WaitGroup
+	wg.Add(n)
+	return func(ctx context.Context, _ json.RawMessage) (string, error) {
+		wg.Done()
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+			return "ok", nil
+		case <-time.After(2 * time.Second):
+			return "", errors.New("barrier timeout: calls were not concurrent")
+		}
+	}
+}
+
+func TestAllReadOnlyStepDispatchesConcurrently(t *testing.T) {
+	run := barrierRun(2)
+	t1 := &recordTool{name: "r1", readOnly: true, run: run}
+	t2 := &recordTool{name: "r2", readOnly: true, run: run}
+	reg := &tools.Registry{}
+	reg.Register(t1)
+	reg.Register(t2)
+
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{
+				toolDone(0, "a", "r1", `{}`),
+				toolDone(1, "b", "r2", `{}`),
+			},
+			Stop: llm.StopToolUse,
+		},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("done")}, Stop: llm.StopEndTurn},
+	)
+	a := newAgent(fp, reg, Options{})
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	mustValid(t, a.Transcript())
+
+	resMsg := a.Transcript()[2]
+	if len(resMsg.Content) != 2 || resMsg.Content[0].ResultForID != "a" || resMsg.Content[1].ResultForID != "b" {
+		t.Fatalf("results not in emission order:\n%s", dump([]llm.Message{resMsg}))
+	}
+	for _, b := range resMsg.Content {
+		if b.ResultError {
+			t.Errorf("read-only calls were not concurrent: %s", b.ResultText)
+		}
+	}
+	// Sink saw both starts (emission order) before both results.
+	if len(sink.starts) != 2 || sink.starts[0].ID != "a" || sink.starts[1].ID != "b" {
+		t.Errorf("ToolStart order wrong: %+v", sink.starts)
+	}
+	if len(sink.results) != 2 || sink.results[0].ForID != "a" || sink.results[1].ForID != "b" {
+		t.Errorf("ToolResult order wrong: %+v", sink.results)
+	}
+}
+
+func TestMixedStepStaysSequential(t *testing.T) {
+	var mu sync.Mutex
+	var trace []string
+	mk := func(name string, ro bool) *recordTool {
+		return &recordTool{name: name, readOnly: ro, run: func(_ context.Context, _ json.RawMessage) (string, error) {
+			mu.Lock()
+			trace = append(trace, "start:"+name)
+			mu.Unlock()
+			mu.Lock()
+			trace = append(trace, "end:"+name)
+			mu.Unlock()
+			return "ok", nil
+		}}
+	}
+	reg := &tools.Registry{}
+	reg.Register(mk("reader", true))
+	reg.Register(mk("writer", false))
+
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{
+				toolDone(0, "a", "reader", `{}`),
+				toolDone(1, "b", "writer", `{}`),
+			},
+			Stop: llm.StopToolUse,
+		},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("done")}, Stop: llm.StopEndTurn},
+	)
+	a := newAgent(fp, reg, Options{})
+
+	if err := a.RunTurn(context.Background(), "go", &recordSink{}); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	want := []string{"start:reader", "end:reader", "start:writer", "end:writer"}
+	if !slices.Equal(trace, want) {
+		t.Errorf("mixed step interleaving = %v, want strictly sequential %v", trace, want)
 	}
 }

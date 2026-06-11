@@ -32,6 +32,8 @@ func (listDir) Description() string {
 
 func (listDir) Schema() json.RawMessage { return json.RawMessage(listDirSchema) }
 
+func (listDir) ReadOnly() bool { return true }
+
 func (listDir) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Path string `json:"path"`

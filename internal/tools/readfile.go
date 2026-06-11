@@ -38,6 +38,8 @@ func (readFile) Description() string {
 
 func (readFile) Schema() json.RawMessage { return json.RawMessage(readFileSchema) }
 
+func (readFile) ReadOnly() bool { return true }
+
 func (readFile) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var args struct {
 		Path   string `json:"path"`
