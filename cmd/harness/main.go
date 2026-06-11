@@ -407,11 +407,12 @@ func run(env environment) int {
 
 	color := !cfg.NoColor && env.colorTTY
 	renderer := ui.NewRenderer(stdout, stderr, ui.RenderOptions{
-		Color:    color,
-		Verbose:  cfg.Verbose,
-		Model:    registryModel,
-		Registry: modelRegistry,
-		Now:      now,
+		Color:      color,
+		Verbose:    cfg.Verbose,
+		ToolStream: cfg.ToolStream,
+		Model:      registryModel,
+		Registry:   modelRegistry,
+		Now:        now,
 	})
 
 	app := &ui.App{

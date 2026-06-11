@@ -35,7 +35,10 @@ const maxParallelTools = 8
 // owns the transcript and the control flow; the sink only reports. Phase 10's
 // renderer implements it (design §8.1, §10).
 type EventSink interface {
-	TextDelta(text string)            // incremental assistant text
+	TextDelta(text string) // incremental assistant text
+	ModelStepStart(step, attempt int, ctx ContextEstimate)
+	ToolUseStart(call llm.ToolCall)
+	ToolUseDelta(index int, delta string)
 	ToolStart(call llm.ToolCall)      // a tool call is about to run
 	ToolResult(result llm.ToolResult) // a tool call finished
 	Notice(msg string)                // out-of-band notices (max-steps, cancelled)
@@ -254,7 +257,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		}
 		lastContext = estimateRequest(req, a.window())
 
-		res, wasted, err := a.streamWithRetry(ctx, req, sink)
+		res, wasted, err := a.streamWithRetry(ctx, req, sink, steps+1, lastContext)
 		steps++
 		total = add(total, add(res.usage, wasted))
 		// Context-size signal, not billing: cached tokens occupy the window too.
@@ -369,8 +372,9 @@ func resultBlock(r llm.ToolResult) llm.ContentBlock {
 // attempt is never committed to the transcript; wasted carries the usage
 // failed attempts reported (paid for, so counted) — it never drives the
 // compaction trigger.
-func (a *Agent) streamWithRetry(ctx context.Context, req llm.Request, sink EventSink) (res stepResult, wasted llm.Usage, err error) {
+func (a *Agent) streamWithRetry(ctx context.Context, req llm.Request, sink EventSink, step int, estimate ContextEstimate) (res stepResult, wasted llm.Usage, err error) {
 	for attempt := 0; ; attempt++ {
+		sink.ModelStepStart(step, attempt+1, estimate)
 		res, err = a.stream(ctx, req, sink)
 		if err == nil || attempt >= streamRetries || !retryableStreamError(err) {
 			return res, wasted, err
@@ -414,6 +418,14 @@ func (a *Agent) stream(ctx context.Context, req llm.Request, sink EventSink) (st
 		case llm.EventTextDelta:
 			text = append(text, ev.Text...)
 			sink.TextDelta(ev.Text)
+		case llm.EventToolCallStart:
+			sink.ToolUseStart(llm.ToolCall{
+				ID:    ev.ToolID,
+				Name:  ev.ToolName,
+				Input: ev.ToolInput,
+			})
+		case llm.EventToolCallDelta:
+			sink.ToolUseDelta(ev.Index, ev.ArgsDelta)
 		case llm.EventToolCallDone:
 			res.toolCalls = append(res.toolCalls, llm.ToolCall{
 				ID:    ev.ToolID,

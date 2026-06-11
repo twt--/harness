@@ -64,6 +64,45 @@ func TestOneShotSavesSessionAndRunsOneTurn(t *testing.T) {
 	}
 }
 
+func TestOneShotShowsToolCallProgressOnStderrOnly(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{
+				{Kind: llm.EventToolCallStart, Index: 0, ToolID: "call_1", ToolName: "list_dir"},
+				{Kind: llm.EventToolCallDelta, Index: 0, ArgsDelta: `{"path":`},
+				{Kind: llm.EventToolCallDelta, Index: 0, ArgsDelta: `"."}`},
+				toolStep("list_dir", `{"path":"."}`, "call_1"),
+			},
+			Stop: llm.StopToolUse,
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("done")},
+			Stop:   llm.StopEndTurn,
+		},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+
+	if code := OneShot(app, "inspect"); code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if got := out.String(); got != "done\n" {
+		t.Fatalf("stdout = %q, want only assistant answer", got)
+	}
+	got := errw.String()
+	for _, want := range []string{
+		"[model: step 1 waiting]",
+		"[tool-call: list_dir id=call_1]",
+		`[tool-call args] {"path":"."}`,
+		"[tool: list_dir started path=.]",
+		"[list_dir] path=.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stderr missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // TestOneShotSaveFailureWarned is the regression test for the one-shot save
 // error being silently swallowed: OneShot used to return ExitOK and print
 // nothing when the session save failed, losing the transcript with no signal.

@@ -314,9 +314,9 @@ func Read(ctx context.Context, r io.Reader) iter.Seq2[Event, error]
 ### 5.3 Streaming tool-call assembly
 
 Providers emit granular `Start`/`Delta` events for live rendering **and** guarantee that
-`EventToolCallDone.ToolInput` is complete, valid JSON. The agent loop consumes only
-`Done`; the renderer may consume `Delta`. Assembly is per-turn state inside each
-provider's `Stream`:
+`EventToolCallDone.ToolInput` is complete, valid JSON. The agent loop forwards
+`Start`/`Delta` to the renderer, but only `Done` affects transcript mutation and tool
+dispatch. Assembly is per-turn state inside each provider's `Stream`:
 
 - **OpenAI:** `choices[].delta.tool_calls[]` arrive with an `index`; the first delta for
   an index carries `id` + `function.name` (emit `Start`), subsequent deltas carry
@@ -829,6 +829,12 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 ### Rendering
 
 - Assistant text streams raw as deltas arrive. No markdown rendering.
+- Model progress renders as plain stderr lines, e.g. `[model: step 1 waiting]`.
+- Live tool-call construction renders to stderr by default: `[tool-call: name id=...]`
+  followed by a raw `[tool-call args] ...` line as argument fragments arrive. Disable
+  with `-tool-stream=false`, `HARNESS_TOOL_STREAM=false`, or `"tool_stream": false`.
+  These fragments are live feedback only; session replay keeps completed tool calls and
+  results, not partial argument deltas.
 - Tool calls render as one-liners:
   `[grep] args=["-R","-n","func main","."] → 14 lines, 2.1KB`
   built from the tool name, key args, and a result summary. `-v` adds the first ~5 lines
@@ -892,6 +898,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 -context-window <n>
 -reasoning-effort <level>
 -v                show tool result snippets
+-tool-stream      show live tool-call argument streaming (default true)
 -q, --quiet       suppress informational diagnostics
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color
@@ -905,7 +912,8 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 
 - Prompt from the flag value; `-p -` or piped stdin reads stdin (both → flag text, then
   stdin — enables `harness -p "summarize:" < notes.txt`).
-- **Assistant text → stdout; tool summaries, usage, errors → stderr.** So
+- **Assistant text → stdout; model progress, live tool-call arguments, tool summaries,
+  usage, errors → stderr.** So
   `harness -p "…" > answer.txt` captures exactly the model's answer.
 - Exit codes: `0` completed, `1` runtime error, `2` usage error, `130` interrupted.
 - Runs exactly one user turn, saves the session, exits.

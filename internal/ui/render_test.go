@@ -44,8 +44,11 @@ func TestToolSummaryLine(t *testing.T) {
 	if out.Len() != 0 {
 		t.Errorf("tool lines must go to errw, not out; out=%q", out.String())
 	}
-	if !strings.HasPrefix(got, "[grep]") {
-		t.Errorf("summary should start with [grep], got %q", got)
+	if !strings.Contains(got, "[tool: grep started") {
+		t.Errorf("tool start should be reported, got %q", got)
+	}
+	if !strings.Contains(got, "[grep]") {
+		t.Errorf("summary should include [grep], got %q", got)
 	}
 	if !strings.Contains(got, `args=["-R","-n","func main","."]`) {
 		t.Errorf("summary should show argv-style args, got %q", got)
@@ -81,7 +84,7 @@ func TestToolSummaryFinishesAssistantLine(t *testing.T) {
 	if got := out.String(); got != "calling a tool\n" {
 		t.Errorf("tool summary should force a newline after assistant text, got %q", got)
 	}
-	if got := errw.String(); !strings.HasPrefix(got, "[list_dir]") {
+	if got := errw.String(); !strings.Contains(got, "[list_dir]") {
 		t.Errorf("tool summary should still go to errw, got %q", got)
 	}
 }
@@ -218,5 +221,60 @@ func TestTextDeltaGoesToStdout(t *testing.T) {
 	}
 	if errw.Len() != 0 {
 		t.Errorf("assistant text must not touch errw, got %q", errw.String())
+	}
+}
+
+func TestModelStepStartGoesToStderr(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{})
+
+	r.ModelStepStart(2, 1, agent.ContextEstimate{})
+	r.ModelStepStart(2, 3, agent.ContextEstimate{})
+
+	if out.Len() != 0 {
+		t.Errorf("model progress must not touch stdout, got %q", out.String())
+	}
+	got := errw.String()
+	if !strings.Contains(got, "[model: step 2 waiting]") {
+		t.Errorf("missing step wait line, got %q", got)
+	}
+	if !strings.Contains(got, "[model: step 2 retry 2 waiting]") {
+		t.Errorf("missing retry wait line, got %q", got)
+	}
+}
+
+func TestToolUseStreamEnabledWritesRawArgsToStderr(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{ToolStream: true})
+
+	r.ToolUseStart(llm.ToolCall{ID: "call_1", Name: "read_file"})
+	r.ToolUseDelta(0, `{"path":`)
+	r.ToolUseDelta(0, `"a.go"}`)
+	r.Notice("[done]")
+
+	if out.Len() != 0 {
+		t.Errorf("tool-call stream must not touch stdout, got %q", out.String())
+	}
+	got := errw.String()
+	if !strings.Contains(got, "[tool-call: read_file id=call_1]") {
+		t.Errorf("missing tool-call start line, got %q", got)
+	}
+	if !strings.Contains(got, "[tool-call args] {\"path\":\"a.go\"}\n[done]") {
+		t.Errorf("tool-call args should be streamed and newline-closed before notices, got %q", got)
+	}
+}
+
+func TestToolUseStreamDisabledSuppressesRawArgs(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{ToolStream: false})
+
+	r.ToolUseStart(llm.ToolCall{ID: "call_1", Name: "read_file"})
+	r.ToolUseDelta(0, `{"path":"a.go"}`)
+
+	if out.Len() != 0 {
+		t.Errorf("disabled tool stream must not touch stdout, got %q", out.String())
+	}
+	if errw.Len() != 0 {
+		t.Errorf("disabled tool stream must not touch stderr, got %q", errw.String())
 	}
 }

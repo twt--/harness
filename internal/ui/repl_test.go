@@ -25,7 +25,7 @@ func newTestApp(t *testing.T, out, errw *bytes.Buffer, fp *llmtest.FakeProvider)
 	a := agent.New(fp, tools.Default(), agent.Options{Model: "claude-opus-4-8"})
 	a.SetSystem("you are a test")
 	a.SetSleep(func(time.Duration) {}) // no real time in tests
-	r := NewRenderer(out, errw, RenderOptions{Model: "claude-opus-4-8"})
+	r := NewRenderer(out, errw, RenderOptions{Model: "claude-opus-4-8", ToolStream: true})
 	return &App{
 		Agent:       a,
 		Renderer:    r,

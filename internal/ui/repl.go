@@ -689,6 +689,18 @@ func (s *accumulatingSink) TextDelta(text string) {
 	s.app.recordEvent(session.Event{Type: session.EventAssistantDelta, Turn: s.turn, Text: text})
 }
 
+func (s *accumulatingSink) ModelStepStart(step, attempt int, ctx agent.ContextEstimate) {
+	s.r.ModelStepStart(step, attempt, ctx)
+}
+
+func (s *accumulatingSink) ToolUseStart(c llm.ToolCall) {
+	s.r.ToolUseStart(c)
+}
+
+func (s *accumulatingSink) ToolUseDelta(index int, delta string) {
+	s.r.ToolUseDelta(index, delta)
+}
+
 func (s *accumulatingSink) ToolStart(c llm.ToolCall) {
 	s.pending[c.ID] = c
 	s.r.ToolStart(c)

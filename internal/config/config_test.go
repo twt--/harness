@@ -271,6 +271,7 @@ func TestHarnessEnvMapping(t *testing.T) {
 		"HARNESS_NO_ENV":                 "true",
 		"HARNESS_NO_COLOR":               "true",
 		"HARNESS_VERBOSE":                "true",
+		"HARNESS_TOOL_STREAM":            "false",
 		"HARNESS_PROMPT":                 "env> ",
 		"LOG_LEVEL":                      "WARN",
 	})
@@ -304,6 +305,9 @@ func TestHarnessEnvMapping(t *testing.T) {
 	}
 	if !c.Verbose {
 		t.Fatalf("verbose false, want true")
+	}
+	if c.ToolStream {
+		t.Fatalf("tool-stream true, want false")
 	}
 	if c.LogLevel != "warn" {
 		t.Fatalf("log level %q, want warn", c.LogLevel)
@@ -350,6 +354,42 @@ func TestReplPromptPrecedence(t *testing.T) {
 	}
 	if c.ReplPrompt != ">>> " {
 		t.Fatalf("flag repl prompt %q, want %q", c.ReplPrompt, ">>> ")
+	}
+}
+
+func TestToolStreamPrecedence(t *testing.T) {
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.ToolStream {
+		t.Fatalf("default tool-stream false, want true")
+	}
+
+	cfgPath := writeConfig(t, `{"tool_stream":false}`)
+	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load file: %v", err)
+	}
+	if c.ToolStream {
+		t.Fatalf("file tool-stream true, want false")
+	}
+
+	env := envFrom(map[string]string{"HARNESS_TOOL_STREAM": "true"})
+	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load env: %v", err)
+	}
+	if !c.ToolStream {
+		t.Fatalf("env tool-stream false, want true")
+	}
+
+	c, err = Load([]string{"-model", "gpt-5.5", "-tool-stream=false"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load flag: %v", err)
+	}
+	if c.ToolStream {
+		t.Fatalf("flag tool-stream true, want false")
 	}
 }
 
@@ -561,7 +601,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-	"-reasoning-effort", "-v", "-q", "-quiet", "-log-level", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
+	"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the

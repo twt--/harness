@@ -21,6 +21,9 @@ import (
 // have been told.
 type recordSink struct {
 	text       strings.Builder
+	models     []modelStepEvent
+	toolUses   []llm.ToolCall
+	argDeltas  []string
 	starts     []llm.ToolCall
 	results    []llm.ToolResult
 	notices    []string
@@ -28,7 +31,19 @@ type recordSink struct {
 	stepCounts []int
 }
 
-func (s *recordSink) TextDelta(t string)          { s.text.WriteString(t) }
+type modelStepEvent struct {
+	step    int
+	attempt int
+}
+
+func (s *recordSink) TextDelta(t string) { s.text.WriteString(t) }
+func (s *recordSink) ModelStepStart(step, attempt int, _ ContextEstimate) {
+	s.models = append(s.models, modelStepEvent{step: step, attempt: attempt})
+}
+func (s *recordSink) ToolUseStart(c llm.ToolCall) { s.toolUses = append(s.toolUses, c) }
+func (s *recordSink) ToolUseDelta(_ int, delta string) {
+	s.argDeltas = append(s.argDeltas, delta)
+}
 func (s *recordSink) ToolStart(c llm.ToolCall)    { s.starts = append(s.starts, c) }
 func (s *recordSink) ToolResult(r llm.ToolResult) { s.results = append(s.results, r) }
 func (s *recordSink) Notice(msg string)           { s.notices = append(s.notices, msg) }
@@ -71,6 +86,19 @@ func toolDone(index int, id, name, input string) llm.StreamEvent {
 		ToolName:  name,
 		ToolInput: json.RawMessage(input),
 	}
+}
+
+func toolUseStart(index int, id, name string) llm.StreamEvent {
+	return llm.StreamEvent{
+		Kind:     llm.EventToolCallStart,
+		Index:    index,
+		ToolID:   id,
+		ToolName: name,
+	}
+}
+
+func toolUseDelta(index int, delta string) llm.StreamEvent {
+	return llm.StreamEvent{Kind: llm.EventToolCallDelta, Index: index, ArgsDelta: delta}
 }
 
 func mustValid(t *testing.T, msgs []llm.Message) {
@@ -196,6 +224,68 @@ func TestParallelToolCallsSequentialInOrder(t *testing.T) {
 	}
 	if len(sink.starts) != 2 || len(sink.results) != 2 {
 		t.Errorf("sink saw %d starts and %d results, want 2 each", len(sink.starts), len(sink.results))
+	}
+}
+
+func TestToolCallStreamEventsForwardedBeforeDone(t *testing.T) {
+	tool := &recordTool{name: "echo", run: func(_ context.Context, in json.RawMessage) (string, error) {
+		return "ran " + string(in), nil
+	}}
+	reg := &tools.Registry{}
+	reg.Register(tool)
+
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{
+				toolUseStart(0, "call_a", "echo"),
+				toolUseDelta(0, `{"n":`),
+				toolUseDelta(0, `1}`),
+				toolDone(0, "call_a", "echo", `{"n":1}`),
+			},
+			Stop: llm.StopToolUse,
+		},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("done")}, Stop: llm.StopEndTurn},
+	)
+	a := newAgent(fp, reg, Options{})
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	mustValid(t, a.Transcript())
+
+	if len(sink.toolUses) != 1 || sink.toolUses[0].ID != "call_a" || sink.toolUses[0].Name != "echo" {
+		t.Fatalf("tool-use start events = %+v, want call_a/echo", sink.toolUses)
+	}
+	if got := strings.Join(sink.argDeltas, ""); got != `{"n":1}` {
+		t.Errorf("tool-use arg deltas = %q, want raw fragments joined", got)
+	}
+	if len(sink.starts) != 1 || sink.starts[0].Input == nil || string(sink.starts[0].Input) != `{"n":1}` {
+		t.Errorf("completed tool start should carry full input, got %+v", sink.starts)
+	}
+
+	asst := a.Transcript()[1]
+	if len(asst.Content) != 1 || asst.Content[0].Kind != llm.BlockToolUse || string(asst.Content[0].ToolInput) != `{"n":1}` {
+		t.Fatalf("transcript should contain only the completed tool input:\n%s", dump([]llm.Message{asst}))
+	}
+}
+
+func TestModelStepStartEmittedForRetries(t *testing.T) {
+	fail := llmtest.Step{Err: &llm.APIError{StatusCode: 529, Message: "overloaded", Retryable: true}}
+	fp := llmtest.New("fake",
+		fail,
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("ok")}, Stop: llm.StopEndTurn},
+	)
+	a := newAgent(fp, tools.Default(), Options{})
+	a.sleep = func(time.Duration) {}
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	want := []modelStepEvent{{step: 1, attempt: 1}, {step: 1, attempt: 2}}
+	if !slices.Equal(sink.models, want) {
+		t.Errorf("model step events = %+v, want %+v", sink.models, want)
 	}
 }
 

@@ -73,6 +73,7 @@ type Config struct {
 
 	// UI.
 	Verbose    bool   // -v
+	ToolStream bool   // -tool-stream: show live tool-call argument fragments
 	Quiet      bool   // -q / --quiet: suppress slog-backed diagnostics
 	LogLevel   string // --log-level / LOG_LEVEL: debug, info, warn, error
 	NoColor    bool   // -no-color or NO_COLOR
@@ -117,6 +118,7 @@ type fileConfig struct {
 	CompactSummaryMaxTokens   *int     `json:"compact_summary_max_tokens"`
 	CompactToolResultMaxBytes *int     `json:"compact_tool_result_max_bytes"`
 	Verbose                   *bool    `json:"verbose"`
+	ToolStream                *bool    `json:"tool_stream"`
 	LogLevel                  string   `json:"log_level"`
 	NoColor                   *bool    `json:"no_color"`
 	Prompt                    string   `json:"prompt"`
@@ -158,7 +160,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fResume, fSession := f.resume, f.session
 	fMaxSteps, fDefaultContextWindow, fContextWindow := f.maxSteps, f.defaultContextWindow, f.contextWindow
 	fReasoningEffort := f.reasoningEffort
-	fPrompt, fReplPrompt, fVerbose, fNoColor := f.prompt, f.replPrompt, f.verbose, f.noColor
+	fPrompt, fReplPrompt, fVerbose, fToolStream, fNoColor := f.prompt, f.replPrompt, f.verbose, f.toolStream, f.noColor
 
 	// set records which flags were explicitly provided, so a flag only overrides
 	// env/file when actually present (flag defaults must not beat lower sources).
@@ -227,6 +229,8 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_NO_ENV"), fc.NoEnv, false)
 	c.Verbose = resolveBool(set["v"], *fVerbose,
 		getenv("HARNESS_VERBOSE"), fc.Verbose, false)
+	c.ToolStream = resolveBool(set["tool-stream"], *fToolStream,
+		getenv("HARNESS_TOOL_STREAM"), fc.ToolStream, true)
 	c.Quiet = *f.quietShort || *f.quiet
 	logLevel := resolveString(set["log-level"], *f.logLevel,
 		getenv("LOG_LEVEL"), fc.LogLevel, logging.LevelInfo)
@@ -285,7 +289,8 @@ type flags struct {
 	prompt                   *string
 	replPrompt               *string
 	logLevel                 *string
-	verbose, noColor         *bool
+	verbose, toolStream      *bool
+	noColor                  *bool
 	quietShort, quiet        *bool
 	config                   *string
 	setup                    *bool
@@ -314,6 +319,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.onMaxSteps = fs.String("on-max-steps", "", "when the step budget is hit: stop (default) or continue (up to 3 fresh budgets)")
 	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
+	f.toolStream = fs.Bool("tool-stream", true, "show live tool-call argument streaming")
 	f.quietShort = fs.Bool("q", false, "suppress informational diagnostics")
 	f.quiet = fs.Bool("quiet", false, "suppress informational diagnostics")
 	f.logLevel = fs.String("log-level", logging.LevelInfo, "diagnostic log level: debug, info, warn, error (also LOG_LEVEL)")

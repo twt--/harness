@@ -29,27 +29,30 @@ const snippetLines = 5
 // plus NO_COLOR / -no-color); Now is injected so the per-turn duration is
 // deterministic in tests (design §10, §13).
 type RenderOptions struct {
-	Color    bool
-	Verbose  bool
-	Model    string
-	Registry *llm.Registry
-	Now      func() time.Time
+	Color      bool
+	Verbose    bool
+	ToolStream bool
+	Model      string
+	Registry   *llm.Registry
+	Now        func() time.Time
 }
 
 // Renderer implements agent.EventSink: assistant text streams to out, while tool
 // one-liners, the usage line, and notices go to errw so one-shot stdout carries
 // only the model's answer (design §10).
 type Renderer struct {
-	out      io.Writer
-	errw     io.Writer
-	color    bool
-	verbose  bool
-	model    string
-	registry *llm.Registry
-	now      func() time.Time
+	out        io.Writer
+	errw       io.Writer
+	color      bool
+	verbose    bool
+	toolStream bool
+	model      string
+	registry   *llm.Registry
+	now        func() time.Time
 
 	turnStart         time.Time
 	assistantLineOpen bool
+	toolArgsLineOpen  bool
 	pending           map[string]llm.ToolCall // tool_use id -> call, awaiting its result
 }
 
@@ -60,14 +63,15 @@ func NewRenderer(out, errw io.Writer, opts RenderOptions) *Renderer {
 		now = time.Now
 	}
 	return &Renderer{
-		out:      out,
-		errw:     errw,
-		color:    opts.Color,
-		verbose:  opts.Verbose,
-		model:    opts.Model,
-		registry: opts.Registry,
-		now:      now,
-		pending:  make(map[string]llm.ToolCall),
+		out:        out,
+		errw:       errw,
+		color:      opts.Color,
+		verbose:    opts.Verbose,
+		toolStream: opts.ToolStream,
+		model:      opts.Model,
+		registry:   opts.Registry,
+		now:        now,
+		pending:    make(map[string]llm.ToolCall),
 	}
 }
 
@@ -82,13 +86,48 @@ func (r *Renderer) TextDelta(text string) {
 	if text == "" {
 		return
 	}
+	r.finishToolArgsLine()
 	io.WriteString(r.out, text)
 	r.assistantLineOpen = !strings.HasSuffix(text, "\n")
 }
 
+func (r *Renderer) ModelStepStart(step, attempt int, _ agent.ContextEstimate) {
+	if attempt <= 1 {
+		r.dimLine(fmt.Sprintf("[model: step %d waiting]", step))
+		return
+	}
+	r.dimLine(fmt.Sprintf("[model: step %d retry %d waiting]", step, attempt-1))
+}
+
+func (r *Renderer) ToolUseStart(call llm.ToolCall) {
+	if !r.toolStream {
+		return
+	}
+	r.dimLine(fmt.Sprintf("[tool-call: %s id=%s]", call.Name, call.ID))
+}
+
+func (r *Renderer) ToolUseDelta(_ int, delta string) {
+	if !r.toolStream || delta == "" {
+		return
+	}
+	r.finishAssistantLine()
+	if !r.toolArgsLineOpen {
+		if r.color {
+			fmt.Fprintf(r.errw, "%s[tool-call args] ", ansiDim)
+		} else {
+			io.WriteString(r.errw, "[tool-call args] ")
+		}
+		r.toolArgsLineOpen = true
+	}
+	io.WriteString(r.errw, delta)
+}
+
 // ToolStart stashes the call so ToolResult can render name+args+summary on one
 // line once the result is known.
-func (r *Renderer) ToolStart(call llm.ToolCall) { r.pending[call.ID] = call }
+func (r *Renderer) ToolStart(call llm.ToolCall) {
+	r.pending[call.ID] = call
+	r.dimLine(fmt.Sprintf("[tool: %s started%s]", call.Name, formatArgs(call.Input)))
+}
 
 func (r *Renderer) ToolResult(result llm.ToolResult) {
 	call := r.pending[result.ForID]
@@ -115,6 +154,7 @@ func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
 // enabled.
 func (r *Renderer) dimLine(s string) {
 	r.finishAssistantLine()
+	r.finishToolArgsLine()
 	if r.color {
 		fmt.Fprintf(r.errw, "%s%s%s\n", ansiDim, s, ansiReset)
 		return
@@ -128,6 +168,17 @@ func (r *Renderer) finishAssistantLine() {
 	}
 	fmt.Fprintln(r.out)
 	r.assistantLineOpen = false
+}
+
+func (r *Renderer) finishToolArgsLine() {
+	if !r.toolArgsLineOpen {
+		return
+	}
+	if r.color {
+		io.WriteString(r.errw, ansiReset)
+	}
+	fmt.Fprintln(r.errw)
+	r.toolArgsLineOpen = false
 }
 
 // formatArgs renders a tool call's input object as space-prefixed key=value
