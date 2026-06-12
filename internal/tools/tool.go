@@ -226,6 +226,21 @@ func (r *Registry) Register(t Tool) {
 	r.tools[name] = t
 }
 
+// Remove deletes the named tool from the registry, dropping it from both the
+// lookup map and the order slice. It reports whether a tool was removed; an
+// absent name is a no-op returning false. The MCP prompt-boundary refresh uses
+// it to drop tools that vanish from the gateway between list_changed events.
+func (r *Registry) Remove(name string) bool {
+	if _, ok := r.tools[name]; !ok {
+		return false
+	}
+	delete(r.tools, name)
+	if i := slices.Index(r.order, name); i >= 0 {
+		r.order = slices.Delete(r.order, i, i+1)
+	}
+	return true
+}
+
 // Specs returns the registered tools' schemas in registration order.
 func (r *Registry) Specs() []llm.ToolSchema {
 	specs := make([]llm.ToolSchema, 0, len(r.order))

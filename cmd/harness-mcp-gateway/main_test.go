@@ -1,0 +1,508 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"harness/internal/mcp"
+)
+
+// testEnv builds an environment with captured stdout/stderr and a getenv that
+// pins HOME to a temp dir so default-path resolution is deterministic.
+func testEnv(t *testing.T, args []string) (environment, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	home := t.TempDir()
+	getenv := func(k string) string {
+		switch k {
+		case "HOME":
+			return home
+		default:
+			return ""
+		}
+	}
+	var out, errw bytes.Buffer
+	return environment{
+		args:   args,
+		stdout: &out,
+		stderr: &errw,
+		getenv: getenv,
+		sigCh:  nil,
+	}, &out, &errw
+}
+
+// shortSocketDir returns a short-lived temp dir well under the unix sun_path
+// limit (~104 bytes on macOS), mirroring internal/mcpgateway's daemon tests:
+// t.TempDir() nests under a long /var/folders path that can overflow sun_path.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "hmg-cmd")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+func TestRunNoArgsUsageExit2(t *testing.T) {
+	env, out, errw := testEnv(t, nil)
+	if code := run(env); code != exitUsage {
+		t.Fatalf("no args: exit = %d, want %d", code, exitUsage)
+	}
+	if out.Len() != 0 {
+		t.Errorf("no args should print usage to stderr, not stdout; stdout=%q", out.String())
+	}
+	if !strings.Contains(errw.String(), "Usage:") {
+		t.Errorf("no args should print usage to stderr; stderr=%q", errw.String())
+	}
+}
+
+func TestRunUnknownSubcommandExit2(t *testing.T) {
+	env, out, errw := testEnv(t, []string{"bogus"})
+	if code := run(env); code != exitUsage {
+		t.Fatalf("unknown subcommand: exit = %d, want %d", code, exitUsage)
+	}
+	if out.Len() != 0 {
+		t.Errorf("unknown subcommand output should go to stderr; stdout=%q", out.String())
+	}
+	if !strings.Contains(errw.String(), `unknown subcommand "bogus"`) {
+		t.Errorf("stderr should name the bad subcommand; stderr=%q", errw.String())
+	}
+	if !strings.Contains(errw.String(), "Usage:") {
+		t.Errorf("unknown subcommand should also print usage; stderr=%q", errw.String())
+	}
+}
+
+func TestRunHelpExit0WithUsageOnStdout(t *testing.T) {
+	for _, arg := range []string{"-h", "--help", "help"} {
+		env, out, errw := testEnv(t, []string{arg})
+		if code := run(env); code != exitOK {
+			t.Fatalf("%s: exit = %d, want %d; stderr=%q", arg, code, exitOK, errw.String())
+		}
+		text := out.String()
+		for _, want := range []string{"serve", "tools", "version", "Usage:"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s usage missing %q; stdout=%q", arg, want, text)
+			}
+		}
+		if errw.Len() != 0 {
+			t.Errorf("%s should print to stdout only; stderr=%q", arg, errw.String())
+		}
+	}
+}
+
+func TestRunVersionExit0(t *testing.T) {
+	env, out, errw := testEnv(t, []string{"version"})
+	if code := run(env); code != exitOK {
+		t.Fatalf("version: exit = %d, want %d", code, exitOK)
+	}
+	want := fmt.Sprintf("harness-mcp-gateway (MCP protocol %s)\n", mcp.ProtocolVersion)
+	if out.String() != want {
+		t.Errorf("version output = %q, want %q", out.String(), want)
+	}
+	if errw.Len() != 0 {
+		t.Errorf("version should not write stderr; stderr=%q", errw.String())
+	}
+}
+
+// writeConfig writes a gateway config JSON file pointing its one server at the
+// TestHelperProcess fake, and returns the file path. logFile, when non-empty,
+// is set as gateway.logFile so the test can read the captured log output.
+func writeConfig(t *testing.T, dir, logFile string, tools string) string {
+	t.Helper()
+	cfgPath := filepath.Join(dir, "config.json")
+	body := fmt.Sprintf(`{
+  "mcpServers": {
+    "fake": {
+      "command": %q,
+      "args": ["-test.run=TestHelperProcess$"],
+      "env": {"HELPER_MODE": "mcp", "HELPER_TOOLS": %q}
+    }
+  },
+  "gateway": {
+    "logFile": %q,
+    "logLevel": "debug"
+  }
+}`, os.Args[0], tools, logFile)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return cfgPath
+}
+
+// dialReady polls until the socket accepts a connection or the deadline passes.
+func dialReady(t *testing.T, socket string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.Dial("unix", socket)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("socket %s never became ready", socket)
+}
+
+func TestServeSigintCleanShutdown(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "g.sock")
+	logFile := filepath.Join(dir, "out.log")
+	cfgPath := writeConfig(t, t.TempDir(), logFile, "echo")
+
+	env := environment{
+		args:        []string{"-config", cfgPath, "-socket", socket},
+		stdout:      &bytes.Buffer{},
+		stderr:      &bytes.Buffer{},
+		getenv:      func(string) string { return "" },
+		sigCh:       make(chan os.Signal, 1),
+		stderrIsTTY: false,
+	}
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- runServe(env, env.args) }()
+
+	dialReady(t, socket)
+
+	// Inject SIGINT; the daemon's ctx cancels and it shuts down cleanly.
+	env.sigCh <- os.Interrupt
+
+	select {
+	case code := <-codeCh:
+		if code != exitOK {
+			t.Fatalf("SIGINT shutdown: exit = %d, want %d", code, exitOK)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not shut down after SIGINT")
+	}
+
+	// The socket must be removed on clean shutdown.
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Errorf("socket not removed on shutdown: err=%v", err)
+	}
+}
+
+func TestServeAlreadyRunningExit0(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "g.sock")
+	cfgDir := t.TempDir()
+	cfgPath := writeConfig(t, cfgDir, filepath.Join(dir, "first.log"), "echo")
+
+	// First daemon owns the socket.
+	env1 := environment{
+		args:   []string{"-config", cfgPath, "-socket", socket},
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+		getenv: func(string) string { return "" },
+		sigCh:  make(chan os.Signal, 1),
+	}
+	code1 := make(chan int, 1)
+	go func() { code1 <- runServe(env1, env1.args) }()
+	dialReady(t, socket)
+
+	// Second serve against the same live socket must exit 0 (quiet success).
+	env2 := environment{
+		args:   []string{"-config", cfgPath, "-socket", socket},
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+		getenv: func(string) string { return "" },
+		sigCh:  nil,
+	}
+	if code := runServe(env2, env2.args); code != exitOK {
+		t.Fatalf("second serve (already running): exit = %d, want %d", code, exitOK)
+	}
+
+	// Shut down the first daemon.
+	env1.sigCh <- os.Interrupt
+	<-code1
+}
+
+func TestServeConfigWarningsSurfaceInLog(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "g.sock")
+	cfgDir := t.TempDir()
+	logFile := filepath.Join(dir, "warn.log")
+
+	// A config with an invalid server (no command, no url) yields a Warning that
+	// must reach the log. A valid server keeps the daemon serving.
+	cfgPath := filepath.Join(cfgDir, "config.json")
+	body := fmt.Sprintf(`{
+  "mcpServers": {
+    "broken": {},
+    "fake": {
+      "command": %q,
+      "args": ["-test.run=TestHelperProcess$"],
+      "env": {"HELPER_MODE": "mcp", "HELPER_TOOLS": "echo"}
+    }
+  },
+  "gateway": {"logFile": %q, "logLevel": "debug"}
+}`, os.Args[0], logFile)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	env := environment{
+		args:   []string{"-config", cfgPath, "-socket", socket},
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+		getenv: func(string) string { return "" },
+		sigCh:  make(chan os.Signal, 1),
+	}
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- runServe(env, env.args) }()
+	dialReady(t, socket)
+
+	// Poll the log file for the warning (the daemon writes it at startup).
+	waitForFileContains(t, logFile, "broken", 5*time.Second)
+	if got := readFile(t, logFile); !strings.Contains(got, "mcp_config") {
+		t.Errorf("warning should carry the mcp_config category; log=%q", got)
+	}
+
+	env.sigCh <- os.Interrupt
+	<-codeCh
+}
+
+// TestServeBadLogLevelExit2 locks in the usage-error branch: an invalid
+// -log-level is rejected before any sink is opened or socket bound, so serve
+// returns exitUsage with the error on stderr.
+func TestServeBadLogLevelExit2(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "g.sock")
+	env, _, errw := testEnv(t, nil)
+
+	code := runServe(env, []string{"-socket", socket, "-log-level", "loud"})
+	if code != exitUsage {
+		t.Fatalf("bad log level: exit = %d, want %d; stderr=%q", code, exitUsage, errw.String())
+	}
+	if !strings.Contains(errw.String(), "loud") {
+		t.Errorf("error should name the invalid level; stderr=%q", errw.String())
+	}
+	// The level is rejected before binding, so no socket is left behind.
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Errorf("no socket should be bound on a usage error: err=%v", err)
+	}
+}
+
+func TestToolsListsAggregatedTools(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "g.sock")
+	cfgDir := t.TempDir()
+	cfgPath := writeConfig(t, cfgDir, filepath.Join(dir, "srv.log"), "echo,ping")
+
+	serveEnv := environment{
+		args:   []string{"-config", cfgPath, "-socket", socket},
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+		getenv: func(string) string { return "" },
+		sigCh:  make(chan os.Signal, 1),
+	}
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- runServe(serveEnv, serveEnv.args) }()
+	dialReady(t, socket)
+
+	// Wait until the downstream child's tools are aggregated and served.
+	waitForToolCount(t, socket, 2, 5*time.Second)
+
+	env, out, errw := testEnv(t, []string{"tools", "-socket", socket})
+	if code := run(env); code != exitOK {
+		t.Fatalf("tools: exit = %d, want %d; stderr=%q", code, exitOK, errw.String())
+	}
+	text := out.String()
+	if !strings.HasPrefix(text, "2 tools\n") {
+		t.Errorf("tools header wrong; out=%q", text)
+	}
+	for _, want := range []string{"mcp__fake__echo", "mcp__fake__ping"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("tools output missing %q; out=%q", want, text)
+		}
+	}
+	// Description is collapsed to its first line.
+	if strings.Contains(text, "second line should be dropped") {
+		t.Errorf("description should be first-line only; out=%q", text)
+	}
+
+	serveEnv.sigCh <- os.Interrupt
+	<-codeCh
+}
+
+// freeAddr binds an ephemeral TCP port, closes it, and returns the address so
+// serve can re-bind it. The standard "give me a free port" test idiom.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen ephemeral: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	return addr
+}
+
+// TestServeListenFlagAndToolsGateway drives the serve -listen flag end to end:
+// the daemon binds an HTTP listener, and `tools -gateway` queries it, proving
+// both new CLI surfaces interoperate over the HTTP transport.
+func TestServeListenFlagAndToolsGateway(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "g.sock")
+	addr := freeAddr(t)
+	cfgPath := writeConfig(t, t.TempDir(), filepath.Join(dir, "srv.log"), "echo,ping")
+
+	serveEnv := environment{
+		args:   []string{"-config", cfgPath, "-socket", socket, "-listen", addr},
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+		getenv: func(string) string { return "" },
+		sigCh:  make(chan os.Signal, 1),
+	}
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- runServe(serveEnv, serveEnv.args) }()
+	dialReady(t, socket)
+
+	// Poll the HTTP listener (via tools -gateway) until the downstream tools are
+	// aggregated and served.
+	url := "http://" + addr
+	var out *bytes.Buffer
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var env environment
+		env, out, _ = testEnv(t, []string{"tools", "-gateway", url})
+		if run(env) == exitOK && strings.HasPrefix(out.String(), "2 tools\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tools -gateway never returned 2 tools; last out=%q", out.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, want := range []string{"mcp__fake__echo", "mcp__fake__ping"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("tools -gateway output missing %q; out=%q", want, out.String())
+		}
+	}
+
+	serveEnv.sigCh <- os.Interrupt
+	<-codeCh
+}
+
+// TestToolsGatewayAndSocketMutuallyExclusive locks in the usage error when both
+// -gateway and -socket are supplied.
+func TestToolsGatewayAndSocketMutuallyExclusive(t *testing.T) {
+	env, _, errw := testEnv(t, []string{"tools", "-gateway", "http://x", "-socket", "/tmp/s.sock"})
+	if code := run(env); code != exitUsage {
+		t.Fatalf("both -gateway and -socket: exit = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(errw.String(), "mutually exclusive") {
+		t.Errorf("error should mention mutual exclusivity; stderr=%q", errw.String())
+	}
+}
+
+func TestToolsConnectionFailureExit1(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "absent.sock")
+
+	env, out, errw := testEnv(t, []string{"tools", "-socket", socket})
+	if code := run(env); code != exitRuntime {
+		t.Fatalf("tools (no gateway): exit = %d, want %d", code, exitRuntime)
+	}
+	if out.Len() != 0 {
+		t.Errorf("connection failure should not print a table; stdout=%q", out.String())
+	}
+	wantPrefix := fmt.Sprintf("harness-mcp-gateway: cannot connect to gateway at %s:", socket)
+	if !strings.HasPrefix(errw.String(), wantPrefix) {
+		t.Errorf("connection-failure message wrong;\n got: %q\nwant prefix: %q", errw.String(), wantPrefix)
+	}
+}
+
+// TestToolsMissingDefaultConfigFallsBackToDefaultSocket guards that a fresh
+// user with no config file and no -config flag does not hit a "config not
+// found" error: the missing DEFAULT path resolves to an empty config (and thus
+// the default socket), so the only failure is the connect attempt itself.
+func TestToolsMissingDefaultConfigFallsBackToDefaultSocket(t *testing.T) {
+	// HOME points at an empty temp dir, so the default config path does not exist.
+	home := t.TempDir()
+	getenv := func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return ""
+	}
+	var out, errw bytes.Buffer
+	env := environment{
+		args:   []string{"tools"}, // no -config, no -socket
+		stdout: &out, stderr: &errw,
+		getenv: getenv,
+	}
+	// Expect a connection failure to the DEFAULT socket, not a config error.
+	if code := run(env); code != exitRuntime {
+		t.Fatalf("tools with no config: exit = %d, want %d; stderr=%q", code, exitRuntime, errw.String())
+	}
+	if strings.Contains(errw.String(), "config") {
+		t.Errorf("missing default config must not error; stderr=%q", errw.String())
+	}
+	if !strings.Contains(errw.String(), "cannot connect to gateway at "+mcp.DefaultSocketPath(getenv)) {
+		t.Errorf("tools should target the default socket; stderr=%q", errw.String())
+	}
+}
+
+// TestServeExplicitMissingConfigErrors guards the inverse: an explicit -config
+// pointing at a nonexistent file is a hard error (a typo must not silently
+// degrade to an empty config).
+func TestServeExplicitMissingConfigErrors(t *testing.T) {
+	env, _, errw := testEnv(t, nil)
+	missing := filepath.Join(t.TempDir(), "nope.json")
+	code := runServe(env, []string{"-config", missing, "-socket", filepath.Join(t.TempDir(), "g.sock")})
+	if code != exitRuntime {
+		t.Fatalf("explicit missing config: exit = %d, want %d", code, exitRuntime)
+	}
+	if !strings.Contains(errw.String(), "not found") {
+		t.Errorf("explicit missing config should report not found; stderr=%q", errw.String())
+	}
+}
+
+// waitForToolCount dials the gateway and polls ListTools until it reports n
+// tools or the deadline passes.
+func waitForToolCount(t *testing.T, socket string, n int, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		conn, err := net.Dial("unix", socket)
+		if err != nil {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		client := mcp.NewClient(conn, mcp.ClientOptions{Info: mcp.Implementation{Name: "probe", Version: "1"}})
+		if _, err := client.Initialize(context.Background()); err == nil {
+			tools, err := client.ListTools(context.Background())
+			if err == nil && len(tools) == n {
+				client.Close()
+				return
+			}
+		}
+		client.Close()
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("gateway did not reach %d tools within %s", n, d)
+}
+
+func waitForFileContains(t *testing.T, path, substr string, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(data), substr) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("file %s never contained %q within %s", path, substr, d)
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}

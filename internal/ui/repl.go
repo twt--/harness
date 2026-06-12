@@ -70,6 +70,13 @@ type App struct {
 	AvailableModes []string // sorted mode names for /mode listing
 	SwitchMode     func(name string) (ModeSelection, error)
 
+	// RefreshMCP, when set, is consulted at the idle-prompt boundary (just
+	// before a typed prompt starts a turn) to pick up gateway tool-list changes.
+	// It is called with the current mode name; a non-nil registry replaces the
+	// agent's tools and notice is rendered. A nil registry means "no change".
+	// nil disables the hook (one-shot mode and tests leave it nil).
+	RefreshMCP func(modeName string) (*tools.Registry, string)
+
 	SessionPath string    // current save path; /clear rotates it
 	StateDir    string    // for rotating to a fresh auto-save path on /clear
 	Created     time.Time // session creation time (preserved across saves)
@@ -293,6 +300,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			if action.echoEditedPrompt {
 				app.echoEditedPrompt(prompt, action.prompt)
 			}
+			app.refreshMCP()
 			startTurn(action.prompt)
 		}
 		return false
@@ -782,6 +790,24 @@ func (app *App) switchMode(name string) {
 	app.Mode = selection.Name
 	app.System = selection.System // so saved sessions capture the mode's prompt
 	fmt.Fprintf(app.Errw, "[mode switched: %s]\n", selection.Name)
+}
+
+// refreshMCP applies any pending gateway tool-list change at the idle-prompt
+// boundary, mirroring switchMode's Agent.SetTools swap. It is a no-op when no
+// hook is installed or the hook reports no change, so MCP-disabled runs (the
+// default) and the one-shot path pay nothing.
+func (app *App) refreshMCP() {
+	if app.RefreshMCP == nil {
+		return
+	}
+	sel, notice := app.RefreshMCP(app.Mode)
+	if sel == nil {
+		return
+	}
+	app.Agent.SetTools(sel)
+	if notice != "" {
+		fmt.Fprintln(app.Errw, notice)
+	}
 }
 
 // clear resets the conversation and rotates to a fresh auto-save file (design

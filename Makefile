@@ -5,7 +5,7 @@ MODELSDEV_FALLBACK := internal/modelsdev/fallback_api.json
 MODELSDEV_FALLBACK_ABS := $(CURDIR)/$(MODELSDEV_FALLBACK)
 
 build:
-	go build ./cmd/harness
+	go build ./cmd/...
 
 test:
 	go test ./...

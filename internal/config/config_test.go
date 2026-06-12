@@ -918,3 +918,132 @@ func TestModesObjectDecodes(t *testing.T) {
 		t.Errorf("plan.AllowedTools should be empty (inherit), got %v", c.Modes["plan"].AllowedTools)
 	}
 }
+
+func TestMCPDefaults(t *testing.T) {
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MCP.Enable {
+		t.Errorf("MCP.Enable default = true, want false")
+	}
+	if c.MCP.Gateway != "" {
+		t.Errorf("MCP.Gateway default = %q, want empty (resolved at use)", c.MCP.Gateway)
+	}
+}
+
+func TestMCPFromFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"/tmp/gw.sock"}}`)
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.MCP.Enable {
+		t.Errorf("MCP.Enable = false, want true")
+	}
+	if c.MCP.Gateway != "/tmp/gw.sock" {
+		t.Errorf("MCP.Gateway = %q, want /tmp/gw.sock", c.MCP.Gateway)
+	}
+}
+
+func TestMCPEnvOverridesFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mcp":{"enable":false,"gateway":"/file/gw.sock"}}`)
+	env := envFrom(map[string]string{
+		"HARNESS_MCP_ENABLE":  "true",
+		"HARNESS_MCP_GATEWAY": "/env/gw.sock",
+	})
+	c, err := Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.MCP.Enable {
+		t.Errorf("MCP.Enable = false, want true (env overrides file)")
+	}
+	if c.MCP.Gateway != "/env/gw.sock" {
+		t.Errorf("MCP.Gateway = %q, want /env/gw.sock (env overrides file)", c.MCP.Gateway)
+	}
+}
+
+func TestMCPEnableBoolParsing(t *testing.T) {
+	// A bogus env value falls through to the file value (resolveBool ignores
+	// unparseable env), and an empty/unset env leaves the file/default in place.
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true}}`)
+	env := envFrom(map[string]string{"HARNESS_MCP_ENABLE": "not-a-bool"})
+	c, err := Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.MCP.Enable {
+		t.Errorf("MCP.Enable = false, want true (unparseable env falls back to file)")
+	}
+
+	// "0" parses as false and overrides the file's true.
+	env = envFrom(map[string]string{"HARNESS_MCP_ENABLE": "0"})
+	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MCP.Enable {
+		t.Errorf("MCP.Enable = true, want false (HARNESS_MCP_ENABLE=0)")
+	}
+}
+
+// TestMCPHeadersFromFile decodes the "headers" map under the "mcp" object.
+func TestMCPHeadersFromFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"https://gw.example/mcp","headers":{"Authorization":"Bearer tok","X-Env":"prod"}}}`)
+	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.MCP.Headers["Authorization"]; got != "Bearer tok" {
+		t.Errorf("Headers[Authorization] = %q, want %q", got, "Bearer tok")
+	}
+	if got := c.MCP.Headers["X-Env"]; got != "prod" {
+		t.Errorf("Headers[X-Env] = %q, want %q", got, "prod")
+	}
+	if c.MCP.Gateway != "https://gw.example/mcp" {
+		t.Errorf("Gateway = %q, want the http URL", c.MCP.Gateway)
+	}
+}
+
+// TestMCPHeadersAbsentIsNil confirms an mcp block without "headers" leaves
+// Headers nil (not an empty map), and that there is NO env var for headers: an
+// env that looks header-ish cannot leak into the resolved map.
+func TestMCPHeadersAbsentIsNil(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"https://gw.example/mcp"}}`)
+	// Throw a plausible-but-irrelevant env at Load; headers are config-file-only.
+	env := envFrom(map[string]string{
+		"HARNESS_MCP_HEADERS":       `{"Authorization":"leak"}`,
+		"HARNESS_MCP_AUTHORIZATION": "leak",
+	})
+	c, err := Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MCP.Headers != nil {
+		t.Errorf("Headers = %v, want nil (absent in file, no env layer)", c.MCP.Headers)
+	}
+}
+
+// TestMCPHeadersNoEnvLeakageWithFileHeaders confirms env cannot override or
+// augment file headers: the file is the only source.
+func TestMCPHeadersNoEnvLeakageWithFileHeaders(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mcp":{"headers":{"Authorization":"Bearer file"}}}`)
+	env := envFrom(map[string]string{
+		"HARNESS_MCP_HEADERS":       `{"Authorization":"Bearer env","X-Extra":"env"}`,
+		"HARNESS_MCP_AUTHORIZATION": "Bearer env",
+	})
+	c, err := Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.MCP.Headers["Authorization"]; got != "Bearer file" {
+		t.Errorf("Headers[Authorization] = %q, want %q (env must not leak)", got, "Bearer file")
+	}
+	if _, ok := c.MCP.Headers["X-Extra"]; ok {
+		t.Errorf("Headers gained X-Extra from env; headers are config-file-only")
+	}
+	if n := len(c.MCP.Headers); n != 1 {
+		t.Errorf("Headers has %d entries, want 1 (file only)", n)
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
 	"harness/internal/logging"
+	"harness/internal/mcptools"
 	"harness/internal/mode"
 	"harness/internal/modelsdev"
 	"harness/internal/session"
@@ -252,11 +253,30 @@ func run(env environment) int {
 		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
 		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,
 	}))
+	// MCP (opt-in): connect to the gateway and register discovered tools into the
+	// catalog before mode resolution, so any mode's subset can pick them up. It
+	// never fails startup; on any error it warns and continues with no MCP tools.
+	var mcpConn *mcptools.Conn
+	var mcpSummary mcptools.Summary
+	if cfg.MCP.Enable {
+		conn, summary, cleanup, ok := setupMCP(context.Background(), cfg.MCP, toolCatalog, logger, defaultMCPDeps())
+		defer cleanup()
+		if ok {
+			mcpConn, mcpSummary = conn, summary
+		}
+	}
 	fileModes := make(map[string]mode.FileMode, len(cfg.Modes))
 	for name, fm := range cfg.Modes {
 		fileModes[name] = mode.FileMode{AllowedTools: fm.AllowedTools, Prompt: fm.Prompt}
 	}
 	modes := mode.Resolve(fileModes)
+	// Default-inheriting modes (auto, independent, and config modes without an
+	// explicit allowed_tools) expose the discovered MCP tools; explicit
+	// whitelists opt out. Capture which modes inherit the default set BEFORE
+	// augmenting them, so the refresh hook can re-derive their allowed lists.
+	// mcpSummary.Names is empty when MCP is disabled, making both a no-op.
+	mcpBases := defaultInheritingModeBases(modes)
+	augmentModesWithMCP(modes, mcpSummary.Names)
 	// Expand @file references in mode prompts once at startup: a bad reference
 	// fails fast (rather than on a later /mode switch), and the cached text means
 	// switching never touches the filesystem.
@@ -482,6 +502,11 @@ func run(env environment) int {
 	}
 	if resumed != nil {
 		app.Turn = resumed.Turn
+	}
+	// Wire the MCP tool-list refresh hook for the interactive REPL only: one-shot
+	// runs a single turn with the tools fixed at startup, so it needs no hook.
+	if mcpConn != nil && !cfg.PromptSet {
+		app.RefreshMCP = newMCPRefresher(mcpConn, toolCatalog, modes, mcpBases, mcpSummary, logger)
 	}
 	ag.SetCompactionArchiver(func(ctx context.Context, archive agent.CompactionArchive) (string, error) {
 		return session.SaveCompaction(app.SessionPath, session.Compaction{

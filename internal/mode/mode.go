@@ -75,6 +75,12 @@ func defaultTools() []string {
 	return append(tools.DefaultNames(), "delegate")
 }
 
+// DefaultTools returns the default allowed-tool set (the built-in tool names
+// plus delegate) that auto/independent and any config mode without an explicit
+// allowed_tools list inherit. main uses it to detect default-inheriting modes
+// when extending them with discovered MCP tools.
+func DefaultTools() []string { return defaultTools() }
+
 // Resolve merges config-file mode entries onto the built-ins and returns the
 // full mode set. Merge is field-level: a non-empty field replaces, an empty
 // field inherits (from the built-in of the same name, or from the defaults for

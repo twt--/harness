@@ -12,8 +12,8 @@ first, and provider-neutral.
 - Use conventional commit messages. Do not open draft PRs.
 - Never pipe output to `head` or `tail` unless `tee` also saves the full output.
 - Do not revert or overwrite user changes unless explicitly asked.
-- Do not add sandboxing, permission prompts, markdown rendering, MCP, or
-  sub-agent orchestration unless explicitly requested.
+- Do not add sandboxing, permission prompts, or markdown rendering unless explicitly requested.
+- MCP tools stay behind `mcp.enable` (off by default) and must never fail harness startup.
 
 ## Verify
 
@@ -35,6 +35,10 @@ first, and provider-neutral.
 - `internal/ui`, `internal/term`, `internal/logging`: REPL/one-shot rendering, terminal behavior, plaintext slog. ANSI belongs here only.
 - `internal/sysprompt`, `internal/skills`: built-in prompt/env context and skill discovery/disclosure.
 - `internal/sse`, `internal/retry`: shared SSE reader and provider HTTP retry/backoff.
+- `cmd/harness-mcp-gateway`: optional MCP gateway binary (`serve`/`tools`/`version`); thin CLI over `internal/mcpgateway`.
+- `internal/mcp` (+`jsonrpc`): tools-only MCP slice — schema, client/server, stdio + streamable-HTTP transports, JSON-RPC framing. No `internal/llm`/`internal/tools` imports.
+- `internal/mcpgateway`: gateway daemon — Claude Code-compatible config, downstream supervisors, namespaced tool registry.
+- `internal/mcptools`: harness-side adapter exposing gateway tools as `tools.Tool` over a reconnecting `Conn`. Off unless `mcp.enable`.
 
 ## Code Patterns
 
@@ -59,6 +63,7 @@ first, and provider-neutral.
 - Tool behavior/schemas: `docs/design.md` section 9.
 - System prompt behavior: `internal/sysprompt` tests/docs; consider compaction impact.
 - Run modes: `README.md` and `docs/design.md` section 14.
+- MCP gateway: `README.md` ("MCP servers"), `docs/design.md` sections 9.14 and 15.
 - Smoke workflow changes: `docs/smoke.md`.
 
 ## Adding Things

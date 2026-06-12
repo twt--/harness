@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
@@ -82,6 +83,28 @@ type Config struct {
 
 	// Provider configs: filenames resolved relative to the config file's directory.
 	ProviderConfigs []string
+
+	// MCP gateway integration (opt-in). Gateway is the unix socket path; an
+	// empty Gateway means "use the shared default", which main resolves via
+	// mcp.DefaultSocketPath at connect time so internal/config stays free of the
+	// internal/mcp import.
+	MCP MCPConfig
+}
+
+// MCPConfig is the resolved harness-side MCP block. All downstream server
+// configuration lives with the gateway; the harness only needs to know whether
+// MCP is enabled and which gateway to dial.
+type MCPConfig struct {
+	Enable  bool
+	Gateway string // unix socket path OR http(s) gateway URL; "" means resolve the shared default at use
+
+	// Headers are static request headers (e.g. Authorization) sent on every
+	// request to an http(s) gateway; ignored for a unix-socket gateway. It is
+	// config-file-only (file key "headers" under "mcp"), with NO env var: this
+	// matches the config-file-only precedent for structured settings (a
+	// map cannot be expressed cleanly through a single env var), so a header set
+	// belongs in the config file alongside the gateway URL it authenticates to.
+	Headers map[string]string
 }
 
 const (
@@ -129,6 +152,17 @@ type fileConfig struct {
 
 	Mode  string                    `json:"mode"`
 	Modes map[string]FileModeConfig `json:"modes"`
+
+	MCP *fileMCPConfig `json:"mcp"`
+}
+
+// fileMCPConfig mirrors the config file's "mcp" object. Pointer/string fields
+// follow the existing unset-detection convention: a nil block means "no mcp
+// config", letting env and defaults supply every field.
+type fileMCPConfig struct {
+	Enable  *bool             `json:"enable"`
+	Gateway string            `json:"gateway"`
+	Headers map[string]string `json:"headers"`
 }
 
 // Load resolves a Config from the given args (argv after the program name), a
@@ -251,6 +285,25 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	c.ReplPrompt = resolveString(set["prompt"], *fReplPrompt,
 		getenv("HARNESS_PROMPT"), fc.Prompt, "> ")
 	c.ProviderConfigs = append([]string(nil), fc.ProviderConfigs...)
+
+	// MCP block (env > file > default; no flags). Gateway is left empty when
+	// unset so main can resolve the shared default socket at connect time.
+	var mcpEnableFile *bool
+	var mcpGatewayFile string
+	if fc.MCP != nil {
+		mcpEnableFile = fc.MCP.Enable
+		mcpGatewayFile = fc.MCP.Gateway
+		// Headers are config-file-only (no env layer); copy so a later mutation
+		// of fc cannot reach the resolved Config. Absent → nil.
+		if len(fc.MCP.Headers) > 0 {
+			c.MCP.Headers = maps.Clone(fc.MCP.Headers)
+		}
+	}
+	c.MCP.Enable = resolveBool(false, false,
+		getenv("HARNESS_MCP_ENABLE"), mcpEnableFile, false)
+	c.MCP.Gateway = resolveString(false, "",
+		getenv("HARNESS_MCP_GATEWAY"), mcpGatewayFile, "")
+
 	// NO_COLOR (the de-facto standard) disables color regardless of HARNESS_*.
 	if getenv("NO_COLOR") != "" {
 		c.NoColor = true

@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -774,5 +775,91 @@ func TestREPLWritesNoEscapeSequencesToErrw(t *testing.T) {
 	}
 	if s := errw.String(); strings.ContainsRune(s, '\x1b') {
 		t.Errorf("errw contains escape bytes: %q", s)
+	}
+}
+
+// mcpRefreshTool is a minimal Tool used to prove the RefreshMCP hook's returned
+// registry was applied to the agent before the turn.
+type mcpRefreshTool struct{ name string }
+
+func (m mcpRefreshTool) Name() string            { return m.name }
+func (m mcpRefreshTool) Description() string     { return "refreshed tool" }
+func (m mcpRefreshTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (m mcpRefreshTool) ReadOnly() bool          { return false }
+func (m mcpRefreshTool) Run(context.Context, json.RawMessage) (string, error) {
+	return "ok", nil
+}
+
+// TestREPLRefreshMCPAppliedBeforeTurn asserts the REPL consults RefreshMCP at
+// the idle-prompt boundary, swaps in the returned tools (visible in the next
+// request's advertised tool list), and renders the notice.
+func TestREPLRefreshMCPAppliedBeforeTurn(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("done")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	app.Mode = "auto"
+
+	refreshed := &tools.Registry{}
+	refreshed.Register(mcpRefreshTool{name: "mcp__test__fresh"})
+
+	var gotMode string
+	calls := 0
+	app.RefreshMCP = func(mode string) (*tools.Registry, string) {
+		calls++
+		gotMode = mode
+		return refreshed, "[mcp: tool list updated; 1 tools]"
+	}
+
+	if code := Run(strings.NewReader("hello\n/exit\n"), app, nil); code != 0 {
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
+	}
+	if calls != 1 {
+		t.Errorf("RefreshMCP called %d times, want 1", calls)
+	}
+	if gotMode != "auto" {
+		t.Errorf("RefreshMCP mode = %q, want auto", gotMode)
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("want 1 request, got %d", len(fp.Requests))
+	}
+	var advertised bool
+	for _, ts := range fp.Requests[0].Tools {
+		if ts.Name == "mcp__test__fresh" {
+			advertised = true
+		}
+	}
+	if !advertised {
+		t.Errorf("refreshed tool not advertised to the model: %+v", fp.Requests[0].Tools)
+	}
+	if !strings.Contains(errw.String(), "tool list updated") {
+		t.Errorf("refresh notice not rendered: %q", errw.String())
+	}
+}
+
+// TestREPLRefreshMCPNoChangeKeepsTools confirms a nil-registry hook result is a
+// no-op: the turn still runs and no notice is rendered.
+func TestREPLRefreshMCPNoChangeKeepsTools(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("done")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	called := false
+	app.RefreshMCP = func(string) (*tools.Registry, string) {
+		called = true
+		return nil, ""
+	}
+	if code := Run(strings.NewReader("hi\n/exit\n"), app, nil); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !called {
+		t.Errorf("RefreshMCP should still be consulted")
+	}
+	if strings.Contains(errw.String(), "tool list updated") {
+		t.Errorf("no notice expected on no-change, got %q", errw.String())
 	}
 }

@@ -13,5 +13,10 @@
   "default_context_window": 256000,
   "context_window": 0,
   "verbose": false,
-  "no_color": false
+  "no_color": false,
+  "mcp": {
+    "enable": false,
+    "gateway": "",
+    "headers": {}
+  }
 }

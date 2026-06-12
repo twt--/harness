@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "fs": {
+      "command": "mcp-server-filesystem",
+      "args": ["--root", "/srv/data"],
+      "env": { "LOG_LEVEL": "info" }
+    },
+    "search": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${SEARCH_TOKEN}" }
+    }
+  },
+  "gateway": {
+    "socket": "",
+    "listen": "",
+    "logFile": "",
+    "logLevel": "info"
+  }
+}

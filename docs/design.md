@@ -77,6 +77,11 @@ internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for setup/pricing metadata
 internal/ui              REPL, streaming renderer, tool summaries, usage line
 internal/sysprompt       builtin instructions + environment context (cwd/os/date/git summary)
+cmd/harness-mcp-gateway  optional MCP gateway daemon + debug client (serve / tools / version)
+internal/mcp             tools-only MCP slice: schema, client, server, stdio + streamable-HTTP transports, default socket path
+internal/mcp/jsonrpc     JSON-RPC 2.0 framing and bidirectional request/response correlation
+internal/mcpgateway      gateway internals: config, supervisors, tool registry, daemon
+internal/mcptools        harness-side adapter: tools.Tool over a reconnecting gateway Conn (§15)
 ```
 
 `internal/llm` is the shared contract between the agent loop and the dialects. The loop
@@ -882,6 +887,44 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
   Child transcripts are not persisted into the parent session. Child token usage is
   reported through `MeteredTool` and folded into the parent turn/session usage totals.
 
+### 9.14 MCP tools (`internal/mcptools`)
+
+> Each tool discovered from the MCP gateway, proxying `tools/call` over a shared, reconnecting gateway connection.
+
+These are not built-in tools: they are registered dynamically at startup when MCP
+is enabled (§15), one `*mcptools.Tool` per gateway-advertised tool. The adapter
+contract maps the MCP tool shape onto the `Tool` interface:
+
+- **Name** is the gateway's full `mcp__<server>__<tool>` already. `Register`
+  re-validates it against the provider charset `[a-zA-Z0-9_-]{1,64}` plus the
+  required `mcp__` prefix; a name that fails is **skipped**, not rewritten (a
+  truncated name could collide), and recorded in the registration summary.
+- **Description** is reduced to one line: trimmed, first line only, byte-capped at
+  200 bytes on a UTF-8 rune boundary, with an ellipsis when truncated.
+- **Schema** is the MCP `inputSchema` passed through verbatim; an absent schema
+  (nil/empty/`null`) becomes `{"type":"object"}` so the model always sees a valid
+  object schema.
+- **`ReadOnly()` is always `false`.** MCP's `annotations.readOnlyHint` is an
+  untrusted hint, so every MCP tool is treated as potentially state-mutating and
+  dispatched serially (§8.1) — there is no concurrent fast-path to race.
+- **Result mapping** flattens the MCP `CallToolResult` to one string for the model:
+  `text` blocks pass through; other blocks become bracketed placeholders —
+  `[image: <mime>]`, `[audio: <mime>]`, `[resource_link: <uri> (<name>)]`,
+  `[resource: <uri>]` (bare `[resource]` if no uri), `[unsupported content block: <type>]`.
+  Blocks join with `\n` in order. If nothing renders but `structuredContent` is
+  present, the raw structured JSON is the fallback.
+- **Errors:** a transport/protocol error returns `("", err)` so `Dispatch` renders
+  `error: <err>`. A successful result with `isError` true returns the rendered
+  text as an `error` (empty text gets a stand-in), so the failure flows through the
+  normal tool-error path.
+
+The shared `*mcptools.Conn` is a lazily-reconnecting wrapper around one
+`mcp.Client` session to the gateway. It spawns no goroutines; reconnection is
+synchronous on the calling goroutine under a backoff gate, so a down gateway
+fast-fails subsequent calls rather than storming reconnects. A gateway crash
+mid-session surfaces as error tool results; the next call reconnects when the
+backoff allows.
+
 ## 10. CLI / REPL (`internal/ui`)
 
 ### Rendering
@@ -1107,11 +1150,121 @@ worker, or the wide-open default without separate binaries.
   on top of the builtin instructions, env block, AGENTS.md, and `-system` text. The
   active mode is saved with the session and restored on `-resume` (flags win).
 
-## 15. Future work
+## 15. MCP gateway (optional)
+
+MCP support is opt-in (`mcp.enable`, §7) and lives entirely behind a **second
+binary**, `harness-mcp-gateway`. Harness never talks to downstream MCP servers
+directly: the gateway owns them and presents their merged tools to harness as a
+single MCP server over a unix socket. Harness and the gateway therefore speak MCP
+to each other — JSON-RPC 2.0, newline-delimited, protocol revision `2025-06-18`
+(`internal/mcp`, `internal/mcp/jsonrpc`).
+
+**Why a separate process.** A daemon decouples downstream-server lifetime from any
+one harness session: stdio children are spawned once and shared across every
+concurrent harness session, surviving REPL restarts, instead of being re-spawned
+per process. It also keeps `internal/mcp`/`internal/mcpgateway` out of harness's
+hot import path — the harness side depends only on the thin `internal/mcptools`
+adapter (§9.14).
+
+- **Gateway config** (`internal/mcpgateway`) is Claude Code-compatible:
+  `{"mcpServers": {name: {command,args,env} | {type:"http",url,headers}}, "gateway":
+  {socket,listen,logFile,logLevel}}`, at `$XDG_CONFIG_HOME/harness-mcp-gateway/config.json`
+  (else `~/.config/...`). `${NAME}` references are expanded strictly (only the
+  `${NAME}` form; a literal `$`, `$5`, `$$`, or unterminated `${` is preserved
+  verbatim; an unset var warns and expands to empty). Invalid servers are skipped
+  with a warning, never fatal. Library code returns warnings; the CLI logs them.
+- **Downstream supervision.** Each server gets a `Supervisor`. A **stdio** child is
+  spawned in its own process group, initialized + `tools/list`ed under a 30 s
+  timeout, its stderr drained to the gateway log; a crash restarts with backoff,
+  and 5 consecutive failed (re)starts disables it permanently. A **streamable-HTTP**
+  server is connected lazily with the user's headers; there is no restart loop (the
+  process is not ours), and a server-side session expiry (HTTP 404) triggers one
+  transparent re-initialize-and-retry. A not-ready server returns an `isError`
+  result whose text is `mcp server <name> is unavailable (<state>)` (the
+  parenthesized `<state>` is the supervisor's lifecycle state, e.g. `starting`,
+  `restarting`, or `failed`), not a JSON-RPC error, so the failure reaches the
+  model as a normal tool failure.
+- **Aggregation** (`Registry`). Tools merge under `mcp__<server>__<tool>`, sorted by
+  name, with a reverse route map (so a server name may itself contain `__`). A
+  qualified name that is not provider-safe (`[a-zA-Z0-9_-]{1,64}`) is **dropped with
+  a warning**, never truncated (truncation could collide and misroute). `tools/list`
+  is cursor-paginated.
+- **Lifecycle / manual start.** Harness **never starts the gateway**; the operator
+  runs `harness-mcp-gateway serve` themselves (from a shell, a launchd agent, or a
+  systemd user unit) and the daemon outlives harness, shared across sessions. A
+  second `serve` on a live socket exits 0 quietly; a stale socket from a crashed
+  daemon is unlinked and rebound. When MCP is enabled, harness does a **single
+  ~250 ms unix-socket probe** at startup; on success it connects and registers
+  tools under a 5 s timeout, on failure it emits exactly one warning
+  (`mcp: cannot connect to gateway at <path>: <err>; MCP tools unavailable`) and
+  continues with no MCP tools. An `http(s)` gateway URL is **not** probed (a GET
+  would 405; there is no cheap liveness check), so harness connects directly,
+  bounded by the same 5 s register timeout, and surfaces the same single warning
+  shape on failure. **Any** failure warns and continues — MCP never fails harness
+  startup. The startup cost is therefore the ~250 ms probe for a dead unix socket,
+  or at most the 5 s register timeout when the socket binds (or the HTTP gateway is
+  reachable) but the gateway then hangs during `initialize`/`tools/list`. There is
+  no spawn/auto-start budget — that machinery was removed.
+- **HTTP listener (optional).** Alongside the unix socket, the gateway can serve its
+  merged surface over **streamable HTTP** when `gateway.listen` (or `serve -listen`)
+  is set to an address such as `127.0.0.1:8420`; an empty value means socket-only.
+  It is **plain HTTP** — TLS and any stronger auth belong to a reverse proxy in
+  front. The handler (`internal/mcp` `NewHTTPHandler`, spec revision `2025-06-18`)
+  is tools-only and JSON-only: responses are always `application/json` (never
+  `text/event-stream`), a `GET` is `405` (no server-push stream), `DELETE` ends a
+  session (`204`), and sessions are created on `initialize`, carried by the
+  `Mcp-Session-Id` header, and purged lazily after a 30-minute idle TTL. Because
+  there is no server-push channel, `ListChanged` is reported **false** and clients
+  re-list rather than being notified. The daemon binds the listener after the
+  registry (the `Provider`) exists; a bind failure is fatal (the operator asked for
+  it), mirroring the socket-bind contract, and the server is shut down gracefully
+  alongside the socket. Harness reaches an HTTP gateway by setting `mcp.gateway` to
+  the URL plus an optional config-file-only `mcp.headers` map (sent on every request,
+  for a proxied gateway's auth); the `tools` subcommand debugs one with
+  `tools -gateway <url>`.
+- **Refresh semantics.** A downstream `tools/list_changed` fans out to harness as a
+  gateway `notifications/tools/list_changed`. Harness sets a dirty flag and applies
+  it only at the **next REPL prompt boundary** (never mid-turn, which would race the
+  turn's `Specs()`/`Dispatch` reads): it re-lists, removes departed tools from the
+  catalog, re-derives every MCP-exposing mode's allowed list, and shows
+  `[mcp: tool list updated; N tools]`. One-shot runs ignore changes. This whole path
+  rides the **harness↔gateway notification channel**, which exists only over the unix
+  socket: an `http(s)` gateway has no inbound notifications, so over HTTP the harness
+  tool list is **fixed at startup** and the refresh notice never fires. (Separately,
+  a *downstream* streamable-HTTP server behind the gateway likewise has no push
+  channel, so its tools refresh only on a session-expiry reconnect.)
+- **Shutdown.** SIGINT/SIGTERM cancel the daemon: the socket is removed, sessions
+  closed, and each stdio child reaped gracefully (close stdin → SIGTERM → SIGKILL
+  on the process group, bounded by per-stage timeouts).
+- **Security.** The socket location is **unrestricted** and the daemon never
+  touches permissions: a missing parent directory is created with the umask
+  default, a pre-existing parent is used as-is wherever the operator points it,
+  and the socket file keeps whatever mode the OS gives it — there is no chmod and
+  no ownership/loose-mode refusal. The only hard constraint is the `sun_path`
+  length limit. The unix socket is a **local
+  endpoint** with no network exposure; the optional HTTP listener, by contrast, is a
+  TCP endpoint with no transport security of its own, so it relies on the assumed
+  local/front-proxy trust boundary (bind it to loopback and front it with a proxy for
+  TLS/auth). Downstream HTTP headers are passed through verbatim from config (user
+  headers set first, protocol headers override on conflict); there is no OAuth and no
+  credential storage. The gateway loads its own config from the user's config dir;
+  harness only learns the gateway address. **Stdio servers inherit the gateway's full
+  environment** — whatever environment the `serve` process was started with — plus
+  the per-server `env` overrides, so do not configure untrusted stdio servers when
+  secrets live in the environment.
+
+The harness-side adapter contract (naming, description, schema, result and error
+mapping, the reconnecting `Conn`) is §9.14. The CLI wrapper has three subcommands —
+`serve` (the daemon), `tools` (connect to a running gateway over its socket or, with
+`-gateway <url>`, an HTTP listener, and print the aggregated table), and `version` —
+with serve flags `-config`/`-socket`/`-listen`/`-log`/`-log-level`.
+
+## 16. Future work
 
 - CLI-subprocess backends (codex / claude) behind a separate process-worker abstraction.
 - Read/write delegate agents with explicit workspace isolation or conflict control.
 - Markdown rendering.
-- MCP client support.
+- MCP resources and prompts, a legacy HTTP+SSE downstream transport, and OAuth for
+  remote servers (v1 is tools-only, streamable-HTTP-only, header-auth-only; §15).
 - Smarter prompt-cache breakpoint placement (the fourth allowed breakpoint is still
   unused; dynamic placement could help compaction-heavy sessions).

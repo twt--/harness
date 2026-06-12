@@ -28,8 +28,12 @@ The end-to-end verification matrix is in [`docs/smoke.md`](docs/smoke.md).
 ## Build
 
 ```sh
-go build ./cmd/harness     # produces ./harness
+go build ./cmd/...     # produces ./harness and ./harness-mcp-gateway
 ```
+
+`make build` builds the same two binaries. `harness-mcp-gateway` is only needed
+for the optional [MCP servers](#mcp-servers-optional) integration; `go build
+./cmd/harness` alone produces just the main binary.
 
 Requires Go 1.24+ (the toolchain uses range-over-func). Verify a checkout with:
 
@@ -323,7 +327,9 @@ into the parent session, but child token usage is included in turn/session usage
 Missing optional CLI-backed tools are reported on stderr at startup, e.g.
 `[warn] [cli_tools] Tool "rg" is disabled. Reason: "rg" binary not found.`
 unless `-q`/`--quiet` or `--log-level error` suppresses the warning. `grep`,
-`rg`, and `git` are thin argv wrappers around the host CLIs. See
+`rg`, and `git` are thin argv wrappers around the host CLIs. When the optional
+[MCP servers](#mcp-servers-optional) integration is enabled, downstream MCP tools
+also appear, namespaced as `mcp__<server>__<tool>`. See
 [`docs/design.md`](docs/design.md) §9 for each tool's schema and exact
 behavior.
 
@@ -331,3 +337,194 @@ Tool results are centrally capped (default 64 KB or 1000 lines; configurable via
 `tool_result_max_bytes` / `tool_result_max_lines`). Truncated results include a
 marker in the model-visible text, a warning in the UI, and the full output is
 archived under the session directory when available.
+
+## MCP servers (optional)
+
+Harness can expose tools from [Model Context Protocol](https://modelcontextprotocol.io)
+servers. A second binary, `harness-mcp-gateway`, owns every downstream MCP server
+(spawning stdio children, dialing streamable-HTTP endpoints) and aggregates their
+tools into one namespaced surface; harness connects to that gateway — over a unix
+socket by default, or [over HTTP](#talking-to-a-gateway-over-http) — and registers
+each tool as an ordinary harness tool. Harness and the gateway speak MCP to each
+other (JSON-RPC 2.0, revision `2025-06-18`), so the gateway is a single shared
+daemon that many harness sessions reuse. You start the gateway yourself; harness
+never spawns it.
+
+### Enabling it
+
+MCP is **opt-in** and off by default. Turn it on in `~/.config/harness/config.json`:
+
+```json
+{
+  "mcp": {
+    "enable": true,
+    "gateway": ""
+  }
+}
+```
+
+or via environment: `HARNESS_MCP_ENABLE=true` and (optionally)
+`HARNESS_MCP_GATEWAY=/path/to/gateway.sock`. There are no flags. An empty
+`gateway` resolves the shared default socket path (below). Precedence is the usual
+**env > config file > default**.
+
+`gateway` accepts either a unix socket path or an `http(s)://` gateway URL (see
+[Talking to a gateway over HTTP](#talking-to-a-gateway-over-http)). A unix path
+may point anywhere you like; the daemon never touches permissions — it creates a
+missing parent directory (umask default) and uses a pre-existing parent as-is.
+The only hard limit is the OS `sun_path` length (~104 bytes), so keep the path
+short — the default `/tmp/harness-mcp-gateway-$UID/gateway.sock` stays well
+under it.
+
+### Configuring downstream servers
+
+The gateway has its own config file, **separate from harness**, at
+`$XDG_CONFIG_HOME/harness-mcp-gateway/config.json` (else
+`~/.config/harness-mcp-gateway/config.json`). It is Claude Code-compatible:
+
+```json
+{
+  "mcpServers": {
+    "fs": {
+      "command": "mcp-server-filesystem",
+      "args": ["--root", "/srv/data"],
+      "env": { "LOG_LEVEL": "info" }
+    },
+    "search": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${SEARCH_TOKEN}" }
+    }
+  },
+  "gateway": {
+    "socket": "",
+    "listen": "",
+    "logFile": "",
+    "logLevel": "info"
+  }
+}
+```
+
+`gateway.listen` is empty by default (unix socket only); set it to an address such
+as `127.0.0.1:8420` to also serve over HTTP (see
+[Talking to a gateway over HTTP](#talking-to-a-gateway-over-http)). A server with no
+`type` (or `"stdio"`) is a child process (`command`/`args`/`env`);
+`"http"` is a streamable-HTTP endpoint (`url`/`headers`). `${NAME}` references in
+any string are expanded from the gateway's environment (a literal `$` is preserved;
+an unset variable warns and expands to empty). Invalid server entries are skipped
+with a warning, never fatal — the gateway still serves the valid ones. See
+`examples/config/harness-mcp-gateway.json` for a copyable starting point.
+
+Stdio servers inherit the gateway's **full environment** — whatever environment
+the `harness-mcp-gateway serve` process was started with — plus the per-server
+`env` overrides. Do not configure untrusted stdio servers when secrets live in the
+environment, since the child process can read them.
+
+### Running the gateway
+
+Harness never starts the gateway for you — you run it yourself, once, and leave it
+up. The daemon is a single shared process that **outlives harness** and is **shared
+across sessions**: starting a second harness reuses the same gateway, and a second
+`serve` exits quietly if one is already running.
+
+```sh
+harness-mcp-gateway serve &        # foreground without the & to watch its logs
+```
+
+For a persistent setup, run it from your shell profile, a launchd agent (macOS),
+or a systemd user unit (Linux) so it comes up at login.
+
+When MCP is enabled, harness does a **single 250 ms probe** of the gateway socket
+at startup. If the probe succeeds it connects and registers the gateway's tools,
+logging a line such as `mcp: connected (2 servers, 5 tools): fs=3 search=2`. If
+the probe fails it emits **one** warning and continues with no MCP tools:
+
+```
+mcp: cannot connect to gateway at /tmp/harness-mcp-gateway-1000/gateway.sock: <err>; MCP tools unavailable
+```
+
+MCP **never fails harness startup**. The startup cost is bounded by that 250 ms
+probe for a dead unix socket; the only longer wait is the 5 s registration timeout,
+reachable only when the socket binds but the gateway then hangs during
+`initialize`/`tools/list` (an HTTP gateway, which skips the probe, connects directly
+under the same 5 s bound).
+
+Default paths (all derived per-user):
+
+- **Socket:** `$XDG_RUNTIME_DIR/harness-mcp-gateway/gateway.sock`, else
+  `<tmpdir>/harness-mcp-gateway-<uid>/gateway.sock` (a short hashed name under
+  `<tmpdir>` if that would exceed the OS socket-path limit).
+- **Config:** `$XDG_CONFIG_HOME/harness-mcp-gateway/config.json`, else
+  `~/.config/harness-mcp-gateway/config.json`.
+- **Log:** stderr when serving interactively, otherwise `gateway.log` next to the
+  socket (so a detached daemon never loses output).
+
+Inspect the live surface without harness with:
+
+```sh
+harness-mcp-gateway tools                       # over the unix socket
+harness-mcp-gateway tools -gateway http://127.0.0.1:8420   # over an HTTP gateway
+```
+
+### Talking to a gateway over HTTP
+
+The gateway can serve its merged MCP surface over **streamable HTTP** alongside the
+unix socket, so harness sessions on another host (or behind a proxy) can reach it.
+Set `gateway.listen` in the gateway config, or pass `serve -listen`:
+
+```json
+{ "gateway": { "listen": "127.0.0.1:8420" } }
+```
+
+```sh
+harness-mcp-gateway serve -listen 127.0.0.1:8420 &
+```
+
+The listener speaks **plain HTTP only** — put a reverse proxy (nginx, Caddy) in
+front for TLS and any stronger auth. Each session is carried by an `Mcp-Session-Id`
+header with a 30-minute idle TTL; responses are `application/json` only, and there
+is **no server-push channel**, so a client re-lists on its own rather than being
+told of tool changes.
+
+On the harness side, point `mcp.gateway` at the URL and (for a proxied gateway that
+wants auth) add a config-file-only `mcp.headers` map sent on **every** request:
+
+```json
+{
+  "mcp": {
+    "enable": true,
+    "gateway": "https://mcp.internal.example/mcp",
+    "headers": { "Authorization": "Bearer ${TOKEN}" }
+  }
+}
+```
+
+`headers` has no environment variable — it lives in the config file alongside the
+URL it authenticates to. Harness does **not** probe an `http(s)` gateway (it
+connects directly, bounded by the 5 s registration timeout). Because HTTP has no
+notifications channel, the tool list is **fixed at startup over HTTP**: the
+`[mcp: tool list updated]` notice never fires for an HTTP gateway.
+
+### Tools, modes, and limits
+
+Aggregated tools are named `mcp__<server>__<tool>` (the charset/length must fit
+`[a-zA-Z0-9_-]{1,64}`; names that do not are dropped with a warning). They are
+plain harness tools, so they flow through the normal truncation, artifact, and
+session paths. Modes that inherit the default tool set (`auto`, `independent`, and
+config modes without an explicit `allowed_tools`) expose the MCP tools; a mode
+with an explicit `allowed_tools` whitelist does **not** (it may list `mcp__` names
+manually). Over a **unix-socket** gateway, if a server announces a tool-list
+change the REPL applies it at the next prompt boundary with a
+`[mcp: tool list updated; N tools]` notice; one-shot runs ignore mid-run changes,
+and an HTTP gateway has no notifications channel so its tool list is fixed at
+startup.
+
+One-shot users should note the startup cost is small: a single 250 ms probe for a
+dead unix socket, or the 5 s registration timeout if the gateway binds but then
+hangs during `initialize`/`tools/list` (an HTTP gateway connects directly under
+the same 5 s bound). Leave MCP off (the default) for latency-sensitive one-shot
+invocations that do not need it.
+
+**v1 non-goals:** tools only (no MCP resources or prompts); streamable-HTTP only
+for remote servers (no legacy HTTP+SSE transport); header-based auth only (no
+OAuth flow); the HTTP gateway listener is plain HTTP (TLS via a reverse proxy).
