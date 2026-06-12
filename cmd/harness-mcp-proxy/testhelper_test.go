@@ -12,11 +12,11 @@ import (
 
 // TestHelperProcess is not a real test: when invoked with HELPER_MODE=mcp it
 // runs a tiny newline-JSON-RPC MCP server on stdin/stdout, configured by env
-// vars. The tools-subcommand test drives a real gateway daemon whose downstream
+// vars. The tools-subcommand test drives a real proxy daemon whose downstream
 // server config re-execs the test binary into this helper (Command=os.Args[0],
 // Args=[-test.run=TestHelperProcess$], Env={HELPER_MODE:mcp, ...}). This is the
 // canonical stdlib fake-subprocess idiom; the helper is duplicated here rather
-// than exported from internal/mcpgateway (test helpers may be per-package).
+// than exported from internal/mcpproxy (test helpers may be per-package).
 //
 // Configuration env vars:
 //

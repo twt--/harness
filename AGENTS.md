@@ -35,10 +35,10 @@ first, and provider-neutral.
 - `internal/ui`, `internal/term`, `internal/logging`: REPL/one-shot rendering, terminal behavior, plaintext slog. ANSI belongs here only.
 - `internal/sysprompt`, `internal/skills`: built-in prompt/env context and skill discovery/disclosure.
 - `internal/sse`, `internal/retry`: shared SSE reader and provider HTTP retry/backoff.
-- `cmd/harness-mcp-gateway`: optional MCP gateway binary (`serve`/`tools`/`version`); thin CLI over `internal/mcpgateway`.
+- `cmd/harness-mcp-proxy`: optional MCP proxy binary (`serve`/`tools`/`version`); thin CLI over `internal/mcpproxy`.
 - `internal/mcp` (+`jsonrpc`): tools-only MCP slice — schema, client/server, stdio + streamable-HTTP transports, JSON-RPC framing. No `internal/llm`/`internal/tools` imports.
-- `internal/mcpgateway`: gateway daemon — Claude Code-compatible config, downstream supervisors, namespaced tool registry.
-- `internal/mcptools`: harness-side adapter exposing gateway tools as `tools.Tool` over a reconnecting `Conn`. Off unless `mcp.enable`.
+- `internal/mcpproxy`: proxy daemon — Claude Code-compatible config, downstream supervisors, namespaced tool registry.
+- `internal/mcptools`: harness-side adapter exposing proxy tools as `tools.Tool` over a reconnecting `Conn`. Off unless `mcp.enable`.
 
 ## Code Patterns
 
@@ -63,7 +63,7 @@ first, and provider-neutral.
 - Tool behavior/schemas: `docs/design.md` section 9.
 - System prompt behavior: `internal/sysprompt` tests/docs; consider compaction impact.
 - Run modes: `README.md` and `docs/design.md` section 14.
-- MCP gateway: `README.md` ("MCP servers"), `docs/design.md` sections 9.14 and 15.
+- MCP proxy: `README.md` ("MCP servers"), `docs/design.md` sections 9.14 and 15.
 - Smoke workflow changes: `docs/smoke.md`.
 
 ## Adding Things

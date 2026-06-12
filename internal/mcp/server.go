@@ -11,7 +11,7 @@ import (
 	"harness/internal/mcp/jsonrpc"
 )
 
-// ToolProvider supplies tools to a Server. The gateway implements it so all
+// ToolProvider supplies tools to a Server. The proxy implements it so all
 // aggregation logic stays out of the Server. A tool-execution failure is
 // returned as a *CallToolResult with IsError true; a protocol failure (unknown
 // tool, bad params) is returned as a *jsonrpc.Error.
@@ -27,12 +27,12 @@ type ServerOptions struct {
 	ListChanged bool
 	Logger      *slog.Logger
 	// OnSession, if set, is called once with the session handle after the peer
-	// is up and before initialize. The gateway subscribes the session for
+	// is up and before initialize. The proxy subscribes the session for
 	// tools/list_changed fan-out through it.
 	OnSession func(s *ServerSession)
 }
 
-// ServerSession is a handle to a live server session, exposed to the gateway so
+// ServerSession is a handle to a live server session, exposed to the proxy so
 // it can push notifications and observe session lifetime. It is created before
 // initialize and remains valid until the session ends.
 type ServerSession struct {
@@ -68,7 +68,7 @@ type server struct {
 }
 
 // Serve runs one MCP session over rwc until EOF, error, or ctx cancellation. A
-// clean client disconnect returns nil. It blocks; the gateway calls it in a
+// clean client disconnect returns nil. It blocks; the proxy calls it in a
 // goroutine per accepted connection.
 //
 // Teardown is best-effort: on return the peer is closed, which cancels the ctx

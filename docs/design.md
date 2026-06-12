@@ -80,11 +80,11 @@ internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for proxy setup/pricing metadata
 internal/ui              REPL, streaming renderer, tool summaries, usage line
 internal/sysprompt       builtin instructions + environment context (cwd/os/date/git summary)
-cmd/harness-mcp-gateway  optional MCP gateway daemon + debug client (serve / tools / version)
+cmd/harness-mcp-proxy  optional MCP proxy daemon + debug client (serve / tools / version)
 internal/mcp             tools-only MCP slice: schema, client, server, stdio + streamable-HTTP transports
 internal/mcp/jsonrpc     JSON-RPC 2.0 framing and bidirectional request/response correlation
-internal/mcpgateway      gateway internals: config, supervisors, tool registry, daemon
-internal/mcptools        harness-side adapter: tools.Tool over a reconnecting gateway Conn (§15)
+internal/mcpproxy      proxy internals: config, supervisors, tool registry, daemon
+internal/mcptools        harness-side adapter: tools.Tool over a reconnecting proxy Conn (§15)
 ```
 
 `internal/llm` is the shared contract between the agent loop and any model provider.
@@ -874,13 +874,13 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.14 MCP tools (`internal/mcptools`)
 
-> Each tool discovered from the MCP gateway, proxying `tools/call` over a shared, reconnecting gateway connection.
+> Each tool discovered from the MCP proxy, proxying `tools/call` over a shared, reconnecting proxy connection.
 
 These are not built-in tools: they are registered dynamically at startup when MCP
-is enabled (§15), one `*mcptools.Tool` per gateway-advertised tool. The adapter
+is enabled (§15), one `*mcptools.Tool` per proxy-advertised tool. The adapter
 contract maps the MCP tool shape onto the `Tool` interface:
 
-- **Name** is the gateway's full `mcp__<server>__<tool>` already. `Register`
+- **Name** is the proxy's full `mcp__<server>__<tool>` already. `Register`
   re-validates it against the provider charset `[a-zA-Z0-9_-]{1,64}` plus the
   required `mcp__` prefix; a name that fails is **skipped**, not rewritten (a
   truncated name could collide), and recorded in the registration summary.
@@ -904,9 +904,9 @@ contract maps the MCP tool shape onto the `Tool` interface:
   normal tool-error path.
 
 The shared `*mcptools.Conn` is a lazily-reconnecting wrapper around one
-`mcp.Client` session to the gateway. It spawns no goroutines; reconnection is
-synchronous on the calling goroutine under a backoff gate, so a down gateway
-fast-fails subsequent calls rather than storming reconnects. A gateway crash
+`mcp.Client` session to the proxy. It spawns no goroutines; reconnection is
+synchronous on the calling goroutine under a backoff gate, so a down proxy
+fast-fails subsequent calls rather than storming reconnects. A proxy crash
 mid-session surfaces as error tool results; the next call reconnects when the
 backoff allows.
 
@@ -1131,12 +1131,12 @@ worker, or the wide-open default without separate binaries.
   on top of the builtin instructions, env block, AGENTS.md, and `-system` text. The
   active mode is saved with the session and restored on `-resume` (flags win).
 
-## 15. MCP gateway (optional)
+## 15. MCP proxy (optional)
 
 MCP support is opt-in (`mcp.enable`, §7) and lives entirely behind a **second
-binary**, `harness-mcp-gateway`. Harness never talks to downstream MCP servers
-directly: the gateway owns them and presents their merged tools to harness as a
-single MCP server over streamable HTTP. Harness and the gateway therefore speak
+binary**, `harness-mcp-proxy`. Harness never talks to downstream MCP servers
+directly: the proxy owns them and presents their merged tools to harness as a
+single MCP server over streamable HTTP. Harness and the proxy therefore speak
 MCP to each other — JSON-RPC 2.0, protocol revision `2025-06-18`
 (`internal/mcp`, `internal/mcp/jsonrpc`).
 
@@ -1146,17 +1146,17 @@ concurrent harness session, surviving REPL restarts, instead of being re-spawned
 per process. The harness side still depends on the thin `internal/mcptools`
 adapter for tool dispatch (§9.14).
 
-- **Gateway config** (`internal/mcpgateway`) is Claude Code-compatible:
-  `{"mcpServers": {name: {command,args,env} | {type:"http"|"streamable-http",url,headers}}, "gateway":
-  {listen,logFile,logLevel}}`, at `$XDG_CONFIG_HOME/harness-mcp-gateway/config.json`
+- **Proxy config** (`internal/mcpproxy`) is Claude Code-compatible:
+  `{"mcpServers": {name: {command,args,env} | {type:"http"|"streamable-http",url,headers}}, "proxy":
+  {listen,logFile,logLevel}}`, at `$XDG_CONFIG_HOME/harness-mcp-proxy/config.json`
   (else `~/.config/...`). `${NAME}` and `${NAME:-default}` references are expanded
   strictly (literal `$`, `$5`, `$$`, or unterminated `${` is preserved verbatim;
   an unset strict var warns and expands to empty). Invalid servers are skipped
-  with a warning, never fatal. `gateway.listen` defaults to `127.0.0.1:8766`.
+  with a warning, never fatal. `proxy.listen` defaults to `127.0.0.1:8766`.
   Library code returns warnings; the CLI logs them.
 - **Downstream supervision.** Each server gets a `Supervisor`. A **stdio** child is
   spawned in its own process group, initialized + `tools/list`ed under a 30 s
-  timeout, its stderr drained to the gateway log; a crash restarts with backoff,
+  timeout, its stderr drained to the proxy log; a crash restarts with backoff,
   and 5 consecutive failed (re)starts disables it permanently. A **streamable-HTTP**
   server is connected lazily with the user's headers; there is no restart loop (the
   process is not ours), and a server-side session expiry (HTTP 404) triggers one
@@ -1170,17 +1170,17 @@ adapter for tool dispatch (§9.14).
   qualified name that is not provider-safe (`[a-zA-Z0-9_-]{1,64}`) is **dropped with
   a warning**, never truncated (truncation could collide and misroute). `tools/list`
   is cursor-paginated.
-- **Lifecycle / manual start.** Harness **never starts the gateway**; the operator
-  runs `harness-mcp-gateway serve` themselves (from a shell, a launchd agent, or a
+- **Lifecycle / manual start.** Harness **never starts the proxy**; the operator
+  runs `harness-mcp-proxy serve` themselves (from a shell, a launchd agent, or a
   systemd user unit) and the daemon outlives harness, shared across sessions. A
   second `serve` on the same HTTP address fails with the normal bind error, matching
   `harness-model-proxy`. When MCP is enabled, harness connects directly to the
-  gateway and registers tools under a 5 s timeout; on failure it emits exactly one
-  warning (`mcp: cannot connect to gateway at <url>: <err>; MCP tools unavailable`)
+  proxy and registers tools under a 5 s timeout; on failure it emits exactly one
+  warning (`mcp: cannot connect to proxy at <url>: <err>; MCP tools unavailable`)
   and continues with no MCP tools. **Any** failure warns and continues — MCP never
   fails harness startup. There is no spawn/auto-start budget.
-- **HTTP server.** The gateway serves its merged surface over **streamable HTTP** on
-  `gateway.listen` (or `serve -listen`). It is **plain HTTP** — TLS and any
+- **HTTP server.** The proxy serves its merged surface over **streamable HTTP** on
+  `proxy.listen` (or `serve -listen`). It is **plain HTTP** — TLS and any
   stronger auth belong to a reverse proxy in front. The handler (`internal/mcp`
   `NewHTTPHandler`, spec revision `2025-06-18`) is tools-only and JSON-only:
   responses are always `application/json` (never `text/event-stream`), a `GET` is
@@ -1189,32 +1189,32 @@ adapter for tool dispatch (§9.14).
   lazily after a 30-minute idle TTL. Because there is no server-push channel,
   `ListChanged` is reported **false** and clients re-list rather than being
   notified. A bind failure is fatal and the server is shut down gracefully on
-  SIGINT/SIGTERM. Harness reaches the gateway by setting `mcp.gateway` to the URL
+  SIGINT/SIGTERM. Harness reaches the proxy by setting `mcp.proxy` to the URL
   plus an optional config-file-only `mcp.headers` map (sent on every request, for a
-  proxied gateway's auth). Header values expand `${NAME}` and `${NAME:-default}`;
+  reverse proxy's auth). Header values expand `${NAME}` and `${NAME:-default}`;
   unset strict refs are config errors. The `tools` subcommand debugs one with
-  `tools -gateway <url>` or the configured/default URL.
+  `tools -proxy <url>` or the configured/default URL.
 - **Refresh semantics.** The harness-side tool list is **fixed at startup** because
-  the HTTP gateway has no notification channel. A downstream streamable-HTTP server
-  behind the gateway likewise has no push channel, so its tools refresh only on a
+  the HTTP proxy has no notification channel. A downstream streamable-HTTP server
+  behind the proxy likewise has no push channel, so its tools refresh only on a
   session-expiry reconnect.
 - **Shutdown.** SIGINT/SIGTERM cancel the daemon: HTTP sessions close with the
   server, and each stdio child is reaped gracefully (close stdin → SIGTERM → SIGKILL
   on the process group, bounded by per-stage timeouts).
-- **Security.** The gateway listener is a TCP endpoint with no transport security
+- **Security.** The proxy listener is a TCP endpoint with no transport security
   of its own, so it relies on the assumed local/front-proxy trust boundary (bind it
   to loopback and front it with a proxy for TLS/auth). Downstream HTTP headers are
   passed through verbatim from config (user headers set first, protocol headers
-  override on conflict); there is no OAuth and no credential storage. The gateway
-  loads its own config from the user's config dir; harness only learns the gateway
-  URL. **Stdio servers inherit the gateway's full environment** — whatever
+  override on conflict); there is no OAuth and no credential storage. The proxy
+  loads its own config from the user's config dir; harness only learns the proxy
+  URL. **Stdio servers inherit the proxy's full environment** — whatever
   environment the `serve` process was started with — plus the per-server `env`
   overrides, so do not configure untrusted stdio servers when secrets live in the
   environment.
 
 The harness-side adapter contract (naming, description, schema, result and error
 mapping, the reconnecting `Conn`) is §9.14. The CLI wrapper has three subcommands —
-`serve` (the daemon), `tools` (connect to a running HTTP gateway and print the
+`serve` (the daemon), `tools` (connect to a running HTTP proxy and print the
 aggregated table), and `version` — with serve flags
 `-config`/`-listen`/`-log`/`-log-level`.
 

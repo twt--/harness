@@ -32,7 +32,7 @@ func echoResult() *mcp.CallToolResult {
 }
 
 func TestConnFirstCallDialsOnce(t *testing.T) {
-	g := &fakeGateway{provider: &scriptedProvider{
+	g := &fakeProxy{provider: &scriptedProvider{
 		tools:  []mcp.Tool{{Name: "mcp__s__t"}},
 		result: echoResult(),
 	}}
@@ -50,7 +50,7 @@ func TestConnFirstCallDialsOnce(t *testing.T) {
 	}
 }
 
-// togglableDial wraps fakeGateway.dial but can be switched to fail, so a test
+// togglableDial wraps fakeProxy.dial but can be switched to fail, so a test
 // can drive the dial-failure -> backoff-gate path deterministically.
 type togglableDial struct {
 	inner    func(ctx context.Context) (io.ReadWriteCloser, error)
@@ -69,7 +69,7 @@ func (d *togglableDial) dial(ctx context.Context) (io.ReadWriteCloser, error) {
 }
 
 func TestConnDropThenBackoffGateThenReconnect(t *testing.T) {
-	g := &fakeGateway{provider: &scriptedProvider{
+	g := &fakeProxy{provider: &scriptedProvider{
 		tools:  []mcp.Tool{{Name: "mcp__s__t"}},
 		result: echoResult(),
 	}}
@@ -87,7 +87,7 @@ func TestConnDropThenBackoffGateThenReconnect(t *testing.T) {
 		t.Fatalf("dial count after first call = %d, want 1", td.count.Load())
 	}
 
-	// Drop the gateway session out from under the connection, and arrange for the
+	// Drop the proxy session out from under the connection, and arrange for the
 	// next dial to fail so the backoff gate is set.
 	g.closeSession(t)
 	td.failNext.Store(true)
@@ -95,7 +95,7 @@ func TestConnDropThenBackoffGateThenReconnect(t *testing.T) {
 	// Next call observes a connection error and drops the client.
 	_, err := conn.CallTool(context.Background(), "mcp__s__t", json.RawMessage(`{}`))
 	if err == nil {
-		t.Fatal("expected error after gateway drop, got nil")
+		t.Fatal("expected error after proxy drop, got nil")
 	}
 	if !isConnError(err) {
 		t.Fatalf("post-drop error not classified as conn error: %v", err)
@@ -152,7 +152,7 @@ func TestConnCtxCancelDoesNotDrop(t *testing.T) {
 	// A provider that blocks until its context is cancelled, so we can cancel an
 	// in-flight call and confirm the connection survives.
 	bp := &blockingProvider{tools: []mcp.Tool{{Name: "mcp__s__t"}}}
-	g := &fakeGateway{}
+	g := &fakeProxy{}
 	cd := &countingDial{inner: g.dialWith(bp)}
 	conn := NewConn(Options{dial: cd.dial})
 	defer conn.Close()
@@ -185,7 +185,7 @@ func TestConnCtxCancelDoesNotDrop(t *testing.T) {
 }
 
 func TestConnConcurrentDropNoDoubleClose(t *testing.T) {
-	g := &fakeGateway{provider: &scriptedProvider{
+	g := &fakeProxy{provider: &scriptedProvider{
 		tools:  []mcp.Tool{{Name: "mcp__s__t"}},
 		result: echoResult(),
 	}}
@@ -213,7 +213,7 @@ func TestConnConcurrentDropNoDoubleClose(t *testing.T) {
 }
 
 func TestConnDirtyOnToolsChanged(t *testing.T) {
-	g := &fakeGateway{
+	g := &fakeProxy{
 		provider:    &scriptedProvider{tools: []mcp.Tool{{Name: "mcp__s__t"}}, result: echoResult()},
 		listChanged: true,
 	}
@@ -242,7 +242,7 @@ func TestConnDirtyOnToolsChanged(t *testing.T) {
 func TestConnNoGoroutineLeak(t *testing.T) {
 	base := runtime.NumGoroutine()
 	for range 5 {
-		g := &fakeGateway{provider: &scriptedProvider{
+		g := &fakeProxy{provider: &scriptedProvider{
 			tools:  []mcp.Tool{{Name: "mcp__s__t"}},
 			result: echoResult(),
 		}}

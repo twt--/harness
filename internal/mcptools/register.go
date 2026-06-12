@@ -8,7 +8,7 @@ import (
 	"harness/internal/tools"
 )
 
-// namePrefix is the namespace every gateway tool name must carry. The gateway
+// namePrefix is the namespace every proxy tool name must carry. The proxy
 // builds names as mcp__<server>__<tool>; the harness validates and registers
 // them under that exact prefix.
 const namePrefix = "mcp__"
@@ -26,7 +26,7 @@ type Summary struct {
 	Total   int            // count of tools registered
 }
 
-// Register lists the gateway's tools and registers each valid one on reg as an
+// Register lists the proxy's tools and registers each valid one on reg as an
 // *mcptools.Tool backed by conn. Names are validated against the provider
 // charset and the required mcp__ prefix; invalid names are skipped and recorded.
 // A later Register replaces same-named tools in place (Registry.Register
@@ -57,7 +57,7 @@ func Register(ctx context.Context, reg *tools.Registry, conn *Conn) (Summary, er
 }
 
 // validName reports whether name is a registrable MCP tool name: it must carry
-// the mcp__ prefix (defensive against a misbehaving gateway emitting bare names)
+// the mcp__ prefix (defensive against a misbehaving proxy emitting bare names)
 // and match the provider charset/length bound.
 func validName(name string) bool {
 	return strings.HasPrefix(name, namePrefix) && toolNameRe.MatchString(name)
@@ -65,7 +65,7 @@ func validName(name string) bool {
 
 // serverLabel extracts a display-only server label from a validated name. The
 // name is mcp__<server>__<tool>, but a server name may itself contain "__", so
-// without the gateway's routing table the split is ambiguous. The label is the
+// without the proxy's routing table the split is ambiguous. The label is the
 // segment up to the FIRST "__" after the prefix: a best-effort display value
 // only, never used for routing.
 func serverLabel(name string) string {

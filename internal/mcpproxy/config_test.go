@@ -1,4 +1,4 @@
-package mcpgateway
+package mcpproxy
 
 import (
 	"os"
@@ -25,7 +25,7 @@ func TestLoadConfigCamelCaseDecode(t *testing.T) {
 			"alpha": {"command": "alpha-bin", "args": ["--flag", "x"], "env": {"K": "v"}},
 			"beta": {"type": "http", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer t"}}
 		},
-		"gateway": {"listen": "127.0.0.1:8089", "socket": "/tmp/ignored.sock", "logFile": "/tmp/g.log", "logLevel": "debug"}
+		"proxy": {"listen": "127.0.0.1:8089", "socket": "/tmp/ignored.sock", "logFile": "/tmp/g.log", "logLevel": "debug"}
 	}`)
 
 	cfg, err := LoadConfig(path)
@@ -33,7 +33,7 @@ func TestLoadConfigCamelCaseDecode(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	if cfg.Listen != "127.0.0.1:8089" || cfg.LogFile != "/tmp/g.log" || cfg.LogLevel != "debug" {
-		t.Fatalf("gateway settings not decoded: %+v", cfg)
+		t.Fatalf("proxy settings not decoded: %+v", cfg)
 	}
 	if len(cfg.Servers) != 2 {
 		t.Fatalf("want 2 servers, got %d (%+v)", len(cfg.Servers), cfg.Servers)
@@ -60,7 +60,7 @@ func TestLoadConfigCamelCaseDecode(t *testing.T) {
 
 func TestLoadConfigListenField(t *testing.T) {
 	withListen := writeConfig(t, `{
-		"gateway": {"listen": "127.0.0.1:8089"}
+		"proxy": {"listen": "127.0.0.1:8089"}
 	}`)
 	cfg, err := LoadConfig(withListen)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestLoadConfigListenField(t *testing.T) {
 	}
 
 	// Absent listen defaults to the local HTTP listener.
-	noListen := writeConfig(t, `{"gateway": {}}`)
+	noListen := writeConfig(t, `{"proxy": {}}`)
 	cfg, err = LoadConfig(noListen)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -321,7 +321,7 @@ func TestDefaultConfigPath(t *testing.T) {
 		}
 		return ""
 	})
-	if got != "/xdg/harness-mcp-gateway/config.json" {
+	if got != "/xdg/harness-mcp-proxy/config.json" {
 		t.Fatalf("XDG path = %q", got)
 	}
 	// Falls back to ~/.config.
@@ -331,7 +331,7 @@ func TestDefaultConfigPath(t *testing.T) {
 		}
 		return ""
 	})
-	if got != "/home/u/.config/harness-mcp-gateway/config.json" {
+	if got != "/home/u/.config/harness-mcp-proxy/config.json" {
 		t.Fatalf("HOME path = %q", got)
 	}
 }

@@ -1,4 +1,4 @@
-package mcpgateway
+package mcpproxy
 
 import (
 	"bytes"

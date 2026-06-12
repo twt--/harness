@@ -5,7 +5,7 @@
 // builds on internal/mcp/jsonrpc for framing and bidirectional correlation and
 // depends only on the standard library. It deliberately does not import
 // internal/llm or internal/tools so both cmd/harness (client) and
-// cmd/harness-mcp-gateway (server + downstream client) can share it.
+// cmd/harness-mcp-proxy (server + downstream client) can share it.
 package mcp
 
 import "slices"

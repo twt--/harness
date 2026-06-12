@@ -234,7 +234,7 @@ func run(env environment) int {
 		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
 		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,
 	}))
-	// MCP (opt-in): connect to the gateway and register discovered tools into the
+	// MCP (opt-in): connect to the proxy and register discovered tools into the
 	// catalog before mode resolution, so any mode's subset can pick them up. It
 	// never fails startup; on any error it warns and continues with no MCP tools.
 	var mcpConn *mcptools.Conn

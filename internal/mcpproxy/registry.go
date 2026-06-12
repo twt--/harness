@@ -1,4 +1,4 @@
-package mcpgateway
+package mcpproxy
 
 import (
 	"context"
@@ -29,7 +29,7 @@ type route struct {
 }
 
 // Registry aggregates the tools of every supervised server into one namespaced
-// surface and implements mcp.ToolProvider for the gateway's server sessions. It
+// surface and implements mcp.ToolProvider for the proxy's server sessions. It
 // maintains a merged sorted tool list (names rewritten to mcp__<server>__<tool>)
 // and a reverse route map, both rebuilt whenever any supervisor's tools change.
 // It fans tools/list_changed out to subscribed sessions.

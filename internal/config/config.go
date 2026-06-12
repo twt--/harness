@@ -71,24 +71,24 @@ type Config struct {
 	NoColor    bool   // -no-color or NO_COLOR
 	ReplPrompt string // -prompt: REPL input prompt (default "> ")
 
-	// MCP gateway integration (opt-in). Gateway is the HTTP gateway URL; an empty
-	// Gateway means "use the shared default", which main resolves at connect
-	// time so internal/config stays free of gateway packages.
+	// MCP proxy integration (opt-in). Proxy is the HTTP proxy URL; an empty
+	// Proxy means "use the shared default", which main resolves at connect
+	// time so internal/config stays free of proxy packages.
 	MCP MCPConfig
 }
 
 // MCPConfig is the resolved harness-side MCP block. All downstream server
-// configuration lives with the gateway; the harness only needs to know whether
-// MCP is enabled and which gateway to dial.
+// configuration lives with the proxy; the harness only needs to know whether
+// MCP is enabled and which proxy to dial.
 type MCPConfig struct {
-	Enable  bool
-	Gateway string // http(s) gateway URL; "" means resolve the shared default at use
+	Enable bool
+	Proxy  string // http(s) proxy URL; "" means resolve the shared default at use
 
 	// Headers are static request headers (e.g. Authorization) sent on every
-	// request to the gateway. It is config-file-only (file key "headers" under
+	// request to the proxy. It is config-file-only (file key "headers" under
 	// "mcp"), with NO env var: this matches the config-file-only precedent for
 	// structured settings (a map cannot be expressed cleanly through a single env
-	// var), so a header set belongs in the config file alongside the gateway URL
+	// var), so a header set belongs in the config file alongside the proxy URL
 	// it authenticates to.
 	Headers map[string]string
 }
@@ -145,7 +145,7 @@ type fileConfig struct {
 // config", letting env and defaults supply every field.
 type fileMCPConfig struct {
 	Enable  *bool             `json:"enable"`
-	Gateway string            `json:"gateway"`
+	Proxy   string            `json:"proxy"`
 	Headers map[string]string `json:"headers"`
 }
 
@@ -262,13 +262,13 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	c.ReplPrompt = resolveString(set["prompt"], *fReplPrompt,
 		getenv("HARNESS_PROMPT"), fc.Prompt, "> ")
 
-	// MCP block (env > file > default; no flags). Gateway is left empty when
+	// MCP block (env > file > default; no flags). Proxy is left empty when
 	// unset so main can resolve the shared default HTTP URL at connect time.
 	var mcpEnableFile *bool
-	var mcpGatewayFile string
+	var mcpProxyFile string
 	if fc.MCP != nil {
 		mcpEnableFile = fc.MCP.Enable
-		mcpGatewayFile = fc.MCP.Gateway
+		mcpProxyFile = fc.MCP.Proxy
 		// Headers are config-file-only (no env layer); copy so a later mutation
 		// of fc cannot reach the resolved Config. Values support ${VAR} and
 		// ${VAR:-default} interpolation. Absent → nil.
@@ -282,8 +282,8 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	}
 	c.MCP.Enable = resolveBool(false, false,
 		getenv("HARNESS_MCP_ENABLE"), mcpEnableFile, false)
-	c.MCP.Gateway = resolveString(false, "",
-		getenv("HARNESS_MCP_GATEWAY"), mcpGatewayFile, "")
+	c.MCP.Proxy = resolveString(false, "",
+		getenv("HARNESS_MCP_PROXY"), mcpProxyFile, "")
 
 	// NO_COLOR (the de-facto standard) disables color regardless of HARNESS_*.
 	if getenv("NO_COLOR") != "" {

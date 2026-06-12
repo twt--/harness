@@ -44,9 +44,9 @@ func (p *scriptedProvider) callCount() int {
 	return p.calls
 }
 
-// fakeGateway is a real mcp.Serve session running over the server end of a
+// fakeProxy is a real mcp.Serve session running over the server end of a
 // net.Pipe. session is captured so tests can fire tools/list_changed.
-type fakeGateway struct {
+type fakeProxy struct {
 	provider    *scriptedProvider
 	listChanged bool
 
@@ -55,28 +55,28 @@ type fakeGateway struct {
 	ready   chan struct{}
 }
 
-// dial spins up a fresh fakeGateway session over a net.Pipe and hands the client
+// dial spins up a fresh fakeProxy session over a net.Pipe and hands the client
 // end back to the Conn. Each dial is an independent session, modeling reconnects.
-func (g *fakeGateway) dial(ctx context.Context) (io.ReadWriteCloser, error) {
+func (g *fakeProxy) dial(ctx context.Context) (io.ReadWriteCloser, error) {
 	return g.dialProvider(ctx, g.provider)
 }
 
 // dialWith returns a dial seam bound to a non-scriptedProvider (e.g. a blocking
 // provider) for tests that need custom CallTool behavior.
-func (g *fakeGateway) dialWith(p mcp.ToolProvider) func(ctx context.Context) (io.ReadWriteCloser, error) {
+func (g *fakeProxy) dialWith(p mcp.ToolProvider) func(ctx context.Context) (io.ReadWriteCloser, error) {
 	return func(ctx context.Context) (io.ReadWriteCloser, error) {
 		return g.dialProvider(ctx, p)
 	}
 }
 
-func (g *fakeGateway) dialProvider(_ context.Context, p mcp.ToolProvider) (io.ReadWriteCloser, error) {
+func (g *fakeProxy) dialProvider(_ context.Context, p mcp.ToolProvider) (io.ReadWriteCloser, error) {
 	clientEnd, serverEnd := net.Pipe()
 	g.mu.Lock()
 	g.ready = make(chan struct{})
 	g.mu.Unlock()
 	go func() {
 		_ = mcp.Serve(context.Background(), serverEnd, mcp.ServerOptions{
-			Info:        mcp.Implementation{Name: "fake-gateway", Version: "test"},
+			Info:        mcp.Implementation{Name: "fake-proxy", Version: "test"},
 			Provider:    p,
 			ListChanged: g.listChanged,
 			OnSession: func(s *mcp.ServerSession) {
@@ -92,7 +92,7 @@ func (g *fakeGateway) dialProvider(_ context.Context, p mcp.ToolProvider) (io.Re
 
 // notifyListChanged waits for the session to come up then fires a
 // tools/list_changed notification.
-func (g *fakeGateway) notifyListChanged(t *testing.T) {
+func (g *fakeProxy) notifyListChanged(t *testing.T) {
 	t.Helper()
 	g.mu.Lock()
 	ready := g.ready
@@ -100,7 +100,7 @@ func (g *fakeGateway) notifyListChanged(t *testing.T) {
 	select {
 	case <-ready:
 	case <-time.After(2 * time.Second):
-		t.Fatal("gateway session did not come up")
+		t.Fatal("proxy session did not come up")
 	}
 	g.mu.Lock()
 	s := g.session
@@ -110,8 +110,8 @@ func (g *fakeGateway) notifyListChanged(t *testing.T) {
 	}
 }
 
-// closeSession tears down the current server session, simulating a gateway drop.
-func (g *fakeGateway) closeSession(t *testing.T) {
+// closeSession tears down the current server session, simulating a proxy drop.
+func (g *fakeProxy) closeSession(t *testing.T) {
 	t.Helper()
 	g.mu.Lock()
 	ready := g.ready
@@ -119,7 +119,7 @@ func (g *fakeGateway) closeSession(t *testing.T) {
 	select {
 	case <-ready:
 	case <-time.After(2 * time.Second):
-		t.Fatal("gateway session did not come up")
+		t.Fatal("proxy session did not come up")
 	}
 	g.mu.Lock()
 	s := g.session
@@ -155,12 +155,12 @@ func (p *blockingProvider) CallTool(ctx context.Context, name string, args json.
 	return nil, ctx.Err()
 }
 
-// newScriptedConn builds a Conn dialing a fresh fakeGateway session advertising
+// newScriptedConn builds a Conn dialing a fresh fakeProxy session advertising
 // the given tools. The returned cleanup closes the Conn.
 func newScriptedConn(t *testing.T, provider *scriptedProvider, advertised []mcp.Tool) (*Conn, func()) {
 	t.Helper()
 	provider.tools = advertised
-	g := &fakeGateway{provider: provider}
+	g := &fakeProxy{provider: provider}
 	conn := NewConn(Options{
 		Info: mcp.Implementation{Name: "harness", Version: "test"},
 		dial: g.dial,

@@ -1,4 +1,4 @@
-package mcpgateway
+package mcpproxy
 
 import (
 	"encoding/json"
@@ -29,7 +29,7 @@ import (
 //	HELPER_TOOLS2=x,y        the post-list_changed tool set
 //	HELPER_STDERR=line       write this line to stderr at startup
 //	HELPER_STDERR_BURST=n    write n newline-free bytes to stderr at startup (to
-//	                         overflow the gateway's 1 MB scanner buffer)
+//	                         overflow the proxy's 1 MB scanner buffer)
 //	HELPER_BAD_VERSION       respond to initialize with an unsupported version
 //	HELPER_HANG_NO_INIT      start and never answer initialize; ignores stdin
 //	HELPER_FAIL_LIST         return a JSON-RPC error for tools/list
@@ -58,8 +58,8 @@ func runHelperServer() {
 	if line := os.Getenv("HELPER_STDERR"); line != "" {
 		fmt.Fprintln(os.Stderr, line)
 	}
-	// A single newline-free burst larger than the gateway's 1 MB scanner buffer:
-	// the scanner errors out, and the gateway must fall back to draining (else the
+	// A single newline-free burst larger than the proxy's 1 MB scanner buffer:
+	// the scanner errors out, and the proxy must fall back to draining (else the
 	// child blocks on write once the pipe buffer fills, wedging its tool calls).
 	if n := atoiOr(os.Getenv("HELPER_STDERR_BURST"), 0); n > 0 {
 		burst := make([]byte, n)

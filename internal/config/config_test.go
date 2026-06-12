@@ -716,13 +716,13 @@ func TestMCPDefaults(t *testing.T) {
 	if c.MCP.Enable {
 		t.Errorf("MCP.Enable default = true, want false")
 	}
-	if c.MCP.Gateway != "" {
-		t.Errorf("MCP.Gateway default = %q, want empty (resolved at use)", c.MCP.Gateway)
+	if c.MCP.Proxy != "" {
+		t.Errorf("MCP.Proxy default = %q, want empty (resolved at use)", c.MCP.Proxy)
 	}
 }
 
 func TestMCPFromFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"http://127.0.0.1:8766"}}`)
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"proxy":"http://127.0.0.1:8766"}}`)
 	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -730,16 +730,16 @@ func TestMCPFromFile(t *testing.T) {
 	if !c.MCP.Enable {
 		t.Errorf("MCP.Enable = false, want true")
 	}
-	if c.MCP.Gateway != "http://127.0.0.1:8766" {
-		t.Errorf("MCP.Gateway = %q, want http://127.0.0.1:8766", c.MCP.Gateway)
+	if c.MCP.Proxy != "http://127.0.0.1:8766" {
+		t.Errorf("MCP.Proxy = %q, want http://127.0.0.1:8766", c.MCP.Proxy)
 	}
 }
 
 func TestMCPEnvOverridesFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"mcp":{"enable":false,"gateway":"http://file.example/mcp"}}`)
+	cfgPath := writeConfig(t, `{"mcp":{"enable":false,"proxy":"http://file.example/mcp"}}`)
 	env := envFrom(map[string]string{
-		"HARNESS_MCP_ENABLE":  "true",
-		"HARNESS_MCP_GATEWAY": "http://env.example/mcp",
+		"HARNESS_MCP_ENABLE": "true",
+		"HARNESS_MCP_PROXY":  "http://env.example/mcp",
 	})
 	c, err := Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
 	if err != nil {
@@ -748,8 +748,8 @@ func TestMCPEnvOverridesFile(t *testing.T) {
 	if !c.MCP.Enable {
 		t.Errorf("MCP.Enable = false, want true (env overrides file)")
 	}
-	if c.MCP.Gateway != "http://env.example/mcp" {
-		t.Errorf("MCP.Gateway = %q, want http://env.example/mcp (env overrides file)", c.MCP.Gateway)
+	if c.MCP.Proxy != "http://env.example/mcp" {
+		t.Errorf("MCP.Proxy = %q, want http://env.example/mcp (env overrides file)", c.MCP.Proxy)
 	}
 }
 
@@ -779,7 +779,7 @@ func TestMCPEnableBoolParsing(t *testing.T) {
 
 // TestMCPHeadersFromFile decodes the "headers" map under the "mcp" object.
 func TestMCPHeadersFromFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"https://gw.example/mcp","headers":{"Authorization":"Bearer tok","X-Env":"prod"}}}`)
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"proxy":"https://proxy.example/mcp","headers":{"Authorization":"Bearer tok","X-Env":"prod"}}}`)
 	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -790,8 +790,8 @@ func TestMCPHeadersFromFile(t *testing.T) {
 	if got := c.MCP.Headers["X-Env"]; got != "prod" {
 		t.Errorf("Headers[X-Env] = %q, want %q", got, "prod")
 	}
-	if c.MCP.Gateway != "https://gw.example/mcp" {
-		t.Errorf("Gateway = %q, want the http URL", c.MCP.Gateway)
+	if c.MCP.Proxy != "https://proxy.example/mcp" {
+		t.Errorf("Proxy = %q, want the http URL", c.MCP.Proxy)
 	}
 }
 
@@ -826,7 +826,7 @@ func TestMCPHeadersUnsetEnvRefErrors(t *testing.T) {
 // Headers nil (not an empty map), and that there is NO env var for headers: an
 // env that looks header-ish cannot leak into the resolved map.
 func TestMCPHeadersAbsentIsNil(t *testing.T) {
-	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"https://gw.example/mcp"}}`)
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"proxy":"https://proxy.example/mcp"}}`)
 	// Throw a plausible-but-irrelevant env at Load; headers are config-file-only.
 	env := envFrom(map[string]string{
 		"HARNESS_MCP_HEADERS":       `{"Authorization":"leak"}`,

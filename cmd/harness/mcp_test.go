@@ -23,7 +23,7 @@ import (
 	"harness/internal/llm/llmtest"
 	"harness/internal/logging"
 	"harness/internal/mcp"
-	"harness/internal/mcpgateway"
+	"harness/internal/mcpproxy"
 	"harness/internal/mcptools"
 	"harness/internal/mode"
 	"harness/internal/tools"
@@ -99,10 +99,10 @@ func mcpTool(name string) mcp.Tool {
 	return mcp.Tool{Name: name, InputSchema: json.RawMessage(`{"type":"object"}`)}
 }
 
-// fakeGateway is a stream MCP server backed by provider, already accepting
+// fakeProxy is a stream MCP server backed by provider, already accepting
 // local test connections and serving one mcp.Serve session each. It captures the
 // most recent session so a test can fire tools/list_changed.
-type fakeGateway struct {
+type fakeProxy struct {
 	path     string
 	provider mcp.ToolProvider
 	ln       net.Listener
@@ -112,10 +112,10 @@ type fakeGateway struct {
 }
 
 // start begins accepting connections, serving one mcp.Serve session each.
-func (g *fakeGateway) start() {
+func (g *fakeProxy) start() {
 	ln, err := net.Listen("unix", g.path)
 	if err != nil {
-		panic("fakeGateway listen: " + err.Error())
+		panic("fakeProxy listen: " + err.Error())
 	}
 	g.ln = ln
 	go func() {
@@ -126,7 +126,7 @@ func (g *fakeGateway) start() {
 			}
 			go func() {
 				_ = mcp.Serve(context.Background(), conn, mcp.ServerOptions{
-					Info:        mcp.Implementation{Name: "fake-gateway", Version: "test"},
+					Info:        mcp.Implementation{Name: "fake-proxy", Version: "test"},
 					Provider:    g.provider,
 					ListChanged: true,
 					OnSession: func(s *mcp.ServerSession) {
@@ -140,27 +140,27 @@ func (g *fakeGateway) start() {
 	}()
 }
 
-func (g *fakeGateway) close() {
+func (g *fakeProxy) close() {
 	if g.ln != nil {
 		_ = g.ln.Close()
 	}
 }
 
-func (g *fakeGateway) dial(ctx context.Context) (io.ReadWriteCloser, error) {
+func (g *fakeProxy) dial(ctx context.Context) (io.ReadWriteCloser, error) {
 	var d net.Dialer
 	return d.DialContext(ctx, "unix", g.path)
 }
 
-// startFakeGateway returns a gateway already accepting connections on a unix
+// startFakeProxy returns a proxy already accepting connections on a unix
 // socket under a short temp dir (sun_path length — t.TempDir nests too deep).
-func startFakeGateway(t *testing.T, provider mcp.ToolProvider) *fakeGateway {
+func startFakeProxy(t *testing.T, provider mcp.ToolProvider) *fakeProxy {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "hmg-harness")
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	g := &fakeGateway{path: filepath.Join(dir, "gw.sock"), provider: provider}
+	g := &fakeProxy{path: filepath.Join(dir, "proxy.sock"), provider: provider}
 	g.start()
 	t.Cleanup(g.close)
 	return g
@@ -169,13 +169,13 @@ func startFakeGateway(t *testing.T, provider mcp.ToolProvider) *fakeGateway {
 // notifyListChanged fires tools/list_changed on the current session and waits
 // for conn to observe it (the notification crosses the socket on the client's
 // read goroutine), so the dirty flag is deterministically set before return.
-func (g *fakeGateway) notifyListChanged(t *testing.T, conn *mcptools.Conn) {
+func (g *fakeProxy) notifyListChanged(t *testing.T, conn *mcptools.Conn) {
 	t.Helper()
 	g.mu.Lock()
 	s := g.session
 	g.mu.Unlock()
 	if s == nil {
-		t.Fatal("no live gateway session to notify")
+		t.Fatal("no live proxy session to notify")
 	}
 	if err := s.NotifyToolsListChanged(); err != nil {
 		t.Fatalf("NotifyToolsListChanged: %v", err)
@@ -204,11 +204,11 @@ func mcpToolCallStep(id, name, args string) llmtest.Step {
 }
 
 // TestSetupMCPRegistersToolsAndOneShotCalls drives a full one-shot run with MCP
-// enabled against a real HTTP MCP gateway handler: the scripted model calls
+// enabled against a real HTTP MCP proxy handler: the scripted model calls
 // mcp__test__echo, and the echoed result must flow back into the next request's
 // transcript.
 func TestSetupMCPRegistersToolsAndOneShotCalls(t *testing.T) {
-	url, _ := startHTTPGateway(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
+	url, _ := startHTTPProxy(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
 
 	fp := llmtest.New("fake",
 		mcpToolCallStep("call_1", "mcp__test__echo", `{"text":"hi"}`),
@@ -238,10 +238,10 @@ func TestSetupMCPRegistersToolsAndOneShotCalls(t *testing.T) {
 	}
 }
 
-// TestSetupMCPRejectsNonHTTPGatewayAndContinues enables MCP with a non-HTTP
-// gateway value. Startup must proceed, emit a single [warn] [mcp] line naming
-// the bad gateway, register zero mcp__ tools, and return a no-op cleanup.
-func TestSetupMCPRejectsNonHTTPGatewayAndContinues(t *testing.T) {
+// TestSetupMCPRejectsNonHTTPProxyAndContinues enables MCP with a non-HTTP
+// proxy value. Startup must proceed, emit a single [warn] [mcp] line naming
+// the bad proxy, register zero mcp__ tools, and return a no-op cleanup.
+func TestSetupMCPRejectsNonHTTPProxyAndContinues(t *testing.T) {
 	catalog := tools.Catalog()
 	before := len(catalog.Names())
 
@@ -250,7 +250,7 @@ func TestSetupMCPRejectsNonHTTPGatewayAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Gateway: "/no/such.sock"}, catalog, logger)
+	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Proxy: "/no/such.sock"}, catalog, logger)
 	defer cleanup()
 
 	if ok || conn != nil {
@@ -263,7 +263,7 @@ func TestSetupMCPRejectsNonHTTPGatewayAndContinues(t *testing.T) {
 		t.Errorf("expected [warn] [mcp] line, got %q", errw.String())
 	}
 	if !strings.Contains(errw.String(), "/no/such.sock") || !strings.Contains(errw.String(), "http(s) URL") {
-		t.Errorf("warning should name the invalid gateway, got %q", errw.String())
+		t.Errorf("warning should name the invalid proxy, got %q", errw.String())
 	}
 	if strings.Count(errw.String(), "[warn]") != 1 {
 		t.Errorf("expected exactly one warning, got %q", errw.String())
@@ -277,7 +277,7 @@ func TestSetupMCPRejectsNonHTTPGatewayAndContinues(t *testing.T) {
 
 // httpAuthMiddleware wraps an mcp HTTP handler, counting requests and recording
 // the Authorization header seen on each, so a test can assert the configured
-// header reached the gateway on every request.
+// header reached the proxy on every request.
 type httpAuthMiddleware struct {
 	next     http.Handler
 	mu       sync.Mutex
@@ -307,13 +307,13 @@ func (m *httpAuthMiddleware) allHadAuth(want string) bool {
 	return true
 }
 
-// startHTTPGateway starts an httptest server running a real mcp.NewHTTPHandler
+// startHTTPProxy starts an httptest server running a real mcp.NewHTTPHandler
 // (the streamable-HTTP server) over provider, wrapped in an auth-counting
 // middleware. It returns the bound URL and the middleware for assertions.
-func startHTTPGateway(t *testing.T, provider mcp.ToolProvider) (string, *httpAuthMiddleware) {
+func startHTTPProxy(t *testing.T, provider mcp.ToolProvider) (string, *httpAuthMiddleware) {
 	t.Helper()
 	handler := mcp.NewHTTPHandler(mcp.HTTPHandlerOptions{
-		Info:     mcp.Implementation{Name: "test-http-gateway", Version: "test"},
+		Info:     mcp.Implementation{Name: "test-http-proxy", Version: "test"},
 		Provider: provider,
 	})
 	mw := &httpAuthMiddleware{next: handler}
@@ -322,29 +322,29 @@ func startHTTPGateway(t *testing.T, provider mcp.ToolProvider) (string, *httpAut
 	return srv.URL, mw
 }
 
-// writeHarnessConfig writes a harness config.json carrying an mcp block (gateway
+// writeHarnessConfig writes a harness config.json carrying an mcp block (proxy
 // URL + headers, which are config-file-only) and returns its path. Headers have
 // no env var, so a header-bearing integration test must drive them through a
 // file.
-func writeHarnessConfig(t *testing.T, gatewayURL, authHeader string) string {
+func writeHarnessConfig(t *testing.T, proxyURL, authHeader string) string {
 	t.Helper()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.json")
-	body := fmt.Sprintf(`{"mcp":{"enable":true,"gateway":%q,"headers":{"Authorization":%q}}}`, gatewayURL, authHeader)
+	body := fmt.Sprintf(`{"mcp":{"enable":true,"proxy":%q,"headers":{"Authorization":%q}}}`, proxyURL, authHeader)
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	return p
 }
 
-// TestSetupMCPHTTPGatewayRoundTrip drives a full one-shot run with MCP enabled
-// against a REAL streamable-HTTP gateway: the gateway URL and an Authorization
+// TestSetupMCPHTTPProxyRoundTrip drives a full one-shot run with MCP enabled
+// against a REAL streamable-HTTP proxy: the proxy URL and an Authorization
 // header come from a config file (headers are config-file-only). The scripted
 // model calls mcp__test__echo, the echoed result must flow back into the next
-// request's transcript, and the configured header must have reached the gateway
+// request's transcript, and the configured header must have reached the proxy
 // on every request.
-func TestSetupMCPHTTPGatewayRoundTrip(t *testing.T) {
-	url, mw := startHTTPGateway(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
+func TestSetupMCPHTTPProxyRoundTrip(t *testing.T) {
+	url, mw := startHTTPProxy(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
 	cfgPath := writeHarnessConfig(t, url, "Bearer secret-tok")
 
 	fp := llmtest.New("fake",
@@ -374,11 +374,11 @@ func TestSetupMCPHTTPGatewayRoundTrip(t *testing.T) {
 		t.Errorf("expected mcp connected notice on stderr, got %q", errw.String())
 	}
 	if !mw.allHadAuth("Bearer secret-tok") {
-		t.Errorf("Authorization header did not reach the gateway on every request")
+		t.Errorf("Authorization header did not reach the proxy on every request")
 	}
 }
 
-// TestSetupMCPHTTPUnreachableWarnsAndContinues points the gateway URL at a
+// TestSetupMCPHTTPUnreachableWarnsAndContinues points the proxy URL at a
 // closed port: setup must fail soft on the Register attempt, emit a single
 // MCP-unavailable warning naming the URL, and let the run continue.
 func TestSetupMCPHTTPUnreachableWarnsAndContinues(t *testing.T) {
@@ -398,7 +398,7 @@ func TestSetupMCPHTTPUnreachableWarnsAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Gateway: deadURL}, catalog, logger)
+	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Proxy: deadURL}, catalog, logger)
 	defer cleanup()
 
 	if ok || conn != nil {
@@ -407,7 +407,7 @@ func TestSetupMCPHTTPUnreachableWarnsAndContinues(t *testing.T) {
 	if got := len(catalog.Names()); got != before {
 		t.Errorf("catalog grew from %d to %d; no MCP tools should register", before, got)
 	}
-	if !strings.Contains(errw.String(), "cannot connect to gateway at "+deadURL) {
+	if !strings.Contains(errw.String(), "cannot connect to proxy at "+deadURL) {
 		t.Errorf("warning should name the dead URL, got %q", errw.String())
 	}
 	if strings.Count(errw.String(), "[warn]") != 1 {
@@ -415,15 +415,15 @@ func TestSetupMCPHTTPUnreachableWarnsAndContinues(t *testing.T) {
 	}
 }
 
-// TestResolveMCPGateway verifies an empty value resolves to the shared default
+// TestResolveMCPProxy verifies an empty value resolves to the shared default
 // HTTP URL and an http(s) URL passes through verbatim.
-func TestResolveMCPGateway(t *testing.T) {
-	if got := resolveMCPGateway(""); got != mcpgateway.DefaultURL() {
-		t.Errorf("resolveMCPGateway(\"\") = %q, want %q", got, mcpgateway.DefaultURL())
+func TestResolveMCPProxy(t *testing.T) {
+	if got := resolveMCPProxy(""); got != mcpproxy.DefaultURL() {
+		t.Errorf("resolveMCPProxy(\"\") = %q, want %q", got, mcpproxy.DefaultURL())
 	}
-	for _, url := range []string{"http://127.0.0.1:8080/mcp", "https://gw.example/mcp", "HTTP://up.example"} {
-		if got := resolveMCPGateway(url); got != url {
-			t.Errorf("resolveMCPGateway(%q) = %q, want verbatim pass-through", url, got)
+	for _, url := range []string{"http://127.0.0.1:8080/mcp", "https://proxy.example/mcp", "HTTP://up.example"} {
+		if got := resolveMCPProxy(url); got != url {
+			t.Errorf("resolveMCPProxy(%q) = %q, want verbatim pass-through", url, got)
 		}
 	}
 }
@@ -440,11 +440,11 @@ func TestMCPConnectedLine(t *testing.T) {
 }
 
 // TestMCPRefresherAddsAndRemovesTools drives newMCPRefresher across a
-// list_changed: the gateway swaps one tool for another, and the returned subset
+// list_changed: the proxy swaps one tool for another, and the returned subset
 // must reflect the addition and removal with the correct notice.
 func TestMCPRefresherAddsAndRemovesTools(t *testing.T) {
 	provider := &echoProvider{tools: []mcp.Tool{mcpTool("mcp__test__alpha"), mcpTool("mcp__test__beta")}}
-	g := startFakeGateway(t, provider)
+	g := startFakeProxy(t, provider)
 
 	catalog := tools.Catalog()
 	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
@@ -508,7 +508,7 @@ func TestMCPRefresherAddsAndRemovesTools(t *testing.T) {
 // modes are still re-derived so a later /mode switch stays valid.
 func TestMCPRefresherSkipsUnaffectedWhitelistMode(t *testing.T) {
 	provider := &echoProvider{tools: []mcp.Tool{mcpTool("mcp__test__alpha"), mcpTool("mcp__test__beta")}}
-	g := startFakeGateway(t, provider)
+	g := startFakeProxy(t, provider)
 
 	catalog := tools.Catalog()
 	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
@@ -549,7 +549,7 @@ func TestMCPRefresherSkipsUnaffectedWhitelistMode(t *testing.T) {
 // effective tool set shrank).
 func TestMCPRefresherSwapsWhitelistModeLosingTool(t *testing.T) {
 	provider := &echoProvider{tools: []mcp.Tool{mcpTool("mcp__test__alpha"), mcpTool("mcp__test__beta")}}
-	g := startFakeGateway(t, provider)
+	g := startFakeProxy(t, provider)
 
 	catalog := tools.Catalog()
 	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
@@ -585,7 +585,7 @@ func TestMCPRefresherSwapsWhitelistModeLosingTool(t *testing.T) {
 
 func TestMCPRefresherFailedRefreshKeepsDirtyForRetry(t *testing.T) {
 	provider := &flakyListProvider{tools: []mcp.Tool{mcpTool("mcp__test__alpha")}}
-	g := startFakeGateway(t, provider)
+	g := startFakeProxy(t, provider)
 
 	catalog := tools.Catalog()
 	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
@@ -630,7 +630,7 @@ func TestMCPRefresherFailedRefreshKeepsDirtyForRetry(t *testing.T) {
 // TestMCPRefresherNotDirtyFastPath confirms a clean conn returns nil without
 // re-listing.
 func TestMCPRefresherNotDirtyFastPath(t *testing.T) {
-	g := startFakeGateway(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
+	g := startFakeProxy(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
 	catalog := tools.Catalog()
 	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
 	defer conn.Close()
@@ -672,13 +672,13 @@ func TestAugmentModesWithMCP(t *testing.T) {
 
 // --- helpers ---
 
-func withMCPEnv(base func(string) string, gateway string) func(string) string {
+func withMCPEnv(base func(string) string, proxy string) func(string) string {
 	return func(k string) string {
 		switch k {
 		case "HARNESS_MCP_ENABLE":
 			return "true"
-		case "HARNESS_MCP_GATEWAY":
-			return gateway
+		case "HARNESS_MCP_PROXY":
+			return proxy
 		default:
 			return base(k)
 		}

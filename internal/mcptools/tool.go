@@ -28,7 +28,7 @@ func normalizeSchema(raw json.RawMessage) json.RawMessage {
 // maxDescBytes caps a tool's model-facing description (one line, byte-bounded).
 const maxDescBytes = 200
 
-// Tool adapts one gateway-discovered MCP tool to the harness tools.Tool
+// Tool adapts one proxy-discovered MCP tool to the harness tools.Tool
 // interface. It proxies tools/call over the shared Conn.
 type Tool struct {
 	name   string          // full mcp__<server>__<tool>, already prefixed+validated

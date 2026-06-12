@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 
 	"harness/internal/logging"
-	"harness/internal/mcpgateway"
+	"harness/internal/mcpproxy"
 )
 
 // serveCategory labels serve-level log records (config warnings, lifecycle).
 const (
-	serveCategory  = "mcp_gateway"
+	serveCategory  = "mcp_proxy"
 	configCategory = "mcp_config"
 )
 
@@ -34,13 +34,13 @@ func runServe(env environment, args []string) int {
 			usage(env.stdout, env.getenv)
 			return exitOK
 		}
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitUsage
 	}
 
-	cfg, err := mcpgateway.LoadConfig(resolveConfigPath(*configPath, flagWasSet(fs, "config"), env.getenv))
+	cfg, err := mcpproxy.LoadConfig(resolveConfigPath(*configPath, flagWasSet(fs, "config"), env.getenv))
 	if err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitRuntime
 	}
 
@@ -56,7 +56,7 @@ func runServe(env environment, args []string) int {
 		level = *logLevel
 	}
 	if _, err := logging.ParseLevel(level); err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitUsage
 	}
 
@@ -67,14 +67,14 @@ func runServe(env environment, args []string) int {
 		stderr:     env.stderr,
 	})
 	if err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitRuntime
 	}
 	defer closeSink()
 
 	logger, err := logging.NewLogger(sink, level, false)
 	if err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitUsage
 	}
 
@@ -98,11 +98,11 @@ func runServe(env environment, args []string) int {
 		}()
 	}
 
-	d := mcpgateway.NewDaemon(cfg, logger)
+	d := mcpproxy.NewDaemon(cfg, logger)
 	err = d.Run(ctx)
 	if err != nil {
-		logger.Error("gateway exited", logging.Category(serveCategory), "err", err)
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		logger.Error("proxy exited", logging.Category(serveCategory), "err", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitRuntime
 	}
 	return exitOK

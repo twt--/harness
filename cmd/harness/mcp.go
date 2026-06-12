@@ -12,7 +12,7 @@ import (
 	"harness/internal/config"
 	"harness/internal/logging"
 	"harness/internal/mcp"
-	"harness/internal/mcpgateway"
+	"harness/internal/mcpproxy"
 	"harness/internal/mcptools"
 	"harness/internal/mode"
 	"harness/internal/tools"
@@ -23,26 +23,26 @@ const (
 	mcpRegisterTimeout = 5 * time.Second
 )
 
-// setupMCP connects to the already-running HTTP gateway, registers the
+// setupMCP connects to the already-running HTTP proxy, registers the
 // discovered tools into catalog, and returns the live conn plus its initial
 // registration summary and a cleanup func. It NEVER fails harness startup: if
-// the gateway is unreachable or registration fails it logs a single warning via
+// the proxy is unreachable or registration fails it logs a single warning via
 // logger and returns ok=false with a nil conn and a no-op cleanup, so the caller
-// can defer cleanup unconditionally. The harness does not start the gateway;
-// that is the operator's job (run harness-mcp-gateway separately).
+// can defer cleanup unconditionally. The harness does not start the proxy;
+// that is the operator's job (run harness-mcp-proxy separately).
 //
 // The returned conn (when ok) backs tool dispatch; cleanup closes that conn (the
 // daemon itself keeps running and serving other sessions).
 func setupMCP(ctx context.Context, mcpCfg config.MCPConfig, catalog *tools.Registry, logger *slog.Logger) (conn *mcptools.Conn, summary mcptools.Summary, cleanup func(), ok bool) {
 	noop := func() {}
-	gateway := resolveMCPGateway(mcpCfg.Gateway)
-	if !isHTTPGateway(gateway) {
-		logger.Warn(fmt.Sprintf("mcp: cannot connect to gateway at %s: gateway must be an http(s) URL; MCP tools unavailable", gateway), logging.Category("mcp"))
+	proxy := resolveMCPProxy(mcpCfg.Proxy)
+	if !isHTTPProxy(proxy) {
+		logger.Warn(fmt.Sprintf("mcp: cannot connect to proxy at %s: proxy must be an http(s) URL; MCP tools unavailable", proxy), logging.Category("mcp"))
 		return nil, mcptools.Summary{}, noop, false
 	}
 
 	c := mcptools.NewConn(mcptools.Options{
-		Endpoint: gateway,
+		Endpoint: proxy,
 		Headers:  mcpCfg.Headers,
 		Info:     mcp.Implementation{Name: "harness", Version: "dev"},
 		Logger:   logger,
@@ -51,7 +51,7 @@ func setupMCP(ctx context.Context, mcpCfg config.MCPConfig, catalog *tools.Regis
 	defer cancel()
 	sum, err := mcptools.Register(regCtx, catalog, c)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("mcp: cannot connect to gateway at %s: %v; MCP tools unavailable", gateway, err), logging.Category("mcp"))
+		logger.Warn(fmt.Sprintf("mcp: cannot connect to proxy at %s: %v; MCP tools unavailable", proxy, err), logging.Category("mcp"))
 		_ = c.Close()
 		return nil, mcptools.Summary{}, noop, false
 	}
@@ -88,19 +88,19 @@ func augmentModesWithMCP(modes map[string]mode.Mode, mcpNames []string) {
 	}
 }
 
-// resolveMCPGateway turns the configured gateway value into a dialable HTTP URL.
-// An empty value resolves to the shared default gateway URL.
-func resolveMCPGateway(gateway string) string {
-	if gateway == "" {
-		return mcpgateway.DefaultURL()
+// resolveMCPProxy turns the configured proxy value into a dialable HTTP URL.
+// An empty value resolves to the shared default proxy URL.
+func resolveMCPProxy(proxy string) string {
+	if proxy == "" {
+		return mcpproxy.DefaultURL()
 	}
-	return gateway
+	return proxy
 }
 
-// isHTTPGateway reports whether gateway is an http(s) URL (case-insensitive
+// isHTTPProxy reports whether proxy is an http(s) URL (case-insensitive
 // scheme).
-func isHTTPGateway(gateway string) bool {
-	lower := strings.ToLower(gateway)
+func isHTTPProxy(proxy string) bool {
+	lower := strings.ToLower(proxy)
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
@@ -145,10 +145,10 @@ func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, modes map[str
 			return nil, ""
 		}
 
-		// Worst case, a gateway that hangs mid-re-list stalls this prompt for up to
+		// Worst case, a proxy that hangs mid-re-list stalls this prompt for up to
 		// mcpRegisterTimeout (~5s) before the warn-and-keep path fires, since the
 		// re-list runs synchronously at the prompt boundary. Accepted: it only
-		// happens on a misbehaving gateway after an explicit list_changed, the
+		// happens on a misbehaving proxy after an explicit list_changed, the
 		// bound is finite, and the alternative (background re-list racing the
 		// turn's Specs()/Dispatch reads) is the unsafe mid-turn swap we avoid.
 		ctx, cancel := context.WithTimeout(context.Background(), mcpRegisterTimeout)

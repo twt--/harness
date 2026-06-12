@@ -1,4 +1,4 @@
-package mcpgateway
+package mcpproxy
 
 import (
 	"context"
@@ -55,9 +55,9 @@ func freePort(t *testing.T) string {
 	return addr
 }
 
-// dialGateway builds an mcp.Client over the daemon's HTTP listener and
+// dialProxy builds an mcp.Client over the daemon's HTTP listener and
 // initializes it, polling until the listener accepts.
-func dialGateway(t *testing.T, addr string) *mcp.Client {
+func dialProxy(t *testing.T, addr string) *mcp.Client {
 	t.Helper()
 	endpoint := "http://" + addr
 	tr := mcp.NewHTTPTransport(mcp.HTTPOptions{Endpoint: endpoint})
@@ -70,7 +70,7 @@ func dialGateway(t *testing.T, addr string) *mcp.Client {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("initialize HTTP gateway: %v", err)
+	t.Fatalf("initialize HTTP proxy: %v", err)
 	return nil
 }
 
@@ -85,7 +85,7 @@ func TestDaemonServesHTTP(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
-	client := dialGateway(t, addr)
+	client := dialProxy(t, addr)
 	var tools []mcp.Tool
 	waitFor(t, 5*time.Second, func() bool {
 		var err error
@@ -142,7 +142,7 @@ func TestDaemonEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
-	client := dialGateway(t, cfg.Listen)
+	client := dialProxy(t, cfg.Listen)
 
 	// ListTools should eventually include the namespaced echo tool.
 	var tools []mcp.Tool
@@ -177,7 +177,7 @@ func TestDaemonAddressInUse(t *testing.T) {
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
 	// Wait for the first daemon to bind.
-	dialGateway(t, cfg.Listen).Close()
+	dialProxy(t, cfg.Listen).Close()
 
 	// A second daemon on the same address must return a bind error.
 	d2 := NewDaemon(cfg, slog.New(slog.DiscardHandler))
@@ -207,8 +207,8 @@ func TestDaemonConcurrentSessionsShareChild(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
-	c1 := dialGateway(t, cfg.Listen)
-	c2 := dialGateway(t, cfg.Listen)
+	c1 := dialProxy(t, cfg.Listen)
+	c2 := dialProxy(t, cfg.Listen)
 
 	var wg sync.WaitGroup
 	for _, c := range []*mcp.Client{c1, c2} {

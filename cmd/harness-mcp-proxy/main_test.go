@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"harness/internal/mcp"
-	"harness/internal/mcpgateway"
+	"harness/internal/mcpproxy"
 )
 
 // testEnv builds an environment with captured stdout/stderr and a getenv that
@@ -93,7 +93,7 @@ func TestRunVersionExit0(t *testing.T) {
 	if code := run(env); code != exitOK {
 		t.Fatalf("version: exit = %d, want %d", code, exitOK)
 	}
-	want := fmt.Sprintf("harness-mcp-gateway (MCP protocol %s)\n", mcp.ProtocolVersion)
+	want := fmt.Sprintf("harness-mcp-proxy (MCP protocol %s)\n", mcp.ProtocolVersion)
 	if out.String() != want {
 		t.Errorf("version output = %q, want %q", out.String(), want)
 	}
@@ -102,9 +102,9 @@ func TestRunVersionExit0(t *testing.T) {
 	}
 }
 
-// writeConfig writes a gateway config JSON file pointing its one server at the
+// writeConfig writes a proxy config JSON file pointing its one server at the
 // TestHelperProcess fake, and returns the file path. logFile, when non-empty,
-// is set as gateway.logFile so the test can read the captured log output.
+// is set as proxy.logFile so the test can read the captured log output.
 func writeConfig(t *testing.T, dir, logFile string, tools string) string {
 	t.Helper()
 	return writeConfigWithListen(t, dir, logFile, tools, "")
@@ -125,7 +125,7 @@ func writeConfigWithListen(t *testing.T, dir, logFile, tools, listen string) str
       "env": {"HELPER_MODE": "mcp", "HELPER_TOOLS": %q}
     }
   },
-  "gateway": {
+  "proxy": {
     "logFile": %q,
     "logLevel": "debug"%s
   }
@@ -227,7 +227,7 @@ func TestServeConfigWarningsSurfaceInLog(t *testing.T) {
       "env": {"HELPER_MODE": "mcp", "HELPER_TOOLS": "echo"}
     }
   },
-  "gateway": {"logFile": %q, "logLevel": "debug"}
+  "proxy": {"logFile": %q, "logLevel": "debug"}
 }`, os.Args[0], logFile)
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -287,7 +287,7 @@ func TestToolsListsAggregatedTools(t *testing.T) {
 	url := "http://" + addr
 	waitForToolCount(t, url, 2, 5*time.Second)
 
-	env, out, errw := testEnv(t, []string{"tools", "-gateway", url})
+	env, out, errw := testEnv(t, []string{"tools", "-proxy", url})
 	if code := run(env); code != exitOK {
 		t.Fatalf("tools: exit = %d, want %d; stderr=%q", code, exitOK, errw.String())
 	}
@@ -322,9 +322,9 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// TestServeListenFlagAndToolsGateway drives the serve -listen flag end to end:
-// the daemon binds an HTTP listener, and `tools -gateway` queries it.
-func TestServeListenFlagAndToolsGateway(t *testing.T) {
+// TestServeListenFlagAndToolsProxy drives the serve -listen flag end to end:
+// the daemon binds an HTTP listener, and `tools -proxy` queries it.
+func TestServeListenFlagAndToolsProxy(t *testing.T) {
 	dir := t.TempDir()
 	addr := freeAddr(t)
 	cfgPath := writeConfig(t, t.TempDir(), filepath.Join(dir, "srv.log"), "echo,ping")
@@ -338,25 +338,25 @@ func TestServeListenFlagAndToolsGateway(t *testing.T) {
 	codeCh := make(chan int, 1)
 	go func() { codeCh <- runServe(serveEnv, serveEnv.args) }()
 
-	// Poll the HTTP listener (via tools -gateway) until the downstream tools are
+	// Poll the HTTP listener (via tools -proxy) until the downstream tools are
 	// aggregated and served.
 	url := "http://" + addr
 	var out *bytes.Buffer
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var env environment
-		env, out, _ = testEnv(t, []string{"tools", "-gateway", url})
+		env, out, _ = testEnv(t, []string{"tools", "-proxy", url})
 		if run(env) == exitOK && strings.HasPrefix(out.String(), "2 tools\n") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("tools -gateway never returned 2 tools; last out=%q", out.String())
+			t.Fatalf("tools -proxy never returned 2 tools; last out=%q", out.String())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	for _, want := range []string{"mcp__fake__echo", "mcp__fake__ping"} {
 		if !strings.Contains(out.String(), want) {
-			t.Errorf("tools -gateway output missing %q; out=%q", want, out.String())
+			t.Errorf("tools -proxy output missing %q; out=%q", want, out.String())
 		}
 	}
 
@@ -402,20 +402,20 @@ func TestToolsConnectionFailureExit1(t *testing.T) {
 	url := "http://" + ln.Addr().String()
 	_ = ln.Close()
 
-	env, out, errw := testEnv(t, []string{"tools", "-gateway", url})
+	env, out, errw := testEnv(t, []string{"tools", "-proxy", url})
 	if code := run(env); code != exitRuntime {
-		t.Fatalf("tools (no gateway): exit = %d, want %d", code, exitRuntime)
+		t.Fatalf("tools (no proxy): exit = %d, want %d", code, exitRuntime)
 	}
 	if out.Len() != 0 {
 		t.Errorf("connection failure should not print a table; stdout=%q", out.String())
 	}
-	wantPrefix := fmt.Sprintf("harness-mcp-gateway: cannot connect to gateway at %s:", url)
+	wantPrefix := fmt.Sprintf("harness-mcp-proxy: cannot connect to proxy at %s:", url)
 	if !strings.HasPrefix(errw.String(), wantPrefix) {
 		t.Errorf("connection-failure message wrong;\n got: %q\nwant prefix: %q", errw.String(), wantPrefix)
 	}
 }
 
-func TestToolsCommandTimesOutWhenGatewayHangs(t *testing.T) {
+func TestToolsCommandTimesOutWhenProxyHangs(t *testing.T) {
 	oldTimeout := toolsCommandTimeout
 	toolsCommandTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { toolsCommandTimeout = oldTimeout })
@@ -425,26 +425,26 @@ func TestToolsCommandTimesOutWhenGatewayHangs(t *testing.T) {
 		<-release
 	}))
 
-	env, out, errw := testEnv(t, []string{"tools", "-gateway", srv.URL})
+	env, out, errw := testEnv(t, []string{"tools", "-proxy", srv.URL})
 	code := run(env)
 	close(release)
 	srv.Close()
 	if code != exitRuntime {
-		t.Fatalf("tools hanging gateway exit = %d, want %d", code, exitRuntime)
+		t.Fatalf("tools hanging proxy exit = %d, want %d", code, exitRuntime)
 	}
 	if out.Len() != 0 {
-		t.Fatalf("hanging gateway should not print table; stdout=%q", out.String())
+		t.Fatalf("hanging proxy should not print table; stdout=%q", out.String())
 	}
 	if !strings.Contains(errw.String(), "context deadline exceeded") {
 		t.Fatalf("stderr should mention timeout, got %q", errw.String())
 	}
 }
 
-// TestToolsMissingDefaultConfigFallsBackToDefaultGateway guards that a fresh
+// TestToolsMissingDefaultConfigFallsBackToDefaultProxy guards that a fresh
 // user with no config file and no -config flag does not hit a "config not
 // found" error: the missing DEFAULT path resolves to an empty config and the
-// default HTTP gateway URL.
-func TestToolsMissingDefaultConfigFallsBackToDefaultGateway(t *testing.T) {
+// default HTTP proxy URL.
+func TestToolsMissingDefaultConfigFallsBackToDefaultProxy(t *testing.T) {
 	// HOME points at an empty temp dir, so the default config path does not exist.
 	home := t.TempDir()
 	getenv := func(k string) string {
@@ -457,12 +457,12 @@ func TestToolsMissingDefaultConfigFallsBackToDefaultGateway(t *testing.T) {
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 		getenv: getenv,
 	}
-	got, code := resolveToolsGateway(env, flag.NewFlagSet("tools", flag.ContinueOnError), "", "")
+	got, code := resolveToolsProxy(env, flag.NewFlagSet("tools", flag.ContinueOnError), "", "")
 	if code != exitOK {
-		t.Fatalf("resolveToolsGateway exit = %d, want %d", code, exitOK)
+		t.Fatalf("resolveToolsProxy exit = %d, want %d", code, exitOK)
 	}
-	if got != "http://"+mcpgateway.DefaultListen {
-		t.Errorf("default gateway = %q, want http://%s", got, mcpgateway.DefaultListen)
+	if got != "http://"+mcpproxy.DefaultListen {
+		t.Errorf("default proxy = %q, want http://%s", got, mcpproxy.DefaultListen)
 	}
 }
 
@@ -481,7 +481,7 @@ func TestServeExplicitMissingConfigErrors(t *testing.T) {
 	}
 }
 
-// waitForToolCount connects to the HTTP gateway and polls ListTools until it
+// waitForToolCount connects to the HTTP proxy and polls ListTools until it
 // reports n tools or the deadline passes.
 func waitForToolCount(t *testing.T, url string, n int, d time.Duration) {
 	t.Helper()
@@ -505,7 +505,7 @@ func waitForToolCount(t *testing.T, url string, n int, d time.Duration) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("gateway %s did not reach %d tools within %s", url, n, d)
+	t.Fatalf("proxy %s did not reach %d tools within %s", url, n, d)
 }
 
 func waitForFileContains(t *testing.T, path, substr string, d time.Duration) {

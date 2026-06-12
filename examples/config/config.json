@@ -16,7 +16,7 @@
   "no_color": false,
   "mcp": {
     "enable": false,
-    "gateway": "",
+    "proxy": "",
     "headers": {}
   }
 }

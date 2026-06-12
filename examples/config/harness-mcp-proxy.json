@@ -11,7 +11,7 @@
       "headers": { "Authorization": "Bearer ${SEARCH_TOKEN:-dev-token}" }
     }
   },
-  "gateway": {
+  "proxy": {
     "listen": "127.0.0.1:8766",
     "logFile": "",
     "logLevel": "info"

@@ -1,9 +1,9 @@
-// Package mcptools adapts gateway-discovered MCP tools to the harness
+// Package mcptools adapts proxy-discovered MCP tools to the harness
 // tools.Tool interface. Each tool proxies tools/call over a shared, reconnecting
-// connection to the MCP gateway. It lives outside internal/tools (mirroring
+// connection to the MCP proxy. It lives outside internal/tools (mirroring
 // internal/delegate) to avoid an import cycle: it imports both internal/mcp and
 // internal/tools, and must not pull internal/llm or internal/agent into the
-// gateway's dependency graph.
+// proxy's dependency graph.
 package mcptools
 
 import (
@@ -28,10 +28,10 @@ const initTimeout = 10 * time.Second
 
 // Options configures a Conn.
 type Options struct {
-	// Endpoint is the HTTP gateway URL.
+	// Endpoint is the HTTP proxy URL.
 	Endpoint string
 	// Headers are static request headers (e.g. Authorization) sent on every
-	// request to the gateway.
+	// request to the proxy.
 	Headers map[string]string
 	Info    mcp.Implementation // clientInfo (harness name/version)
 	Logger  *slog.Logger
@@ -50,9 +50,9 @@ type Options struct {
 }
 
 // Conn is a shared, lazily-reconnecting wrapper around a single *mcp.Client
-// session to the gateway. It spawns no goroutines of its own: reconnection is
+// session to the proxy. It spawns no goroutines of its own: reconnection is
 // synchronous on the calling goroutine, gated by a backoff timer so a down
-// gateway does not trigger a reconnect storm. The *mcp.Client owns its own read
+// proxy does not trigger a reconnect storm. The *mcp.Client owns its own read
 // goroutine, which Close tears down.
 type Conn struct {
 	info   mcp.Implementation
@@ -70,7 +70,7 @@ type Conn struct {
 	mu     sync.Mutex
 	client *mcp.Client // nil when disconnected
 	// http is the persistent streamable-HTTP transport, created lazily on first
-	// connect and REUSED across reconnects (matching the gateway supervisor's
+	// connect and REUSED across reconnects (matching the proxy supervisor's
 	// connectHTTP): after a session expiry the transport has cleared its session,
 	// so a fresh Client over the SAME transport re-runs Initialize and
 	// establishes a new session. nil only when tests inject dial.
@@ -80,7 +80,7 @@ type Conn struct {
 	failures int
 }
 
-// NewConn returns a Conn that dials the gateway lazily on first use. It does not
+// NewConn returns a Conn that dials the proxy lazily on first use. It does not
 // connect until CallTool or ListTools is called.
 func NewConn(opts Options) *Conn {
 	logger := opts.Logger
@@ -110,7 +110,7 @@ func NewConn(opts Options) *Conn {
 	return c
 }
 
-// ListTools returns the gateway's tools, reconnecting lazily if needed.
+// ListTools returns the proxy's tools, reconnecting lazily if needed.
 func (c *Conn) ListTools(ctx context.Context) ([]mcp.Tool, error) {
 	cl, err := c.ensure(ctx)
 	if err != nil {
@@ -154,7 +154,7 @@ func (c *Conn) ensure(ctx context.Context) (*mcp.Client, error) {
 
 	now := c.now()
 	if now.Before(c.nextTry) {
-		return nil, fmt.Errorf("mcp gateway unavailable (retry in %s): %w",
+		return nil, fmt.Errorf("mcp proxy unavailable (retry in %s): %w",
 			c.nextTry.Sub(now).Round(time.Millisecond), c.lastErr)
 	}
 
@@ -199,7 +199,7 @@ func (c *Conn) connect(ctx context.Context) (*mcp.Client, error) {
 // lazily on first connect, reused across reconnects) and initializes it. No
 // OnToolsChanged hook is wired: the streamable-HTTP transport has no inbound
 // notification channel, so tools/list_changed never fires, Dirty() stays false,
-// and the REPL refresh hook is a no-op for http gateways (accepted v1 behavior).
+// and the REPL refresh hook is a no-op for HTTP proxies (accepted v1 behavior).
 func (c *Conn) connectHTTP(ctx context.Context) (*mcp.Client, error) {
 	if c.http == nil {
 		c.http = mcp.NewHTTPTransport(mcp.HTTPOptions{
@@ -247,7 +247,7 @@ func (c *Conn) drop(cl *mcp.Client) {
 	_ = cl.Close()
 }
 
-// Dirty reports whether the gateway has signalled tools/list_changed since the
+// Dirty reports whether the proxy has signalled tools/list_changed since the
 // last ClearDirty. The prompt-boundary refresh consumes it.
 func (c *Conn) Dirty() bool { return c.dirty.Load() }
 

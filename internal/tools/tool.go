@@ -229,7 +229,7 @@ func (r *Registry) Register(t Tool) {
 // Remove deletes the named tool from the registry, dropping it from both the
 // lookup map and the order slice. It reports whether a tool was removed; an
 // absent name is a no-op returning false. The MCP prompt-boundary refresh uses
-// it to drop tools that vanish from the gateway between list_changed events.
+// it to drop tools that vanish from the proxy between list_changed events.
 func (r *Registry) Remove(name string) bool {
 	if _, ok := r.tools[name]; !ok {
 		return false

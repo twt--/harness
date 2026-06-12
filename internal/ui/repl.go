@@ -71,7 +71,7 @@ type App struct {
 	SwitchMode     func(name string) (ModeSelection, error)
 
 	// RefreshMCP, when set, is consulted at the idle-prompt boundary (just
-	// before a typed prompt starts a turn) to pick up gateway tool-list changes.
+	// before a typed prompt starts a turn) to pick up proxy tool-list changes.
 	// It is called with the current mode name; a non-nil registry replaces the
 	// agent's tools and notice is rendered. A nil registry means "no change".
 	// nil disables the hook (one-shot mode and tests leave it nil).
@@ -792,7 +792,7 @@ func (app *App) switchMode(name string) {
 	fmt.Fprintf(app.Errw, "[mode switched: %s]\n", selection.Name)
 }
 
-// refreshMCP applies any pending gateway tool-list change at the idle-prompt
+// refreshMCP applies any pending proxy tool-list change at the idle-prompt
 // boundary, mirroring switchMode's Agent.SetTools swap. It is a no-op when no
 // hook is installed or the hook reports no change, so MCP-disabled runs (the
 // default) and the one-shot path pay nothing.

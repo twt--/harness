@@ -1,4 +1,4 @@
-package mcpgateway
+package mcpproxy
 
 import (
 	"context"
@@ -58,7 +58,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer d.shutdown()
 
 	handler := mcp.NewHTTPHandler(mcp.HTTPHandlerOptions{
-		Info:     gatewayServerInfo(),
+		Info:     proxyServerInfo(),
 		Provider: d.registry,
 		Logger:   d.logger,
 	})
@@ -66,7 +66,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	srv.IdleTimeout = 120 * time.Second
 	d.logger.Info("serving MCP over HTTP", logging.Category(categoryGate), "addr", d.cfg.Listen)
 	if err := httpserve.Run(ctx, srv); err != nil {
-		return fmt.Errorf("mcpgateway: serve %s: %w", d.cfg.Listen, err)
+		return fmt.Errorf("mcpproxy: serve %s: %w", d.cfg.Listen, err)
 	}
 	return nil
 }
@@ -118,8 +118,8 @@ func (d *Daemon) shutdown() {
 	}
 }
 
-// gatewayServerInfo is the Implementation the gateway presents to harness as an
+// proxyServerInfo is the Implementation the proxy presents to harness as an
 // MCP server.
-func gatewayServerInfo() mcp.Implementation {
-	return mcp.Implementation{Name: "harness-mcp-gateway", Version: gatewayVersion}
+func proxyServerInfo() mcp.Implementation {
+	return mcp.Implementation{Name: "harness-mcp-proxy", Version: proxyVersion}
 }

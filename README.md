@@ -29,10 +29,10 @@ The end-to-end verification matrix is in [`docs/smoke.md`](docs/smoke.md).
 ```sh
 go build -o harness ./cmd/harness
 go build -o harness-model-proxy ./cmd/harness-model-proxy
-go build -o harness-mcp-gateway ./cmd/harness-mcp-gateway
+go build -o harness-mcp-proxy ./cmd/harness-mcp-proxy
 ```
 
-`make build` builds the same binaries. `harness-mcp-gateway` is only needed
+`make build` builds the same binaries. `harness-mcp-proxy` is only needed
 for the optional [MCP servers](#mcp-servers-optional) integration; `go build -o
 harness ./cmd/harness` alone produces just the main binary.
 
@@ -312,12 +312,12 @@ archived under the session directory when available.
 ## MCP servers (optional)
 
 Harness can expose tools from [Model Context Protocol](https://modelcontextprotocol.io)
-servers. A second binary, `harness-mcp-gateway`, owns every downstream MCP server
+servers. A second binary, `harness-mcp-proxy`, owns every downstream MCP server
 (spawning stdio children, dialing streamable-HTTP endpoints) and aggregates their
-tools into one namespaced surface; harness connects to that gateway over HTTP and
-registers each tool as an ordinary harness tool. Harness and the gateway speak
-MCP streamable HTTP (JSON-RPC 2.0, revision `2025-06-18`), so the gateway is a
-single shared daemon that many harness sessions reuse. You start the gateway
+tools into one namespaced surface; harness connects to that proxy over HTTP and
+registers each tool as an ordinary harness tool. Harness and the proxy speak
+MCP streamable HTTP (JSON-RPC 2.0, revision `2025-06-18`), so the proxy is a
+single shared daemon that many harness sessions reuse. You start the proxy
 yourself; harness never spawns it.
 
 ### Enabling it
@@ -328,21 +328,21 @@ MCP is **opt-in** and off by default. Turn it on in `~/.config/harness/config.js
 {
   "mcp": {
     "enable": true,
-    "gateway": ""
+    "proxy": ""
   }
 }
 ```
 
 or via environment: `HARNESS_MCP_ENABLE=true` and (optionally)
-`HARNESS_MCP_GATEWAY=http://127.0.0.1:8766`. There are no flags. An empty
-`gateway` resolves to `http://127.0.0.1:8766`. Precedence is the usual
-**env > config file > default**. `gateway` must be an `http(s)://` URL.
+`HARNESS_MCP_PROXY=http://127.0.0.1:8766`. There are no flags. An empty
+`proxy` resolves to `http://127.0.0.1:8766`. Precedence is the usual
+**env > config file > default**. `proxy` must be an `http(s)://` URL.
 
 ### Configuring downstream servers
 
-The gateway has its own config file, **separate from harness**, at
-`$XDG_CONFIG_HOME/harness-mcp-gateway/config.json` (else
-`~/.config/harness-mcp-gateway/config.json`). It is Claude Code-compatible:
+The proxy has its own config file, **separate from harness**, at
+`$XDG_CONFIG_HOME/harness-mcp-proxy/config.json` (else
+`~/.config/harness-mcp-proxy/config.json`). It is Claude Code-compatible:
 
 ```json
 {
@@ -358,7 +358,7 @@ The gateway has its own config file, **separate from harness**, at
       "headers": { "Authorization": "Bearer ${SEARCH_TOKEN}" }
     }
   },
-  "gateway": {
+  "proxy": {
     "listen": "127.0.0.1:8766",
     "logFile": "",
     "logLevel": "info"
@@ -366,73 +366,73 @@ The gateway has its own config file, **separate from harness**, at
 }
 ```
 
-`gateway.listen` defaults to `127.0.0.1:8766`; set it to another address such as
+`proxy.listen` defaults to `127.0.0.1:8766`; set it to another address such as
 `127.0.0.1:8420` when you need a different port or host. A server with no `type`
 (or `"stdio"`) is a child process (`command`/`args`/`env`); `"http"` is a
 streamable-HTTP endpoint (`url`/`headers`). `${NAME}` references in any string are
-expanded from the gateway's environment (a literal `$` is preserved; an unset
+expanded from the proxy's environment (a literal `$` is preserved; an unset
 variable warns and expands to empty). Invalid server entries are skipped with a
-warning, never fatal — the gateway still serves the valid ones. See
-`examples/config/harness-mcp-gateway.json` for a copyable starting point.
+warning, never fatal — the proxy still serves the valid ones. See
+`examples/config/harness-mcp-proxy.json` for a copyable starting point.
 
-Stdio servers inherit the gateway's **full environment** — whatever environment
-the `harness-mcp-gateway serve` process was started with — plus the per-server
+Stdio servers inherit the proxy's **full environment** — whatever environment
+the `harness-mcp-proxy serve` process was started with — plus the per-server
 `env` overrides. Do not configure untrusted stdio servers when secrets live in the
 environment, since the child process can read them.
 
-### Running the gateway
+### Running the proxy
 
-Harness never starts the gateway for you — you run it yourself, once, and leave it
+Harness never starts the proxy for you — you run it yourself, once, and leave it
 up. The daemon is a single shared process that **outlives harness** and is **shared
 across sessions**. A second `serve` on the same address fails with the normal HTTP
 bind error, matching `harness-model-proxy`.
 
 ```sh
-harness-mcp-gateway serve &        # foreground without the & to watch its logs
+harness-mcp-proxy serve &        # foreground without the & to watch its logs
 ```
 
 For a persistent setup, run it from your shell profile, a launchd agent (macOS),
 or a systemd user unit (Linux) so it comes up at login.
 
-When MCP is enabled, harness connects to the gateway and registers the gateway's
+When MCP is enabled, harness connects to the proxy and registers the proxy's
 tools under a 5 s timeout, logging a line such as
 `mcp: connected (2 servers, 5 tools): fs=3 search=2`. If the connection or
 registration fails it emits **one** warning and continues with no MCP tools:
 
 ```
-mcp: cannot connect to gateway at http://127.0.0.1:8766: <err>; MCP tools unavailable
+mcp: cannot connect to proxy at http://127.0.0.1:8766: <err>; MCP tools unavailable
 ```
 
 MCP **never fails harness startup**. The startup cost is bounded by the 5 s
-registration timeout if the gateway is unreachable or hangs during
+registration timeout if the proxy is unreachable or hangs during
 `initialize`/`tools/list`.
 
 Default paths (all derived per-user):
 
-- **Gateway URL:** `http://127.0.0.1:8766`.
-- **Config:** `$XDG_CONFIG_HOME/harness-mcp-gateway/config.json`, else
-  `~/.config/harness-mcp-gateway/config.json`.
-- **Log:** stderr unless `gateway.logFile` or `serve -log` is set.
+- **Proxy URL:** `http://127.0.0.1:8766`.
+- **Config:** `$XDG_CONFIG_HOME/harness-mcp-proxy/config.json`, else
+  `~/.config/harness-mcp-proxy/config.json`.
+- **Log:** stderr unless `proxy.logFile` or `serve -log` is set.
 
 Inspect the live surface without harness with:
 
 ```sh
-harness-mcp-gateway tools
-harness-mcp-gateway tools -gateway http://127.0.0.1:8420
+harness-mcp-proxy tools
+harness-mcp-proxy tools -proxy http://127.0.0.1:8420
 ```
 
-### Gateway HTTP details
+### Proxy HTTP details
 
-The gateway serves its merged MCP surface over **streamable HTTP**. Set
-`gateway.listen` in the gateway config, or pass `serve -listen`, to change the
+The proxy serves its merged MCP surface over **streamable HTTP**. Set
+`proxy.listen` in the proxy config, or pass `serve -listen`, to change the
 default listener:
 
 ```json
-{ "gateway": { "listen": "127.0.0.1:8420" } }
+{ "proxy": { "listen": "127.0.0.1:8420" } }
 ```
 
 ```sh
-harness-mcp-gateway serve -listen 127.0.0.1:8420 &
+harness-mcp-proxy serve -listen 127.0.0.1:8420 &
 ```
 
 The listener speaks **plain HTTP only** — put a reverse proxy (nginx, Caddy) in
@@ -441,14 +441,15 @@ header with a 30-minute idle TTL; responses are `application/json` only, and the
 is **no server-push channel**, so a client re-lists on its own rather than being
 told of tool changes.
 
-On the harness side, point `mcp.gateway` at the URL and (for a proxied gateway that
-wants auth) add a config-file-only `mcp.headers` map sent on **every** request:
+On the harness side, point `mcp.proxy` at the URL and (for an MCP proxy behind
+a reverse proxy that wants auth) add a config-file-only `mcp.headers` map sent
+on **every** request:
 
 ```json
 {
   "mcp": {
     "enable": true,
-    "gateway": "https://mcp.internal.example/mcp",
+    "proxy": "https://mcp.internal.example/mcp",
     "headers": { "Authorization": "Bearer ${TOKEN}" }
   }
 }
@@ -459,7 +460,7 @@ URL it authenticates to. Header values expand `${VAR}` and `${VAR:-default}`;
 literal dollar forms such as `$5` and `$$` are preserved. An unset `${VAR}` is a
 config error. Because HTTP has no notifications channel, the tool list is
 **fixed at startup**: the `[mcp: tool list updated]` notice never fires for the
-gateway.
+proxy.
 
 ### Tools, modes, and limits
 
@@ -469,14 +470,14 @@ plain harness tools, so they flow through the normal truncation, artifact, and
 session paths. Modes that inherit the default tool set (`auto`, `independent`, and
 config modes without an explicit `allowed_tools`) expose the MCP tools; a mode
 with an explicit `allowed_tools` whitelist does **not** (it may list `mcp__` names
-manually). The HTTP gateway has no notifications channel, so the tool list is
+manually). The HTTP proxy has no notifications channel, so the tool list is
 fixed at startup.
 
 One-shot users should note the startup cost is bounded by the 5 s registration
-timeout when the gateway is unavailable or hangs during `initialize`/`tools/list`.
+timeout when the proxy is unavailable or hangs during `initialize`/`tools/list`.
 Leave MCP off (the default) for latency-sensitive one-shot invocations that do
 not need it.
 
 **v1 non-goals:** tools only (no MCP resources or prompts); streamable-HTTP only
 for remote servers (no legacy HTTP+SSE transport); header-based auth only (no
-OAuth flow); the HTTP gateway listener is plain HTTP (TLS via a reverse proxy).
+OAuth flow); the HTTP proxy listener is plain HTTP (TLS via a reverse proxy).

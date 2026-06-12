@@ -10,47 +10,47 @@ import (
 	"time"
 
 	"harness/internal/mcp"
-	"harness/internal/mcpgateway"
+	"harness/internal/mcpproxy"
 )
 
 var toolsCommandTimeout = 10 * time.Second
 
-// runTools connects to a running gateway as an MCP client and prints the
+// runTools connects to a running proxy as an MCP client and prints the
 // aggregated tool table. It is a debug/status command: if it connects and
-// lists, the gateway is up. It targets the HTTP gateway URL from -gateway,
-// config gateway.listen, or the default listener.
+// lists, the proxy is up. It targets the HTTP proxy URL from -proxy,
+// config proxy.listen, or the default listener.
 func runTools(env environment, args []string) int {
 	fs := flag.NewFlagSet("tools", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	// -config defaults to "" so a missing default path is non-fatal (resolved
 	// below); an explicit -config typo still surfaces as a load error.
 	configPath := fs.String("config", "", "config file path")
-	gateway := fs.String("gateway", "", "HTTP gateway URL")
+	proxy := fs.String("proxy", "", "HTTP proxy URL")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage(env.stdout, env.getenv)
 			return exitOK
 		}
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitUsage
 	}
 
-	gatewayURL, code := resolveToolsGateway(env, fs, *gateway, *configPath)
+	proxyURL, code := resolveToolsProxy(env, fs, *proxy, *configPath)
 	if code != exitOK {
 		return code
 	}
-	client := toolsClient(gatewayURL)
+	client := toolsClient(proxyURL)
 	defer client.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), toolsCommandTimeout)
 	defer cancel()
 	if _, err := client.Initialize(ctx); err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: cannot connect to gateway at %s: %v\n", gatewayURL, err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: cannot connect to proxy at %s: %v\n", proxyURL, err)
 		return exitRuntime
 	}
 	tools, err := client.ListTools(ctx)
 	if err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitRuntime
 	}
 
@@ -59,32 +59,32 @@ func runTools(env environment, args []string) int {
 }
 
 // toolsClient builds the HTTP MCP client for the tools command.
-func toolsClient(gatewayURL string) *mcp.Client {
-	info := mcp.Implementation{Name: "harness-mcp-gateway-tools", Version: "1"}
-	tr := mcp.NewHTTPTransport(mcp.HTTPOptions{Endpoint: gatewayURL})
+func toolsClient(proxyURL string) *mcp.Client {
+	info := mcp.Implementation{Name: "harness-mcp-proxy-tools", Version: "1"}
+	tr := mcp.NewHTTPTransport(mcp.HTTPOptions{Endpoint: proxyURL})
 	return mcp.NewClientTransport(tr, mcp.ClientOptions{Info: info})
 }
 
-// resolveToolsGateway determines which HTTP URL the tools command connects to:
-// the -gateway flag, else the config's gateway.listen, else the default URL. A
+// resolveToolsProxy determines which HTTP URL the tools command connects to:
+// the -proxy flag, else the config's proxy.listen, else the default URL. A
 // config that fails to load is a runtime error (a typo'd -config should not
 // silently fall back to the default URL). The returned code is exitOK on success.
-func resolveToolsGateway(env environment, fs *flag.FlagSet, gatewayFlag, configFlag string) (string, int) {
-	if gatewayFlag != "" {
-		return gatewayFlag, exitOK
+func resolveToolsProxy(env environment, fs *flag.FlagSet, proxyFlag, configFlag string) (string, int) {
+	if proxyFlag != "" {
+		return proxyFlag, exitOK
 	}
 	configPath := resolveConfigPath(configFlag, flagWasSet(fs, "config"), env.getenv)
-	cfg, err := mcpgateway.LoadConfig(configPath)
+	cfg, err := mcpproxy.LoadConfig(configPath)
 	if err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return "", exitRuntime
 	}
-	return mcpgateway.URLForListen(cfg.Listen), exitOK
+	return mcpproxy.URLForListen(cfg.Listen), exitOK
 }
 
 // printToolTable writes one line per tool as "NAME\tDESCRIPTION-first-line",
 // preceded by a count header ("N tools" or "no tools"). Tools arrive sorted by
-// name from the gateway, so no local sort is needed.
+// name from the proxy, so no local sort is needed.
 func printToolTable(w io.Writer, tools []mcp.Tool) {
 	if len(tools) == 0 {
 		fmt.Fprintln(w, "no tools")

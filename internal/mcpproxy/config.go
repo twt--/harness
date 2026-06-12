@@ -1,11 +1,11 @@
-// Package mcpgateway implements the MCP gateway daemon: it loads a Claude
+// Package mcpproxy implements the MCP proxy daemon: it loads a Claude
 // Code-compatible config, supervises downstream MCP servers (stdio children and
 // streamable-HTTP endpoints), aggregates their tools under a stable namespace,
 // and serves the merged tool surface to harness over HTTP as a single MCP
-// server. The binary CLI wrapper (cmd/harness-mcp-gateway) is a thin shell
-// around Daemon.Run; all gateway logic lives here so it stays testable without
+// server. The binary CLI wrapper (cmd/harness-mcp-proxy) is a thin shell
+// around Daemon.Run; all proxy logic lives here so it stays testable without
 // a process.
-package mcpgateway
+package mcpproxy
 
 import (
 	"encoding/json"
@@ -23,11 +23,11 @@ import (
 )
 
 // FileConfig is the on-disk config shape. It is Claude Code-compatible
-// (camelCase, "mcpServers") with a gateway-level extension block. Decode is
+// (camelCase, "mcpServers") with a proxy-level extension block. Decode is
 // tolerant (plain json.Unmarshal, unknown keys ignored) per repo convention.
 type FileConfig struct {
 	MCPServers map[string]ServerConfig `json:"mcpServers"`
-	Gateway    GatewaySettings         `json:"gateway"`
+	Proxy      ProxySettings           `json:"proxy"`
 }
 
 // ServerConfig is one downstream server entry. Type "" or "stdio" selects a
@@ -42,9 +42,9 @@ type ServerConfig struct {
 	Headers map[string]string `json:"headers"`
 }
 
-// GatewaySettings carries gateway-level overrides. Empty fields fall back to
+// ProxySettings carries proxy-level overrides. Empty fields fall back to
 // defaults (listen → DefaultListen, logLevel → info).
-type GatewaySettings struct {
+type ProxySettings struct {
 	Listen   string `json:"listen"`
 	LogFile  string `json:"logFile"`
 	LogLevel string `json:"logLevel"`
@@ -73,7 +73,7 @@ type ResolvedServer struct {
 	Headers map[string]string
 }
 
-// Config is the resolved, validated gateway configuration. Servers is sorted by
+// Config is the resolved, validated proxy configuration. Servers is sorted by
 // name for stable ordering. Warnings collects non-fatal load problems (unset
 // expansion vars, skipped invalid servers); the caller logs them — library code
 // never prints.
@@ -86,7 +86,7 @@ type Config struct {
 }
 
 const (
-	// DefaultListen is the local HTTP address used when the gateway config and
+	// DefaultListen is the local HTTP address used when the proxy config and
 	// serve flags do not specify one. It intentionally sits next to the model
 	// proxy default (127.0.0.1:8765) without sharing the same port.
 	DefaultListen = "127.0.0.1:8766"
@@ -113,14 +113,14 @@ func LoadConfig(path string) (Config, error) {
 			// An explicit path that does not exist is a hard error: a typo must not
 			// silently degrade to "no servers". (A missing DEFAULT path is handled by
 			// the caller passing "" instead.)
-			return Config{}, fmt.Errorf("mcpgateway: config %s not found: %w", path, err)
+			return Config{}, fmt.Errorf("mcpproxy: config %s not found: %w", path, err)
 		}
-		return Config{}, fmt.Errorf("mcpgateway: read config %s: %w", path, err)
+		return Config{}, fmt.Errorf("mcpproxy: read config %s: %w", path, err)
 	}
 
 	var fc FileConfig
 	if err := json.Unmarshal(data, &fc); err != nil {
-		return Config{}, fmt.Errorf("mcpgateway: parse config %s: %w", path, err)
+		return Config{}, fmt.Errorf("mcpproxy: parse config %s: %w", path, err)
 	}
 	return resolve(fc), nil
 }
@@ -130,8 +130,8 @@ func LoadConfig(path string) (Config, error) {
 // always the post-expansion value.
 func resolve(fc FileConfig) Config {
 	cfg := Config{
-		LogFile:  fc.Gateway.LogFile,
-		LogLevel: fc.Gateway.LogLevel,
+		LogFile:  fc.Proxy.LogFile,
+		LogLevel: fc.Proxy.LogLevel,
 	}
 
 	// Expand variables across the whole config first, accumulating one warning
@@ -162,14 +162,14 @@ func resolve(fc FileConfig) Config {
 		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config references unset variable ${%s}; expanded to empty string", v))
 	}
 
-	cfg.Listen = fc.Gateway.Listen
+	cfg.Listen = fc.Proxy.Listen
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}
 	return cfg
 }
 
-// DefaultURL is the harness-side URL for the default gateway listener.
+// DefaultURL is the harness-side URL for the default proxy listener.
 func DefaultURL() string {
 	return URLForListen(DefaultListen)
 }
@@ -396,13 +396,13 @@ func ChildEnv(extra map[string]string) []string {
 }
 
 // DefaultConfigPath resolves the default config file path:
-// $XDG_CONFIG_HOME/harness-mcp-gateway/config.json, else
-// ~/.config/harness-mcp-gateway/config.json. getenv injects the environment so
+// $XDG_CONFIG_HOME/harness-mcp-proxy/config.json, else
+// ~/.config/harness-mcp-proxy/config.json. getenv injects the environment so
 // the resolution is testable.
 func DefaultConfigPath(getenv func(string) string) string {
 	if xdg := getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "harness-mcp-gateway", "config.json")
+		return filepath.Join(xdg, "harness-mcp-proxy", "config.json")
 	}
 	home := getenv("HOME")
-	return filepath.Join(home, ".config", "harness-mcp-gateway", "config.json")
+	return filepath.Join(home, ".config", "harness-mcp-proxy", "config.json")
 }

@@ -1,4 +1,4 @@
-package mcpgateway
+package mcpproxy
 
 import (
 	"bufio"
@@ -36,7 +36,7 @@ const (
 	shutdownTermWait = 2 * time.Second
 
 	categoryServer = "mcp_server"
-	categoryGate   = "mcp_gateway"
+	categoryGate   = "mcp_proxy"
 )
 
 // State is a supervisor's lifecycle state, exposed for logging and the tools
@@ -224,13 +224,13 @@ func (s *Supervisor) startChild() (*exec.Cmd, *mcp.Client, io.ReadWriteCloser, <
 		return nil, nil, nil, nil, nil, fmt.Errorf("start: %w", err)
 	}
 
-	// Drain stderr line-by-line into the gateway log. stderr is logging, not a
+	// Drain stderr line-by-line into the proxy log. stderr is logging, not a
 	// failure signal (per spec).
 	go s.drainStderr(stderr)
 
 	conn := mcp.NewStdioConn(stdout, stdin)
 	client := mcp.NewClient(conn, mcp.ClientOptions{
-		Info:           gatewayClientInfo(),
+		Info:           proxyClientInfo(),
 		OnToolsChanged: s.handleDownstreamListChanged,
 		Logger:         s.logger,
 	})
@@ -349,7 +349,7 @@ func (s *Supervisor) afterFailedStart(ctx context.Context, attempt *int, phase s
 	return ctx.Err() == nil
 }
 
-// drainStderr copies the child's stderr line-by-line into the gateway log at
+// drainStderr copies the child's stderr line-by-line into the proxy log at
 // info level (stderr is logging, not a failure signal).
 func (s *Supervisor) drainStderr(r io.Reader) {
 	sc := bufio.NewScanner(r)
@@ -421,7 +421,7 @@ func (s *Supervisor) connectHTTP(ctx context.Context) error {
 		Logger:   s.logger,
 	})
 	client := mcp.NewClientTransport(transport, mcp.ClientOptions{
-		Info:   gatewayClientInfo(),
+		Info:   proxyClientInfo(),
 		Logger: s.logger,
 	})
 	installed := false
@@ -705,15 +705,15 @@ func sameTools(a, b []mcp.Tool) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-// gatewayClientInfo is the Implementation the gateway presents to downstream
+// proxyClientInfo is the Implementation the proxy presents to downstream
 // servers as a client.
-func gatewayClientInfo() mcp.Implementation {
-	return mcp.Implementation{Name: "harness-mcp-gateway", Version: gatewayVersion}
+func proxyClientInfo() mcp.Implementation {
+	return mcp.Implementation{Name: "harness-mcp-proxy", Version: proxyVersion}
 }
 
-// gatewayVersion is the gateway's reported version. Kept here so client and
+// proxyVersion is the proxy's reported version. Kept here so client and
 // server identities agree.
-const gatewayVersion = "0.1.0"
+const proxyVersion = "0.1.0"
 
 // sleepCtx sleeps for d but returns early if ctx is cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) {
