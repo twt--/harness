@@ -268,6 +268,76 @@ func TestRunREPLModelCommandAcceptsProviderQualifiedModel(t *testing.T) {
 	}
 }
 
+func TestRunREPLModelCommandPromptsConfiguredProviderAndModel(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "provider_configs": ["openai.json", "openrouter.json"]
+}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "openai.json"), []byte(`{
+  "name": "openai",
+  "api_type": "responses",
+  "base_url": "https://api.openai.com/v1",
+  "models": [{"name":"gpt-5.5","context_window":400000}]
+}`), 0o644); err != nil {
+		t.Fatalf("write openai provider: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "openrouter.json"), []byte(`{
+  "name": "openrouter",
+  "api_type": "openai",
+  "base_url": "https://openrouter.ai/api/v1",
+  "models": [
+    {"name":"anthropic/claude-sonnet-4","context_window":200000},
+    {"name":"openai/gpt-5.5","context_window":1050000}
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write openrouter provider: %v", err)
+	}
+
+	initial := llmtest.New("initial")
+	switched := llmtest.New("switched", okStep())
+	env, _, errw, _ := fakeProviderEnv(t,
+		[]string{"-config", cfgPath},
+		initial,
+		"/model\nopenrouter\nopenai/gpt-5.5\nhello\n/exit\n",
+	)
+	var opts []factory.Options
+	env.newProvider = func(opt factory.Options) (llm.Provider, error) {
+		opts = append(opts, opt)
+		if len(opts) == 1 {
+			return initial, nil
+		}
+		return switched, nil
+	}
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(opts) != 2 {
+		t.Fatalf("provider factory calls = %d, want 2 (%+v)", len(opts), opts)
+	}
+	got := opts[1]
+	if got.Provider != "openai" || got.ProviderName != "openrouter" || got.Model != "openai/gpt-5.5" ||
+		got.BaseURL != "https://openrouter.ai/api/v1" || got.ContextWindow != 1_050_000 {
+		t.Fatalf("interactive switch options = %+v", got)
+	}
+	if len(initial.Requests) != 0 {
+		t.Fatalf("initial provider should receive no turns after switch, got %d", len(initial.Requests))
+	}
+	if len(switched.Requests) != 1 || switched.Requests[0].Model != "openai/gpt-5.5" {
+		t.Fatalf("switched requests = %+v, want one openrouter-local request", switched.Requests)
+	}
+	stderr := errw.String()
+	if !strings.Contains(stderr, "Providers 1-2 of 2") || !strings.Contains(stderr, "Models for openrouter") ||
+		!strings.Contains(stderr, "model switched") {
+		t.Fatalf("/model should render provider/model picker and acknowledge switch, stderr=%q", stderr)
+	}
+}
+
 // TestRunEnvBlockReportsAbsoluteCwd is the regression test for the env block
 // emitting `cwd: .` instead of the absolute working directory (design §8.5).
 // main must populate EnvOptions.Dir via os.Getwd so the system prompt the model

@@ -16,11 +16,11 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"harness/internal/llm"
 	"harness/internal/modelsdev"
+	"harness/internal/ui"
 )
 
 type setupMainConfig struct {
@@ -287,58 +287,24 @@ func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Ca
 	if len(providers) == 0 {
 		return modelsdev.Provider{}, fmt.Errorf("models.dev catalog has no harness-supported providers")
 	}
-	filter := ""
-	page := 0
-	for {
-		filtered := filterEntries(providers, filter)
-		if len(filtered) == 0 {
-			fmt.Fprintf(w, "No providers match %q\n", filter)
-			filter = ""
-			page = 0
-			continue
-		}
-		page = clampPage(page, len(filtered), pageSize)
-		printProviderPage(w, filtered, page, pageSize, filter)
-		input, err := promptLine(r, w, "Provider (number/id, /search, n/p, q): ")
-		if err != nil {
-			return modelsdev.Provider{}, err
-		}
-		input = strings.TrimSpace(input)
-		if input == "" || strings.EqualFold(input, "n") {
-			if (page+1)*pageSize < len(filtered) {
-				page++
-			}
-			continue
-		}
-		if strings.EqualFold(input, "p") {
-			if page > 0 {
-				page--
-			}
-			continue
-		}
-		if strings.EqualFold(input, "q") {
-			return modelsdev.Provider{}, fmt.Errorf("setup cancelled")
-		}
-		if strings.HasPrefix(input, "/") {
-			filter = strings.TrimSpace(strings.TrimPrefix(input, "/"))
-			page = 0
-			continue
-		}
-		if n, ok := parseSelectionNumber(input, len(filtered)); ok {
-			return filtered[n-1], nil
-		}
-		if provider, matches, ok := resolveSelection(providers, input); ok {
-			if provider.ID != input {
-				fmt.Fprintf(w, "Using provider %s%s\n", provider.ID, displayNameSuffix(provider.Name, provider.ID))
-			}
-			return provider, nil
-		} else if len(matches) > 1 {
-			fmt.Fprintf(w, "Matches: %s\n", matchSummary(matches, 8))
-			continue
-		}
-		filter = input
-		page = 0
+	entries := make([]setupProviderPick, 0, len(providers))
+	for _, provider := range providers {
+		entries = append(entries, setupProviderPick{Provider: provider})
 	}
+	selected, err := ui.Pick(func(label string) (string, error) {
+		return promptLine(r, w, label)
+	}, w, ui.PickerOptions[setupProviderPick]{
+		Items:       entries,
+		PageSize:    pageSize,
+		Prompt:      "Provider (number/id, /search, n/p, q): ",
+		Kind:        "provider",
+		CancelError: fmt.Errorf("setup cancelled"),
+		PrintPage:   ui.PrintProviderPickerPage[setupProviderPick],
+	})
+	if err != nil {
+		return modelsdev.Provider{}, err
+	}
+	return selected.Provider, nil
 }
 
 func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provider, pageSize int) (modelsdev.Model, error) {
@@ -346,58 +312,47 @@ func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provi
 	if len(models) == 0 {
 		return modelsdev.Model{}, fmt.Errorf("provider %q has no models", provider.ID)
 	}
-	filter := ""
-	page := 0
-	for {
-		filtered := filterEntries(models, filter)
-		if len(filtered) == 0 {
-			fmt.Fprintf(w, "No models match %q\n", filter)
-			filter = ""
-			page = 0
-			continue
-		}
-		page = clampPage(page, len(filtered), pageSize)
-		printModelPage(w, provider, filtered, page, pageSize, filter)
-		input, err := promptLine(r, w, "Default model (number/id, /search, n/p, q): ")
-		if err != nil {
-			return modelsdev.Model{}, err
-		}
-		input = strings.TrimSpace(input)
-		if input == "" || strings.EqualFold(input, "n") {
-			if (page+1)*pageSize < len(filtered) {
-				page++
-			}
-			continue
-		}
-		if strings.EqualFold(input, "p") {
-			if page > 0 {
-				page--
-			}
-			continue
-		}
-		if strings.EqualFold(input, "q") {
-			return modelsdev.Model{}, fmt.Errorf("setup cancelled")
-		}
-		if strings.HasPrefix(input, "/") {
-			filter = strings.TrimSpace(strings.TrimPrefix(input, "/"))
-			page = 0
-			continue
-		}
-		if n, ok := parseSelectionNumber(input, len(filtered)); ok {
-			return filtered[n-1], nil
-		}
-		if model, matches, ok := resolveSelection(models, input); ok {
-			if model.ID != input {
-				fmt.Fprintf(w, "Using model %s%s\n", model.ID, displayNameSuffix(model.Name, model.ID))
-			}
-			return model, nil
-		} else if len(matches) > 1 {
-			fmt.Fprintf(w, "Matches: %s\n", matchSummary(matches, 8))
-			continue
-		}
-		filter = input
-		page = 0
+	entries := make([]setupModelPick, 0, len(models))
+	for _, model := range models {
+		entries = append(entries, setupModelPick{Model: model})
 	}
+	selected, err := ui.Pick(func(label string) (string, error) {
+		return promptLine(r, w, label)
+	}, w, ui.PickerOptions[setupModelPick]{
+		Items:       entries,
+		PageSize:    pageSize,
+		Prompt:      "Default model (number/id, /search, n/p, q): ",
+		Kind:        "model",
+		CancelError: fmt.Errorf("setup cancelled"),
+		PrintPage: func(w io.Writer, models []setupModelPick, page, pageSize int, filter string) {
+			ui.PrintModelPickerPage(w, provider.ID, models, page, pageSize, filter)
+		},
+	})
+	if err != nil {
+		return modelsdev.Model{}, err
+	}
+	return selected.Model, nil
+}
+
+type setupProviderPick struct {
+	modelsdev.Provider
+}
+
+func (p setupProviderPick) PickerID() string      { return p.ID }
+func (p setupProviderPick) PickerName() string    { return p.Name }
+func (p setupProviderPick) PickerModelCount() int { return len(p.Models) }
+
+type setupModelPick struct {
+	modelsdev.Model
+}
+
+func (m setupModelPick) PickerID() string   { return m.ID }
+func (m setupModelPick) PickerName() string { return m.Name }
+func (m setupModelPick) PickerRelease() string {
+	if m.ReleaseDate != "" {
+		return m.ReleaseDate
+	}
+	return m.LastUpdated
 }
 
 func supportedSetupProviders(catalog *modelsdev.Catalog) []modelsdev.Provider {
@@ -417,149 +372,12 @@ func supportedSetupProviders(catalog *modelsdev.Catalog) []modelsdev.Provider {
 	return providers
 }
 
-// pickEntry abstracts the two models.dev list element types the picker pages
-// through; both expose an id and a display name, which entryIDName extracts.
-type pickEntry interface {
-	modelsdev.Provider | modelsdev.Model
-}
-
-func entryIDName[T pickEntry](v T) (id, name string) {
-	switch e := any(v).(type) {
-	case modelsdev.Provider:
-		return e.ID, e.Name
-	case modelsdev.Model:
-		return e.ID, e.Name
-	}
-	return "", ""
-}
-
-// filterEntries keeps the entries whose id or display name contains filter,
-// case-insensitively. An empty filter keeps everything.
-func filterEntries[T pickEntry](items []T, filter string) []T {
-	filter = strings.ToLower(strings.TrimSpace(filter))
-	if filter == "" {
-		return items
-	}
-	var out []T
-	for _, item := range items {
-		id, name := entryIDName(item)
-		if strings.Contains(strings.ToLower(id), filter) || strings.Contains(strings.ToLower(name), filter) {
-			out = append(out, item)
-		}
-	}
-	return out
-}
-
-// resolveSelection resolves exact id/name matches first, then unique prefixes.
-// An ambiguous prefix returns the candidates in matches.
-func resolveSelection[T pickEntry](items []T, input string) (selected T, matches []T, ok bool) {
-	input = strings.ToLower(strings.TrimSpace(input))
-	var prefix []T
-	for _, item := range items {
-		id, name := entryIDName(item)
-		id = strings.ToLower(id)
-		name = strings.ToLower(name)
-		if id == input || name == input {
-			return item, nil, true
-		}
-		if strings.HasPrefix(id, input) || strings.HasPrefix(name, input) {
-			prefix = append(prefix, item)
-		}
-	}
-	if len(prefix) == 1 {
-		return prefix[0], nil, true
-	}
-	var zero T
-	return zero, prefix, false
-}
-
-func printProviderPage(w io.Writer, providers []modelsdev.Provider, page, pageSize int, filter string) {
-	start, end := pageBounds(page, pageSize, len(providers))
-	title := fmt.Sprintf("Providers %d-%d of %d", start+1, end, len(providers))
-	if filter != "" {
-		title += fmt.Sprintf(" matching %q", filter)
-	}
-	fmt.Fprintln(w, title)
-	for i := start; i < end; i++ {
-		provider := providers[i]
-		fmt.Fprintf(w, "%4d. %-28s %5d models  %s\n", i+1, provider.ID, len(provider.Models), provider.Name)
-	}
-}
-
-func printModelPage(w io.Writer, provider modelsdev.Provider, models []modelsdev.Model, page, pageSize int, filter string) {
-	start, end := pageBounds(page, pageSize, len(models))
-	title := fmt.Sprintf("Models for %s %d-%d of %d", provider.ID, start+1, end, len(models))
-	if filter != "" {
-		title += fmt.Sprintf(" matching %q", filter)
-	}
-	fmt.Fprintln(w, title)
-	for i := start; i < end; i++ {
-		model := models[i]
-		release := model.ReleaseDate
-		if release == "" {
-			release = model.LastUpdated
-		}
-		if release == "" {
-			release = "-"
-		}
-		fmt.Fprintf(w, "%4d. %-44s %10s  %s\n", i+1, clipSetup(model.ID, 44), release, model.Name)
-	}
-}
-
-func parseSelectionNumber(input string, max int) (int, bool) {
-	n, err := strconv.Atoi(input)
-	if err != nil || n < 1 || n > max {
-		return 0, false
-	}
-	return n, true
-}
-
-func clampPage(page, total, pageSize int) int {
-	if pageSize <= 0 {
-		pageSize = 20
-	}
-	maxPage := (total - 1) / pageSize
-	if page < 0 {
-		return 0
-	}
-	if page > maxPage {
-		return maxPage
-	}
-	return page
-}
-
-func pageBounds(page, pageSize, total int) (start, end int) {
-	if pageSize <= 0 {
-		pageSize = 20
-	}
-	start = page * pageSize
-	if start > total {
-		start = total
-	}
-	end = start + pageSize
-	if end > total {
-		end = total
-	}
-	return start, end
-}
-
 func setupPageSize(env environment) int {
 	rows := 0
 	if env.terminalRows != nil {
 		rows = env.terminalRows()
 	}
-	return pickerPageSize(rows)
-}
-
-func pickerPageSize(rows int) int {
-	if rows <= 0 {
-		return 20
-	}
-	size := rows - 6
-	if size < 5 {
-		return 5
-	}
-	return size
+	return ui.PickerPageSize(rows)
 }
 
 func setSetupStringField(cfg map[string]json.RawMessage, key, value string, force bool) error {
@@ -656,37 +474,6 @@ func setupModelFromModelsDev(model modelsdev.Model) setupModelConfig {
 		cfg.Price = &price
 	}
 	return cfg
-}
-
-// matchSummary renders up to limit ambiguous-match candidates as "id (Name)"
-// for the picker's "Matches: ..." hint line.
-func matchSummary[T pickEntry](matches []T, limit int) string {
-	if len(matches) > limit {
-		matches = matches[:limit]
-	}
-	parts := make([]string, 0, len(matches))
-	for _, m := range matches {
-		id, name := entryIDName(m)
-		parts = append(parts, id+displayNameSuffix(name, id))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func displayNameSuffix(name, id string) string {
-	if name == "" || name == id {
-		return ""
-	}
-	return " (" + name + ")"
-}
-
-func clipSetup(s string, n int) string {
-	if n <= 0 || len(s) <= n {
-		return s
-	}
-	if n <= 3 {
-		return s[:n]
-	}
-	return s[:n-3] + "..."
 }
 
 func setupPriceKnown(p llm.Price) bool {

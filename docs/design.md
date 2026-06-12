@@ -910,7 +910,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 | `/usage` | cumulative session tokens + cost |
 | `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
-| `/model` | show current provider/model/base-url and configured models |
+| `/model` | choose a configured provider, then choose one of its configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
 

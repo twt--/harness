@@ -432,6 +432,8 @@ func run(env environment) int {
 		System:          systemPrompt,
 		AvailableModels: modelRegistry.Models(),
 		SwitchModel:     switchModel,
+		PickModel:       configuredModelPicker(providerConfigs),
+		PickerPageSize:  setupPageSize(env),
 		Mode:            modeName,
 		AvailableModes:  mode.Names(modes),
 		SwitchMode:      switchMode,
@@ -705,6 +707,97 @@ func resolveSwitchProvider(input string, cfg config.Config, providers []llm.Prov
 	}
 	return provider, apiType, baseURL, apiKey, model, providerModelKey(provider, model), nil
 }
+
+func configuredModelPicker(providers []llm.ProviderConfig) func(ui.PickerIO) (string, error) {
+	providerEntries := configuredProviderPickerEntries(providers)
+	if len(providerEntries) == 0 {
+		return nil
+	}
+	return func(pio ui.PickerIO) (string, error) {
+		w := pio.Writer
+		if w == nil {
+			w = io.Discard
+		}
+		provider, err := ui.Pick(pio.ReadLine, w, ui.PickerOptions[configuredProviderPick]{
+			Items:       providerEntries,
+			PageSize:    pio.PageSize,
+			Prompt:      "Provider (number/id, /search, n/p, q): ",
+			Kind:        "provider",
+			CancelError: ui.ErrPickerCancelled,
+			PrintPage:   ui.PrintProviderPickerPage[configuredProviderPick],
+		})
+		if err != nil {
+			return "", err
+		}
+		models := configuredModelPickerEntries(provider.config.Models)
+		model, err := ui.Pick(pio.ReadLine, w, ui.PickerOptions[configuredModelPick]{
+			Items:       models,
+			PageSize:    pio.PageSize,
+			Prompt:      "Model (number/id, /search, n/p, q): ",
+			Kind:        "model",
+			CancelError: ui.ErrPickerCancelled,
+			PrintPage: func(w io.Writer, models []configuredModelPick, page, pageSize int, filter string) {
+				ui.PrintModelPickerPage(w, provider.config.Name, models, page, pageSize, filter)
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+		return provider.config.Name + ":" + model.entry.Name, nil
+	}
+}
+
+type configuredProviderPick struct {
+	config llm.ProviderConfig
+}
+
+func configuredProviderPickerEntries(providers []llm.ProviderConfig) []configuredProviderPick {
+	seen := make(map[string]bool, len(providers))
+	entries := make([]configuredProviderPick, 0, len(providers))
+	for _, provider := range providers {
+		if provider.Name == "" || len(provider.Models) == 0 || seen[provider.Name] {
+			continue
+		}
+		seen[provider.Name] = true
+		entries = append(entries, configuredProviderPick{config: provider})
+	}
+	return entries
+}
+
+func (p configuredProviderPick) PickerID() string { return p.config.Name }
+
+func (p configuredProviderPick) PickerName() string {
+	if p.config.BaseURL != "" {
+		return p.config.BaseURL
+	}
+	if p.config.APIType != "" && p.config.APIType != p.config.Name {
+		return p.config.APIType
+	}
+	return p.config.Name
+}
+
+func (p configuredProviderPick) PickerModelCount() int {
+	return len(p.config.Models)
+}
+
+type configuredModelPick struct {
+	entry llm.ModelEntry
+}
+
+func configuredModelPickerEntries(models []llm.ModelEntry) []configuredModelPick {
+	entries := make([]configuredModelPick, 0, len(models))
+	for _, model := range models {
+		if model.Name == "" {
+			continue
+		}
+		entries = append(entries, configuredModelPick{entry: model})
+	}
+	return entries
+}
+
+func (m configuredModelPick) PickerID() string      { return m.entry.Name }
+func (m configuredModelPick) PickerName() string    { return m.entry.Name }
+func (m configuredModelPick) PickerRelease() string { return "" }
 
 func providerModelKey(provider, model string) string {
 	if provider == "" || model == "" {

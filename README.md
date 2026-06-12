@@ -204,7 +204,7 @@ by a delimiter; only text written after the delimiter is sent as the next prompt
 | `/usage` | cumulative session tokens and cost |
 | `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
-| `/model` | show current provider/model/base URL and configured models |
+| `/model` | choose a configured provider, then choose one of its configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
 | `/mode` | list run modes, marking the current one |

@@ -63,6 +63,8 @@ type App struct {
 
 	AvailableModels []string
 	SwitchModel     func(model string) (ModelSelection, error)
+	PickModel       func(PickerIO) (string, error)
+	PickerPageSize  int
 
 	Mode           string   // current run mode name
 	AvailableModes []string // sorted mode names for /mode listing
@@ -110,7 +112,7 @@ const helpText = `commands:
   /usage           cumulative session tokens and cost
   /edit [draft]    open $VISUAL/$EDITOR (or vi) for a multi-line prompt
   /save [file]     force save (optionally elsewhere)
-  /model [model]   list models, or switch to model
+  /model [model]   pick a configured provider/model, or switch directly
   /mode [name]     list run modes, or switch to mode
   /skills          list available skills
   $skillName       invoke a skill (reads SKILL.md and sends as prompt)
@@ -260,11 +262,29 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			done <- struct{}{}
 		}()
 	}
+	readCommandLine := func(label string) (string, error) {
+		if _, err := fmt.Fprint(app.Errw, label); err != nil {
+			return "", err
+		}
+		if len(queued) > 0 {
+			input := queued[0]
+			queued = queued[1:]
+			return strings.TrimSpace(input.text), nil
+		}
+		input, ok, err := reader.read()
+		if !ok {
+			if err != nil {
+				return "", err
+			}
+			return "", io.EOF
+		}
+		return strings.TrimSpace(input.text), nil
+	}
 	// applyAction dispatches one input at the idle prompt — both the queued-
 	// typeahead drain and the fresh read use it — and reports whether the REPL
 	// should exit.
 	applyAction := func(input replInput) (exit bool) {
-		action := app.handlePromptInput(input)
+		action := app.handlePromptInput(input, readCommandLine)
 		promptPrinted = false
 		if action.exit {
 			return true
@@ -399,7 +419,7 @@ func (p *escapePresses) reset() {
 	p.seen = false
 }
 
-func (app *App) handlePromptInput(input replInput) replAction {
+func (app *App) handlePromptInput(input replInput, readCommandLine func(string) (string, error)) replAction {
 	if input.escape {
 		return replAction{}
 	}
@@ -427,7 +447,7 @@ func (app *App) handlePromptInput(input replInput) replAction {
 			}
 			return replAction{}
 		}
-		if app.command(line) {
+		if app.command(line, readCommandLine) {
 			return replAction{exit: true}
 		}
 		return replAction{}
@@ -581,7 +601,7 @@ func (rr *replReader) handleLine(line string, terminator lineTerminator) (replIn
 
 // command dispatches a meta-command line. It returns true when the REPL should
 // exit (/exit, /quit).
-func (app *App) command(line string) (exit bool) {
+func (app *App) command(line string, readCommandLine func(string) (string, error)) (exit bool) {
 	cmd, arg := commandFields(line)
 
 	switch cmd {
@@ -612,7 +632,7 @@ func (app *App) command(line string) (exit bool) {
 		}
 	case "/model":
 		if arg == "" {
-			fmt.Fprintln(app.Errw, app.modelSummary())
+			app.pickModel(readCommandLine)
 		} else {
 			app.switchModel(arg)
 		}
@@ -628,6 +648,27 @@ func (app *App) command(line string) (exit bool) {
 		fmt.Fprintf(app.Errw, "unknown command %q; type /help\n", cmd)
 	}
 	return false
+}
+
+func (app *App) pickModel(readLine func(string) (string, error)) {
+	if app.PickModel == nil {
+		fmt.Fprintln(app.Errw, app.modelSummary())
+		return
+	}
+	model, err := app.PickModel(PickerIO{
+		ReadLine: readLine,
+		Writer:   app.Errw,
+		PageSize: app.PickerPageSize,
+	})
+	if err != nil {
+		if errors.Is(err, ErrPickerCancelled) {
+			fmt.Fprintln(app.Errw, "[model selection cancelled]")
+			return
+		}
+		fmt.Fprintf(app.Errw, "[model selection failed: %v]\n", err)
+		return
+	}
+	app.switchModel(model)
 }
 
 // modelSummary renders the current model plus the configured models available
