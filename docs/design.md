@@ -309,7 +309,7 @@ func Read(ctx context.Context, r io.Reader) iter.Seq2[Event, error]
     `response.completed`, `response.incomplete`, and `response.failed`.
   - **Anthropic:** typed frames — `message_start`, `content_block_start`,
     `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`,
-    `ping` (ignored), `error` (turn-fatal).
+    `ping` (ignored), `error` (terminal stream error; retryability follows type).
 - **Truncated stream:** body EOF without the dialect terminator (`[DONE]`,
   `response.completed` / `response.incomplete` / `response.failed`, or
   `message_stop`) → `ErrTruncatedStream`. The agent may re-request the step from
@@ -336,7 +336,7 @@ Edge cases:
 
 - **Empty arguments:** OpenAI may send zero fragments; an empty buffer flushes as `{}`.
 - **Validation on flush:** `json.Valid` is checked before emitting `Done`; invalid
-  accumulated JSON (truncated stream) is a turn-fatal error, never a garbage `Done`.
+  accumulated JSON is a retryable terminal stream error, never a garbage `Done`.
 - **Parallel calls:** both dialects interleave multiple calls; `Index` keeps them
   distinct and emission order is preserved into the transcript.
 - **Interleaved text and tool_use** (Anthropic): text blocks share the index space but
@@ -771,7 +771,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.9 `git`
 
-> Run a git command. Pass arguments as an array, e.g. ["status","--porcelain"]. No shell; no pager.
+> Run a git command. Provide a JSON object with an args array, e.g. {"args":["status","--porcelain"]}. No shell; no pager.
 
 | param | type | notes |
 |---|---|---|
@@ -779,6 +779,8 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 - `git` is registered only when `exec.LookPath("git")` succeeds at registry
   construction time. If git is not installed, the model never sees the `git` tool name.
+- The advertised shape is `{"args":[...]}`. The decoder also accepts a bare
+  string array because earlier wording told models to provide that shape.
 - `exec.CommandContext(ctx, <resolved-git-path>, append([]string{"--no-pager"}, args...)...)`
   — no shell, so no quoting ambiguity. `GIT_TERMINAL_PROMPT=0` prevents auth hangs.
 - **One argv tool, not narrow per-subcommand tools:** a single stable schema covers the
@@ -807,7 +809,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.11 `git_readonly`
 
-> Run a read-only git command: status, log, diff, show, grep, blame, or bisect.
+> Run a read-only git command: status, log, diff, show, grep, blame, or bisect. Provide a JSON object with an args array starting with the subcommand, e.g. {"args":["log","--oneline"]}. No shell; no pager.
 
 | param | type | notes |
 |---|---|---|
@@ -816,6 +818,8 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 - A read-only sibling of `git` (§9.9) used by restricted run modes (§14). It is
   registered only when git is installed and reuses the same `--no-pager` /
   `GIT_TERMINAL_PROMPT=0` plumbing.
+- The advertised shape is `{"args":[...]}`. The decoder also accepts a bare
+  string array because earlier wording told models to provide that shape.
 - **Allowlist by bare subcommand:** `args[0]` must be one of `status`, `log`, `diff`,
   `show`, `grep`, `blame`, `bisect` and must not start with `-`. Because global git
   options (`-c`, `-C`, `--git-dir`, `--exec-path`, `--paginate`) precede the
@@ -1025,7 +1029,7 @@ injectable), the retry clock, and `ValidateTranscript`.
 | Layer | Tests |
 |---|---|
 | `internal/sse` | frame parsing tables; huge frames; truncated input |
-| providers | `httptest.Server` replaying `.sse` golden fixtures per dialect → assert ordered events; golden request-JSON tests (Responses input items, Chat role:tool hoisting, args-string vs object, system placement, `stream_options`, cache_control); tool-call reassembly tables (fragment splits, empty args → `{}`, interleaved parallel calls, invalid tail → turn-fatal); truncated stream; mid-stream cancellation; retry loop via injected sleeper (429-then-200, 400 immediate failure, budget exhaustion) |
+| providers | `httptest.Server` replaying `.sse` golden fixtures per dialect → assert ordered events; golden request-JSON tests (Responses input items, Chat role:tool hoisting, args-string vs object, system placement, `stream_options`, cache_control); tool-call reassembly tables (fragment splits, empty args → `{}`, interleaved parallel calls, invalid tail → retryable stream error); truncated stream; mid-stream cancellation; retry loop via injected sleeper (429-then-200, 400 immediate failure, budget exhaustion) |
 | `internal/retry` | `Next`: jitter bounds, 30s cap, Retry-After floor |
 | tools | table-driven against `t.TempDir()`; `grep` wrapper against the host CLI; optional `rg` registration with a fake executable on PATH; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` table: exact/offset/whitespace fuzz, create, delete, rename, multi-file with one rejected file (rejected file untouched) |
 | agent loop | `FakeProvider` scripts: multi-tool batches, error-result feedback (next request carries the error), max-steps stop, cancellation → transcript still re-sendable |

@@ -623,6 +623,40 @@ func TestMidStreamRetrySucceedsOnSecondAttempt(t *testing.T) {
 	}
 }
 
+func TestInvalidToolArgumentStreamIsRetried(t *testing.T) {
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{
+				toolUseStart(0, "call_bad", "git"),
+				toolUseDelta(0, `{"args":["commit","-m",`),
+			},
+			Err: &llm.APIError{Message: `tool "git" produced invalid JSON arguments`, Retryable: true},
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("retry recovered")},
+			Stop:   llm.StopEndTurn,
+		},
+	)
+	a := newAgent(fp, tools.Default(), Options{})
+	a.sleep = func(time.Duration) {}
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "commit", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(fp.Requests) != 2 {
+		t.Fatalf("provider called %d times, want 2", len(fp.Requests))
+	}
+	if len(sink.starts) != 0 || len(sink.results) != 0 {
+		t.Fatalf("malformed tool call should not dispatch, starts=%v results=%v", sink.starts, sink.results)
+	}
+	msgs := a.Transcript()
+	mustValid(t, msgs)
+	if len(msgs) != 2 || msgs[1].Content[0].Text != "retry recovered" {
+		t.Fatalf("failed attempt leaked into transcript:\n%s", dump(msgs))
+	}
+}
+
 func TestMidStreamRetryBudgetExhausted(t *testing.T) {
 	fail := llmtest.Step{Err: &llm.APIError{StatusCode: 529, Message: "overloaded", Retryable: true}}
 	fp := llmtest.New("fake", fail, fail, fail)

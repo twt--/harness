@@ -13,6 +13,7 @@ const gitReadonlySchema = `{
     "args": {
       "type": "array",
       "items": {"type": "string"},
+      "minItems": 1,
       "description": "Arguments after \"git\"; the first must be a read-only subcommand, e.g. [\"log\",\"--oneline\"]."
     }
   },
@@ -39,7 +40,7 @@ func newGitReadonly() (gitReadonly, bool) {
 func (gitReadonly) Name() string { return "git_readonly" }
 
 func (gitReadonly) Description() string {
-	return `Run a read-only git command: status, log, diff, show, grep, blame, or bisect (bisect checks out commits). Pass arguments as an array starting with the subcommand, e.g. ["log","--oneline"]. No shell; no pager.`
+	return `Run a read-only git command: status, log, diff, show, grep, blame, or bisect (bisect checks out commits). Provide a JSON object with an args array starting with the subcommand, e.g. {"args":["log","--oneline"]}. No shell; no pager.`
 }
 
 func (gitReadonly) Schema() json.RawMessage { return json.RawMessage(gitReadonlySchema) }
@@ -47,36 +48,34 @@ func (gitReadonly) Schema() json.RawMessage { return json.RawMessage(gitReadonly
 func (gitReadonly) ReadOnly() bool { return true }
 
 func (g gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, error) {
-	var args struct {
-		Args []string `json:"args"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
+	args, err := decodeGitArgs(input)
+	if err != nil {
 		return "", err
 	}
-	if len(args.Args) == 0 {
+	if len(args) == 0 {
 		return "", badArgs("args is required and must be a non-empty array")
 	}
 	// The first argument must be a bare allowlisted subcommand. Global git
 	// options (-c, -C, --git-dir, --exec-path, --paginate, ...) precede the
 	// subcommand, so requiring a non-flag first argument blocks every global
 	// option injection.
-	sub := args.Args[0]
+	sub := args[0]
 	if strings.HasPrefix(sub, "-") || !slices.Contains(gitReadonlySubcommands, sub) {
 		return "", badArgs("first argument must be one of: %s", strings.Join(gitReadonlySubcommands, ", "))
 	}
 	// bisect run/view/visualize execute a command or launch a viewer, escaping
 	// the read-only boundary; the other bisect operations only move HEAD. The
 	// operation is always the token right after "bisect".
-	if sub == "bisect" && len(args.Args) > 1 {
-		switch args.Args[1] {
+	if sub == "bisect" && len(args) > 1 {
+		switch args[1] {
 		case "run", "view", "visualize":
-			return "", badArgs("git_readonly does not allow %q (it runs commands or launches a viewer)", "bisect "+args.Args[1])
+			return "", badArgs("git_readonly does not allow %q (it runs commands or launches a viewer)", "bisect "+args[1])
 		}
 	}
 	// A few subcommand-local flags still write files or launch programs even on
 	// read-only subcommands; reject them so the boundary holds. Ordinary flags
 	// pass through.
-	for _, a := range args.Args[1:] {
+	for _, a := range args[1:] {
 		if disallowedReadonlyFlag(a) {
 			return "", badArgs("flag %q is not allowed in git_readonly", a)
 		}
@@ -85,13 +84,13 @@ func (g gitReadonly) Run(ctx context.Context, input json.RawMessage) (string, er
 	// program). -O can hide inside a clustered short-flag group, e.g. -inO<pager>,
 	// so the long-form check above is not enough.
 	if sub == "grep" {
-		for _, a := range args.Args[1:] {
+		for _, a := range args[1:] {
 			if shortFlagOpensPager(a) {
 				return "", badArgs("flag %q opens a pager and is not allowed in git_readonly", a)
 			}
 		}
 	}
-	return runGitArgs(ctx, g.program, args.Args)
+	return runGitArgs(ctx, g.program, args)
 }
 
 // disallowedReadonlyFlag reports whether a subcommand-local flag can write a

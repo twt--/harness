@@ -15,6 +15,7 @@ const gitSchema = `{
     "args": {
       "type": "array",
       "items": {"type": "string"},
+      "minItems": 1,
       "description": "Arguments after \"git\", e.g. [\"status\",\"--porcelain\"]."
     }
   },
@@ -51,7 +52,7 @@ func GitAvailable() bool {
 func (gitTool) Name() string { return "git" }
 
 func (gitTool) Description() string {
-	return `Run a git command. Pass arguments as an array, e.g. ["status","--porcelain"]. No shell; no pager.`
+	return `Run a git command. Provide a JSON object with an args array, e.g. {"args":["status","--porcelain"]}. No shell; no pager.`
 }
 
 func (gitTool) Schema() json.RawMessage { return json.RawMessage(gitSchema) }
@@ -59,17 +60,30 @@ func (gitTool) Schema() json.RawMessage { return json.RawMessage(gitSchema) }
 func (gitTool) ReadOnly() bool { return false }
 
 func (g gitTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
+	args, err := decodeGitArgs(input)
+	if err != nil {
+		return "", err
+	}
+	if len(args) == 0 {
+		return "", badArgs("args is required and must be a non-empty array")
+	}
+
+	return runGitArgs(ctx, g.program, args)
+}
+
+func decodeGitArgs(input json.RawMessage) ([]string, error) {
+	var bare []string
+	if err := json.Unmarshal(input, &bare); err == nil && bare != nil {
+		return bare, nil
+	}
+
 	var args struct {
 		Args []string `json:"args"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(args.Args) == 0 {
-		return "", badArgs("args is required and must be a non-empty array")
-	}
-
-	return runGitArgs(ctx, g.program, args.Args)
+	return args.Args, nil
 }
 
 // runGitArgs executes git with userArgs and formats the combined output plus

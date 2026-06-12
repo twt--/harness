@@ -102,7 +102,10 @@ func (a *toolAssembler) flush(yield func(llm.StreamEvent, error) bool) (ok bool,
 			args = []byte(emptyArgs)
 		}
 		if !json.Valid(args) {
-			return false, &llm.APIError{Message: fmt.Sprintf("tool %q produced invalid JSON arguments", t.name)}
+			return false, &llm.APIError{
+				Message:   fmt.Sprintf("tool %q produced invalid JSON arguments", t.name),
+				Retryable: true,
+			}
 		}
 		if !yield(llm.StreamEvent{
 			Kind:      llm.EventToolCallDone,

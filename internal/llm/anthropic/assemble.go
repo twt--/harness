@@ -51,8 +51,9 @@ func (a *toolAssembler) delta(index int, fragment string) (llm.StreamEvent, bool
 }
 
 // flush finalizes the tool at index. An empty buffer flushes as {}. Accumulated
-// JSON that fails json.Valid is turn-fatal — never a garbage Done. A non-tool
-// index (text block) yields ok=false so the caller skips emission.
+// JSON that fails json.Valid is a retryable stream error — never a garbage
+// Done. A non-tool index (text block) yields ok=false so the caller skips
+// emission.
 func (a *toolAssembler) flush(index int) (llm.StreamEvent, error, bool) {
 	t := a.pending[index]
 	if t == nil {
@@ -66,7 +67,8 @@ func (a *toolAssembler) flush(index int) (llm.StreamEvent, error, bool) {
 	}
 	if !json.Valid(args) {
 		return llm.StreamEvent{}, &llm.APIError{
-			Message: fmt.Sprintf("tool %q produced invalid JSON arguments", t.name),
+			Message:   fmt.Sprintf("tool %q produced invalid JSON arguments", t.name),
+			Retryable: true,
 		}, true
 	}
 	return llm.StreamEvent{

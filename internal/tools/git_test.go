@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -105,6 +106,40 @@ func TestGitEmptyArgs(t *testing.T) {
 	_, err := gitTool{}.Run(context.Background(), json.RawMessage(`{"args":[]}`))
 	if err == nil {
 		t.Fatal("expected error for empty args array")
+	}
+}
+
+func TestDecodeGitArgsAcceptsObjectAndBareArray(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "object", input: `{"args":["status","--porcelain"]}`, want: []string{"status", "--porcelain"}},
+		{name: "bare array", input: `["status","--porcelain"]`, want: []string{"status", "--porcelain"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeGitArgs(json.RawMessage(tt.input))
+			if err != nil {
+				t.Fatalf("decodeGitArgs: %v", err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("decodeGitArgs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitDescriptionsSteerToObjectArgs(t *testing.T) {
+	for _, desc := range []string{gitTool{}.Description(), gitReadonly{}.Description()} {
+		if !strings.Contains(desc, "JSON object") || !strings.Contains(desc, `{"args":[`) {
+			t.Errorf("description should show object-shaped args, got %q", desc)
+		}
+		if strings.Contains(desc, "Pass arguments as an array") {
+			t.Errorf("description still encourages bare array args: %q", desc)
+		}
 	}
 }
 

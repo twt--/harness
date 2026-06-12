@@ -217,7 +217,7 @@ func TestStreamInvalidToolJSON(t *testing.T) {
 	p := testProvider(t, srv, nil)
 	events, err := drain(p.Stream(context.Background(), simpleRequest()))
 	if err == nil {
-		t.Fatal("expected turn-fatal error from invalid accumulated tool JSON")
+		t.Fatal("expected stream error from invalid accumulated tool JSON")
 	}
 	var apiErr *llm.APIError
 	if !errors.As(err, &apiErr) {
@@ -225,6 +225,9 @@ func TestStreamInvalidToolJSON(t *testing.T) {
 	}
 	if !strings.Contains(apiErr.Message, "get_weather") {
 		t.Errorf("error message %q does not name offending tool", apiErr.Message)
+	}
+	if !apiErr.Retryable {
+		t.Errorf("invalid streamed tool JSON should be retryable, got %+v", apiErr)
 	}
 	for _, e := range events {
 		if e.Kind == llm.EventToolCallDone {

@@ -69,9 +69,10 @@ func New(cfg Config) *Provider {
 
 func (p *Provider) Name() string { return "anthropic" }
 
-// Stream runs one model call. Retries apply only before the first response byte;
-// once tokens stream, any failure (mid-stream error frame, truncated body) is
-// turn-fatal. ctx.Err() is checked before every attempt and sleep.
+// Stream runs one model call. Retries here apply only before the first response
+// byte; once tokens stream, failures are terminal for this stream and may be
+// retried by the agent loop when marked retryable. ctx.Err() is checked before
+// every attempt and sleep.
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		window := p.contextWindow
@@ -109,7 +110,7 @@ func (p *Provider) connect(ctx context.Context, body []byte, yield func(llm.Stre
 
 // decode reads the SSE stream, emits events, and accumulates usage. A body EOF
 // before message_stop is a truncated stream; a mid-stream error frame is
-// turn-fatal. Both are wrapped in *llm.APIError (truncation wraps
+// terminal for this stream. Both are wrapped in *llm.APIError (truncation wraps
 // sse.ErrTruncatedStream).
 func (p *Provider) decode(ctx context.Context, r io.Reader, yield func(llm.StreamEvent, error) bool) {
 	asm := newToolAssembler()

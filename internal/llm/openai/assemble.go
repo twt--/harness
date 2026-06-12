@@ -62,8 +62,8 @@ func (a *toolAssembler) observe(frag wireToolCallDelta, yield func(llm.StreamEve
 
 // flush finalizes every buffered call in ascending index order, emitting one
 // Done per call. An empty buffer flushes as {}. Accumulated JSON that fails
-// json.Valid is turn-fatal — never a garbage Done; flush returns the error and
-// stops without emitting further events.
+// json.Valid is a retryable stream error — never a garbage Done; flush returns
+// the error and stops without emitting further events.
 func (a *toolAssembler) flush(yield func(llm.StreamEvent, error) bool) (ok bool, fatal error) {
 	indices := make([]int, 0, len(a.pending))
 	for i := range a.pending {
@@ -79,7 +79,8 @@ func (a *toolAssembler) flush(yield func(llm.StreamEvent, error) bool) (ok bool,
 		}
 		if !json.Valid(args) {
 			return false, &llm.APIError{
-				Message: fmt.Sprintf("tool %q produced invalid JSON arguments", t.name),
+				Message:   fmt.Sprintf("tool %q produced invalid JSON arguments", t.name),
+				Retryable: true,
 			}
 		}
 		if !yield(llm.StreamEvent{

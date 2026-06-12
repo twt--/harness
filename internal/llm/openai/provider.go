@@ -72,9 +72,10 @@ func New(cfg Config) *Provider {
 
 func (p *Provider) Name() string { return "openai" }
 
-// Stream runs one model call. Retries apply only before the first response byte;
-// once tokens stream, any failure (invalid tool JSON, truncated body) is
-// turn-fatal. ctx.Err() is checked before every attempt and sleep.
+// Stream runs one model call. Retries here apply only before the first response
+// byte; once tokens stream, failures are terminal for this stream and may be
+// retried by the agent loop when marked retryable. ctx.Err() is checked before
+// every attempt and sleep.
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		body, err := json.Marshal(buildRequestForMode(req, p.reasoningMode))
