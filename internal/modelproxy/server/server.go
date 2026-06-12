@@ -18,8 +18,6 @@ import (
 const maxStreamRequestBytes = 64 << 20
 
 type Config struct {
-	Provider             string   `json:"provider"`
-	Model                string   `json:"model"`
 	ProviderConfigs      []string `json:"provider_configs"`
 	DefaultContextWindow int      `json:"default_context_window"`
 }
@@ -68,18 +66,9 @@ func NewHandler(opts Options) (*Handler, error) {
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("model proxy: no provider configs are configured")
 	}
-	catalog := catalogFromProviderConfigs(providers, opts.Config.Provider, opts.Config.Model)
-	if catalog.DefaultProvider == "" || catalog.DefaultModel == "" {
-		provider, model, err := firstConfiguredModel(providers)
-		if err != nil {
-			return nil, err
-		}
-		if catalog.DefaultProvider == "" {
-			catalog.DefaultProvider = provider
-		}
-		if catalog.DefaultModel == "" {
-			catalog.DefaultModel = model
-		}
+	catalog, err := catalogFromProviderConfigs(providers)
+	if err != nil {
+		return nil, err
 	}
 	return &Handler{
 		catalog:              catalog,
@@ -126,10 +115,12 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	providerID := strings.TrimSpace(req.Provider)
 	if providerID == "" {
-		providerID = h.catalog.DefaultProvider
+		writeError(w, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "provider is required"})
+		return
 	}
 	if req.Request.Model == "" {
-		req.Request.Model = h.catalog.DefaultModel
+		writeError(w, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "model is required"})
+		return
 	}
 
 	opts, err := h.runtimeOptions(providerID, req.Request.Model)
@@ -252,11 +243,9 @@ func DefaultConfigDir(getenv func(string) string) string {
 	return filepath.Join(os.TempDir(), "harness-model-proxy-config")
 }
 
-func catalogFromProviderConfigs(providers []llm.ProviderConfig, defaultProvider, defaultModel string) protocol.Catalog {
+func catalogFromProviderConfigs(providers []llm.ProviderConfig) (protocol.Catalog, error) {
 	out := protocol.Catalog{
-		DefaultProvider: defaultProvider,
-		DefaultModel:    defaultModel,
-		Providers:       make([]protocol.Provider, 0, len(providers)),
+		Providers: make([]protocol.Provider, 0, len(providers)),
 	}
 	for _, pc := range providers {
 		if pc.Name == "" {
@@ -283,21 +272,10 @@ func catalogFromProviderConfigs(providers []llm.ProviderConfig, defaultProvider,
 			out.Providers = append(out.Providers, p)
 		}
 	}
-	return out
-}
-
-func firstConfiguredModel(providers []llm.ProviderConfig) (provider, model string, err error) {
-	for _, pc := range providers {
-		if pc.Name == "" {
-			continue
-		}
-		for _, entry := range pc.Models {
-			if entry.Name != "" {
-				return pc.Name, entry.Name, nil
-			}
-		}
+	if len(out.Providers) == 0 {
+		return protocol.Catalog{}, fmt.Errorf("model proxy: no configured models")
 	}
-	return "", "", fmt.Errorf("model proxy: no configured models")
+	return out, nil
 }
 
 func providerConfigByName(providers []llm.ProviderConfig, name string) (llm.ProviderConfig, bool) {

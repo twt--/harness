@@ -451,19 +451,21 @@ Precedence: **flags > environment > config file > built-in defaults.**
   provider metadata, falls back to a
   vendored models.dev snapshot when the live catalog is unreachable, lists
   harness-supported providers, prompts for the API key, pages the selected provider's
-  models newest-first, and asks which model should be the default. The provider config
-  is generated from models.dev with all known models for that provider: base URL,
+  models newest-first, and asks which models should be locally available. Enabled
+  rows are bold and marked with `*`; the selector accepts number/id toggles plus
+  global `all`, global `none`, `done`, `/search`, `n`, `p`, and `q`. The provider config is
+  generated from models.dev with only enabled models for that provider: base URL,
   api_type (`responses`, `openai`, or `anthropic`), key env vars, context windows,
-  pricing, and reasoning metadata. Without
-  `--force`, setup refuses to overwrite existing provider files and preserves existing
-  default provider/model fields; `--force` opts into those overwrites.
+  pricing, and reasoning metadata. Without `--force`, setup refuses to overwrite
+  existing provider files.
 - `harness-model-proxy --refresh-models` fetches the latest live models.dev catalog
-  and regenerates each configured provider file, preserving stored API keys. It errors if models.dev is
-  inaccessible or a configured provider is missing/unsupported.
+  and refreshes each configured provider file's current model allowlist, preserving
+  stored API keys. It errors if models.dev is inaccessible or a configured provider
+  or model is missing/unsupported.
 - **Selection rule:** `harness` fetches `GET /v1/models` from the proxy. A
   `provider:model` value sets the provider and strips the prefix before sending
-  requests. Otherwise an explicit `-provider` selects a proxy provider, and missing
-  provider/model values fall back to the proxy defaults.
+  requests. Otherwise an explicit `-provider` selects a proxy provider, and model
+  selection must come from `harness` flags, environment, config, or `/model`.
 - `internal/config` resolves only user-facing settings. Provider connection settings
   are resolved by `harness-model-proxy` from its config and environment.
 

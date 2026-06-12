@@ -16,9 +16,7 @@ const (
 )
 
 type Catalog struct {
-	DefaultProvider string     `json:"default_provider,omitempty"`
-	DefaultModel    string     `json:"default_model,omitempty"`
-	Providers       []Provider `json:"providers"`
+	Providers []Provider `json:"providers"`
 }
 
 type Provider struct {

@@ -173,8 +173,6 @@ ollama pull llama3.2
 mkdir -p ~/.config/harness-model-proxy
 cat > ~/.config/harness-model-proxy/config.json <<'JSON'
 {
-  "provider": "ollama",
-  "model": "llama3.2",
   "provider_configs": ["ollama.json"]
 }
 JSON

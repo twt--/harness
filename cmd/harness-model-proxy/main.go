@@ -63,7 +63,7 @@ func run(env environment) int {
 	configPath := fs.String("config", "", "config file path")
 	listen := fs.String("listen", "", "HTTP listen address")
 	setup := fs.Bool("setup", false, "create or update proxy config")
-	force := fs.Bool("force", false, "with --setup, overwrite existing provider files and defaults")
+	force := fs.Bool("force", false, "with --setup, overwrite existing provider files")
 	refreshModels := fs.Bool("refresh-models", false, "fetch models.dev and update configured provider model metadata")
 	logLevel := fs.String("log-level", logging.LevelInfo, "log level: debug, info, warn, error")
 	if err := fs.Parse(env.args); err != nil {
@@ -161,7 +161,7 @@ func usage(w io.Writer) {
 	fs.String("config", "", "config file path")
 	fs.String("listen", "", "HTTP listen address")
 	fs.Bool("setup", false, "create or update proxy config")
-	fs.Bool("force", false, "with --setup, overwrite existing provider files and defaults")
+	fs.Bool("force", false, "with --setup, overwrite existing provider files")
 	fs.Bool("refresh-models", false, "fetch models.dev and update configured provider model metadata")
 	fs.String("log-level", logging.LevelInfo, "log level: debug, info, warn, error")
 	fs.PrintDefaults()

@@ -74,8 +74,6 @@ func newFakeModelProxy(t *testing.T, fp *llmtest.FakeProvider) *fakeModelProxy {
 		t:  t,
 		fp: fp,
 		catalog: protocol.Catalog{
-			DefaultProvider: "anthropic",
-			DefaultModel:    "claude-opus-4-8",
 			Providers: []protocol.Provider{
 				{
 					ID:   "anthropic",
@@ -310,30 +308,19 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	}
 }
 
-func TestRunUsesProxyDefaultModel(t *testing.T) {
+func TestRunRequiresHarnessConfiguredModel(t *testing.T) {
 	fp := llmtest.New("fake", okStep())
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-p", "hi"}, fp, "")
 
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if len(fp.Requests) != 1 || fp.Requests[0].Model != "claude-opus-4-8" {
-		t.Fatalf("request model = %+v, want proxy default", fp.Requests)
-	}
-}
-
-func TestRunMissingProxyDefaultUsageError(t *testing.T) {
-	fp := llmtest.New("fake")
-	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, []string{"-p", "hi"}, fp, "")
-	proxy.catalog.DefaultProvider = ""
-	proxy.catalog.DefaultModel = ""
-
 	code := run(env)
 	if code != ui.ExitUsage {
-		t.Errorf("missing proxy default should exit 2, got %d", code)
+		t.Fatalf("exit = %d, want usage error; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 0 {
+		t.Fatalf("provider should not be called without a model, got %d requests", len(fp.Requests))
 	}
 	if !strings.Contains(strings.ToLower(errw.String()), "model") {
-		t.Errorf("error should mention the missing model, errw=%q", errw.String())
+		t.Fatalf("error should mention the missing model, errw=%q", errw.String())
 	}
 }
 

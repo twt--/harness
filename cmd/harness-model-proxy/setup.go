@@ -23,8 +23,6 @@ import (
 )
 
 type setupMainConfig struct {
-	Provider             string   `json:"provider"`
-	Model                string   `json:"model"`
 	ProviderConfigs      []string `json:"provider_configs"`
 	DefaultContextWindow int      `json:"default_context_window"`
 }
@@ -85,7 +83,7 @@ func runSetup(env environment, force bool) error {
 	if err != nil {
 		return err
 	}
-	model, err := promptModelSelection(reader, env.stdout, providerMeta, setupPageSize(env))
+	models, err := promptModelSelection(reader, env.stdout, providerMeta, setupPageSize(env))
 	if err != nil {
 		return err
 	}
@@ -94,18 +92,16 @@ func runSetup(env environment, force bool) error {
 		return err
 	}
 
-	provider := setupProviderFromModelsDev(providerMeta, apiKey)
+	provider := setupProviderFromModelsDev(providerMeta, apiKey, models)
 
 	mainConfig := setupMainConfig{
-		Provider:             providerName,
-		Model:                model.ID,
 		ProviderConfigs:      []string{providerFile},
 		DefaultContextWindow: llm.DefaultContextWindow,
 	}
 
 	var configBody any = mainConfig
 	if configExists {
-		updated, err := updatedSetupConfig(configPath, providerFile, providerName, model.ID, force)
+		updated, err := updatedSetupConfig(configPath, providerFile, force)
 		if err != nil {
 			return err
 		}
@@ -191,7 +187,11 @@ func runRefreshModels(env environment, cfgPath string) error {
 			if meta.APIType() == "" || meta.BaseURL() == "" {
 				return fmt.Errorf("provider %q from %s is not supported by harness", current.Name, path)
 			}
-			updated = append(updated, setupProviderFromModelsDev(meta, current.APIKey))
+			updatedModels, err := refreshConfiguredModels(meta, current.Models)
+			if err != nil {
+				return fmt.Errorf("%s: provider %q: %w", path, current.Name, err)
+			}
+			updated = append(updated, setupProviderFromModelsDev(meta, current.APIKey, updatedModels))
 		}
 		var body any = updated
 		if len(updated) == 1 {
@@ -212,7 +212,7 @@ func refreshCatalog(env environment) (*modelsdev.Catalog, error) {
 	return defaultModelsDevCatalog(context.Background())
 }
 
-func updatedSetupConfig(path, providerFile, providerName, modelName string, force bool) (map[string]json.RawMessage, error) {
+func updatedSetupConfig(path, providerFile string, force bool) (map[string]json.RawMessage, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -239,12 +239,8 @@ func updatedSetupConfig(path, providerFile, providerName, modelName string, forc
 		return nil, err
 	}
 
-	if err := setSetupStringField(cfg, "provider", providerName, force); err != nil {
-		return nil, err
-	}
-	if err := setSetupStringField(cfg, "model", modelName, force); err != nil {
-		return nil, err
-	}
+	delete(cfg, "provider")
+	delete(cfg, "model")
 	if _, ok := cfg["default_context_window"]; !ok || force {
 		if err := setJSONField(cfg, "default_context_window", llm.DefaultContextWindow); err != nil {
 			return nil, err
@@ -264,9 +260,8 @@ func setupProviderConfigs(raw json.RawMessage) ([]string, error) {
 	return configs, nil
 }
 
-func setupProviderFromModelsDev(provider modelsdev.Provider, apiKey string) setupProviderConfig {
+func setupProviderFromModelsDev(provider modelsdev.Provider, apiKey string, models []modelsdev.Model) setupProviderConfig {
 	cfg := provider.ProviderConfig(apiKey)
-	models := provider.ModelsByID()
 	entries := make([]setupModelConfig, 0, len(models))
 	for _, model := range models {
 		entries = append(entries, setupModelFromModelsDev(model))
@@ -306,31 +301,25 @@ func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Ca
 	return selected.Provider, nil
 }
 
-func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provider, pageSize int) (modelsdev.Model, error) {
+func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provider, pageSize int) ([]modelsdev.Model, error) {
 	models := provider.ModelsByReleaseDate()
 	if len(models) == 0 {
-		return modelsdev.Model{}, fmt.Errorf("provider %q has no models", provider.ID)
+		return nil, fmt.Errorf("provider %q has no models", provider.ID)
 	}
 	entries := make([]setupModelPick, 0, len(models))
 	for _, model := range models {
-		entries = append(entries, setupModelPick{Model: model})
+		entries = append(entries, setupModelPick{Model: model, Enabled: true})
 	}
-	selected, err := ui.Pick(func(label string) (string, error) {
+	selected, err := pickSetupModels(func(label string) (string, error) {
 		return promptLine(r, w, label)
-	}, w, ui.PickerOptions[setupModelPick]{
-		Items:       entries,
-		PageSize:    pageSize,
-		Prompt:      "Default model (number/id, /search, n/p, q): ",
-		Kind:        "model",
-		CancelError: fmt.Errorf("setup cancelled"),
-		PrintPage: func(w io.Writer, models []setupModelPick, page, pageSize int, filter string) {
-			ui.PrintModelPickerPage(w, provider.ID, models, page, pageSize, filter)
-		},
-	})
+	}, w, provider.ID, entries, pageSize)
 	if err != nil {
-		return modelsdev.Model{}, err
+		return nil, err
 	}
-	return selected.Model, nil
+	slices.SortFunc(selected, func(a, b modelsdev.Model) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+	return selected, nil
 }
 
 type setupProviderPick struct {
@@ -343,6 +332,7 @@ func (p setupProviderPick) PickerModelCount() int { return len(p.Models) }
 
 type setupModelPick struct {
 	modelsdev.Model
+	Enabled bool
 }
 
 func (m setupModelPick) PickerID() string    { return m.ID }
@@ -353,6 +343,166 @@ func (m setupModelPick) PickerRelease() string {
 		return m.ReleaseDate
 	}
 	return m.LastUpdated
+}
+
+func pickSetupModels(readLine func(string) (string, error), w io.Writer, providerID string, items []setupModelPick, pageSize int) ([]modelsdev.Model, error) {
+	if readLine == nil {
+		return nil, fmt.Errorf("picker has no input reader")
+	}
+	filter := ""
+	page := 0
+	for {
+		filteredIndexes := filterSetupModelIndexes(items, filter)
+		if len(filteredIndexes) == 0 {
+			fmt.Fprintf(w, "No models match %q\n", filter)
+			filter = ""
+			page = 0
+			continue
+		}
+		page = ui.ClampPickerPage(page, len(filteredIndexes), pageSize)
+		printSetupModelSelectionPage(w, providerID, items, filteredIndexes, page, pageSize, filter)
+		input, err := readLine("Models (number/id toggles, all, none, done, /search, n/p, q): ")
+		if err != nil {
+			return nil, err
+		}
+		input = strings.TrimSpace(input)
+		switch {
+		case input == "" || strings.EqualFold(input, "n"):
+			if (page+1)*ui.PickerPageSizeValue(pageSize) < len(filteredIndexes) {
+				page++
+			}
+			continue
+		case strings.EqualFold(input, "p"):
+			if page > 0 {
+				page--
+			}
+			continue
+		case strings.EqualFold(input, "q"):
+			return nil, fmt.Errorf("setup cancelled")
+		case strings.EqualFold(input, "all"):
+			for i := range items {
+				items[i].Enabled = true
+			}
+			continue
+		case strings.EqualFold(input, "none"):
+			for i := range items {
+				items[i].Enabled = false
+			}
+			continue
+		case strings.EqualFold(input, "done"):
+			selected := selectedSetupModels(items)
+			if len(selected) == 0 {
+				fmt.Fprintln(w, "Select at least one model before continuing.")
+				continue
+			}
+			return selected, nil
+		case strings.HasPrefix(input, "/"):
+			filter = strings.TrimSpace(strings.TrimPrefix(input, "/"))
+			page = 0
+			continue
+		}
+		if n, ok := ui.ParsePickerSelectionNumber(input, len(filteredIndexes)); ok {
+			idx := filteredIndexes[n-1]
+			items[idx].Enabled = !items[idx].Enabled
+			continue
+		}
+		if idx, matches, ok := resolveSetupModelSelection(items, input); ok {
+			items[idx].Enabled = !items[idx].Enabled
+			continue
+		} else if len(matches) > 1 {
+			fmt.Fprintf(w, "Matches: %s\n", setupModelMatchSummary(items, matches, 8))
+			continue
+		}
+		filter = input
+		page = 0
+	}
+}
+
+func filterSetupModelIndexes(items []setupModelPick, filter string) []int {
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	indexes := make([]int, 0, len(items))
+	for i, item := range items {
+		if filter == "" ||
+			strings.Contains(strings.ToLower(item.PickerID()), filter) ||
+			strings.Contains(strings.ToLower(item.PickerName()), filter) {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
+}
+
+func printSetupModelSelectionPage(w io.Writer, providerID string, items []setupModelPick, indexes []int, page, pageSize int, filter string) {
+	start, end := ui.PickerPageBounds(page, pageSize, len(indexes))
+	enabled := len(selectedSetupModels(items))
+	title := fmt.Sprintf("Models for %s %d-%d of %d (%d enabled)", providerID, start+1, end, len(indexes), enabled)
+	if filter != "" {
+		title += fmt.Sprintf(" matching %q", filter)
+	}
+	fmt.Fprintln(w, title)
+	for pos := start; pos < end; pos++ {
+		item := items[indexes[pos]]
+		price := item.PickerPrice()
+		if price == "" {
+			price = "-"
+		}
+		release := item.PickerRelease()
+		if release == "" {
+			release = "-"
+		}
+		marker := " "
+		id := ui.ClipPickerText(item.PickerID(), 34)
+		name := item.PickerName()
+		if item.Enabled {
+			marker = "*"
+			id = "\x1b[1m" + id + "\x1b[0m"
+			name = "\x1b[1m" + name + "\x1b[0m"
+		}
+		fmt.Fprintf(w, "%s%4d. %-43s %12s %10s  %s\n", marker, pos+1, id, price, release, name)
+	}
+}
+
+func selectedSetupModels(items []setupModelPick) []modelsdev.Model {
+	selected := make([]modelsdev.Model, 0, len(items))
+	for _, item := range items {
+		if item.Enabled {
+			selected = append(selected, item.Model)
+		}
+	}
+	return selected
+}
+
+func resolveSetupModelSelection(items []setupModelPick, input string) (selected int, matches []int, ok bool) {
+	input = strings.ToLower(strings.TrimSpace(input))
+	if input == "" {
+		return 0, nil, false
+	}
+	var prefix []int
+	for i, item := range items {
+		id := strings.ToLower(item.PickerID())
+		name := strings.ToLower(item.PickerName())
+		if id == input || name == input {
+			return i, nil, true
+		}
+		if strings.HasPrefix(id, input) || strings.HasPrefix(name, input) {
+			prefix = append(prefix, i)
+		}
+	}
+	if len(prefix) == 1 {
+		return prefix[0], nil, true
+	}
+	return 0, prefix, false
+}
+
+func setupModelMatchSummary(items []setupModelPick, matches []int, limit int) string {
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	parts := make([]string, 0, len(matches))
+	for _, idx := range matches {
+		item := items[idx]
+		parts = append(parts, item.PickerID()+ui.PickerDisplayNameSuffix(item.PickerName(), item.PickerID()))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func supportedSetupProviders(catalog *modelsdev.Catalog) []modelsdev.Provider {
@@ -380,13 +530,6 @@ func setupPageSize(env environment) int {
 	return ui.PickerPageSize(rows)
 }
 
-func setSetupStringField(cfg map[string]json.RawMessage, key, value string, force bool) error {
-	if _, ok := cfg[key]; ok && !force {
-		return nil
-	}
-	return setJSONField(cfg, key, value)
-}
-
 func setJSONField(cfg map[string]json.RawMessage, key string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -394,6 +537,39 @@ func setJSONField(cfg map[string]json.RawMessage, key string, value any) error {
 	}
 	cfg[key] = data
 	return nil
+}
+
+func refreshConfiguredModels(provider modelsdev.Provider, current []llm.ModelEntry) ([]modelsdev.Model, error) {
+	models := make([]modelsdev.Model, 0, len(current))
+	for _, entry := range current {
+		if entry.Name == "" {
+			continue
+		}
+		model, ok := setupProviderModel(provider, entry.Name)
+		if !ok {
+			return nil, fmt.Errorf("configured model %q was not found in models.dev", entry.Name)
+		}
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("no configured models")
+	}
+	return models, nil
+}
+
+func setupProviderModel(provider modelsdev.Provider, id string) (modelsdev.Model, bool) {
+	if provider.Models == nil {
+		return modelsdev.Model{}, false
+	}
+	if model, ok := provider.Models[id]; ok {
+		return model, true
+	}
+	for _, model := range provider.Models {
+		if model.ID == id {
+			return model, true
+		}
+	}
+	return modelsdev.Model{}, false
 }
 
 func writeSetupProviderConfig(path string, provider setupProviderConfig, force bool) error {

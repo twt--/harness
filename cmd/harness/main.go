@@ -556,14 +556,8 @@ func resolveCatalogSelection(catalog protocol.Catalog, provider, model, preferre
 		provider = p
 		model = m
 	}
-	if provider == "" && model == "" {
-		provider = catalog.DefaultProvider
-		model = catalog.DefaultModel
-	}
 	if provider != "" && model == "" {
-		if provider == catalog.DefaultProvider && catalog.DefaultModel != "" {
-			model = catalog.DefaultModel
-		} else if p, ok := catalogProvider(catalog, provider); ok && len(p.Models) == 1 {
+		if p, ok := catalogProvider(catalog, provider); ok && len(p.Models) == 1 {
 			model = p.Models[0].ID
 		}
 	}
@@ -593,7 +587,7 @@ func resolveCatalogSelection(catalog protocol.Catalog, provider, model, preferre
 			return catalogSelection{}, fmt.Errorf("model %q is available from multiple providers (%s); use provider:%s", model, strings.Join(matches, ", "), model)
 		}
 	}
-	return catalogSelection{}, fmt.Errorf("a model is required (-model or proxy default)")
+	return catalogSelection{}, fmt.Errorf("a model is required (-model or harness config model)")
 }
 
 func catalogProvider(catalog protocol.Catalog, id string) (protocol.Provider, bool) {

@@ -18,8 +18,6 @@ func TestCatalogAndRegistry(t *testing.T) {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(protocol.Catalog{
-			DefaultProvider: "openrouter",
-			DefaultModel:    "openai/gpt-5.5",
 			Providers: []protocol.Provider{{
 				ID: "openrouter",
 				Models: []protocol.Model{{
@@ -40,8 +38,8 @@ func TestCatalogAndRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Catalog: %v", err)
 	}
-	if catalog.DefaultProvider != "openrouter" || catalog.DefaultModel != "openai/gpt-5.5" {
-		t.Fatalf("catalog defaults = %+v", catalog)
+	if len(catalog.Providers) != 1 || catalog.Providers[0].ID != "openrouter" {
+		t.Fatalf("catalog providers = %+v", catalog.Providers)
 	}
 	registry := Registry(catalog)
 	if got := registry.ContextWindow("openrouter:openai/gpt-5.5"); got != 1_050_000 {

@@ -56,8 +56,8 @@ harness-model-proxy
 Then run `harness` against the proxy catalog:
 
 ```sh
-./harness                                      # uses proxy default provider/model
 ./harness -provider anthropic -model claude-opus-4-8
+./harness -model openrouter:openai/gpt-5.5
 ./harness -provider openai -model gpt-5.5 -p "summarize README.md"
 ```
 
@@ -74,8 +74,9 @@ Then run `harness` against the proxy catalog:
 
 `harness` fetches providers and models from `harness-model-proxy`. A model value
 like `openrouter:openai/gpt-5.5` selects the proxy provider `openrouter` while
-sending `openai/gpt-5.5` as the provider-local model id. Without `-provider` or
-`-model`, the proxy default is used.
+sending `openai/gpt-5.5` as the provider-local model id. Model selection belongs
+to `harness`: use `-model`, `HARNESS_MODEL`, config `model`, or `/model` in the
+REPL.
 
 ### One-shot mode
 
@@ -97,7 +98,7 @@ interrupted.
 ```
 -p <prompt|->     one-shot mode; "-" or piped stdin reads the prompt from stdin
 -provider <name>  model proxy provider id
--model <id>       model id (defaults to the proxy default when omitted)
+-model <id>       model id
 -model-proxy-url <url>   harness-model-proxy URL (default http://127.0.0.1:8765)
 -system <text|@file>           append to the system prompt (project notes)
 -system-override <text|@file>  replace the builtin instructions
@@ -145,18 +146,19 @@ Precedence is **flags > environment > config file > built-in defaults**.
   used to reject unsupported models or effort values.
 - Run `./harness-model-proxy --setup` to create a proxy config and a provider
   config from models.dev, or append a new provider config to an existing proxy config
-  without changing existing defaults. Setup lists harness-supported providers,
-  prompts for the API key, pages the provider's models newest-first, and asks
-  which model should be the default. The provider file includes all models known
-  for that provider: URL, API type, key env vars, context windows, prices, and
-  reasoning metadata come from models.dev. If the live catalog is unreachable,
-  setup uses a vendored models.dev snapshot. Existing provider config files and
-  existing default provider/model settings are not overwritten unless `--force`
-  is set.
+  without configuring a proxy default model. Setup lists harness-supported providers,
+  prompts for the API key, then lets you choose which provider models are available
+  locally. The model selector marks enabled rows with bold text and `*`; enter a
+  number or id to toggle a model, `all` or `none` to bulk-select the model list,
+  and `done` to write the allowlist. The provider file includes only enabled models,
+  with URL, API type, key env vars, context windows, prices, and reasoning metadata
+  from models.dev. If the live catalog is unreachable, setup uses a vendored
+  models.dev snapshot. Existing provider config files are not overwritten unless
+  `--force` is set.
 - Run `./harness-model-proxy --refresh-models` to fetch the latest live
-  `models.dev` catalog and regenerate every provider config referenced by the
-  proxy config file, preserving stored API keys. Unlike setup, refresh fails if
-  models.dev is inaccessible.
+  `models.dev` catalog and refresh metadata for the currently configured model
+  allowlists, preserving stored API keys. Unlike setup, refresh fails if models.dev
+  is inaccessible.
 
 ## Meta-commands (REPL)
 

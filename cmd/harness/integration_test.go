@@ -248,8 +248,6 @@ func startModelProxy(t *testing.T, baseURL string) string {
 	handler, err := modelserver.NewHandler(modelserver.Options{
 		ConfigDir: dir,
 		Config: modelserver.Config{
-			Provider:             "openai",
-			Model:                "mock-model",
 			ProviderConfigs:      []string{"openai.json"},
 			DefaultContextWindow: 128000,
 		},

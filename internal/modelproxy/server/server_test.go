@@ -39,8 +39,6 @@ func TestHandlerCatalogAndStreamResolveProviderConfig(t *testing.T) {
 	handler, err := NewHandler(Options{
 		ConfigDir: dir,
 		Config: Config{
-			Provider:             "openrouter",
-			Model:                "openai/gpt-5.5",
 			ProviderConfigs:      []string{"openrouter.json"},
 			DefaultContextWindow: 512000,
 		},
@@ -70,8 +68,8 @@ func TestHandlerCatalogAndStreamResolveProviderConfig(t *testing.T) {
 		t.Fatalf("decode catalog: %v", err)
 	}
 	resp.Body.Close()
-	if catalog.DefaultProvider != "openrouter" || catalog.DefaultModel != "openai/gpt-5.5" {
-		t.Fatalf("catalog defaults = %+v", catalog)
+	if len(catalog.Providers) != 1 || catalog.Providers[0].ID != "openrouter" {
+		t.Fatalf("catalog providers = %+v", catalog.Providers)
 	}
 
 	body, _ := json.Marshal(protocol.StreamRequest{
@@ -112,7 +110,7 @@ func TestHandlerRejectsUnknownModel(t *testing.T) {
 	}
 	handler, err := NewHandler(Options{
 		ConfigDir: dir,
-		Config:    Config{Provider: "openai", Model: "known", ProviderConfigs: []string{"openai.json"}},
+		Config:    Config{ProviderConfigs: []string{"openai.json"}},
 	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
@@ -138,5 +136,46 @@ func TestHandlerRejectsUnknownModel(t *testing.T) {
 	}
 	if wireErr.Message == "" {
 		t.Fatalf("expected error message")
+	}
+}
+
+func TestHandlerRequiresExplicitProviderAndModel(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "openai.json"), []byte(`{
+  "name": "openai",
+  "api_type": "openai",
+  "base_url": "http://localhost:11434/v1",
+  "models": [{"name":"known","context_window":128000}]
+}`), 0o600); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+	handler, err := NewHandler(Options{
+		ConfigDir: dir,
+		Config:    Config{ProviderConfigs: []string{"openai.json"}},
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	body, _ := json.Marshal(protocol.StreamRequest{Request: llm.Request{Model: "known"}})
+	resp, err := srv.Client().Post(srv.URL+"/v1/stream", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing provider status = %d, want 400", resp.StatusCode)
+	}
+
+	body, _ = json.Marshal(protocol.StreamRequest{Provider: "openai"})
+	resp, err = srv.Client().Post(srv.URL+"/v1/stream", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing model status = %d, want 400", resp.StatusCode)
 	}
 }
