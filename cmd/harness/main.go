@@ -797,7 +797,24 @@ func configuredModelPickerEntries(models []llm.ModelEntry) []configuredModelPick
 
 func (m configuredModelPick) PickerID() string      { return m.entry.Name }
 func (m configuredModelPick) PickerName() string    { return m.entry.Name }
+func (m configuredModelPick) PickerPrice() string   { return formatPickerPrice(m.entry.Price) }
 func (m configuredModelPick) PickerRelease() string { return "" }
+
+// formatPickerPrice formats an llm.Price as "$in/$out" per 1M tokens,
+// or "" when no price is configured.
+func formatPickerPrice(p llm.Price) string {
+	if p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0 {
+		return ""
+	}
+	return fmt.Sprintf("$%s/$%s", formatPriceComponent(p.Input), formatPriceComponent(p.Output))
+}
+
+func formatPriceComponent(v float64) string {
+	if v == float64(int64(v)) {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", v), "0"), ".")
+}
 
 func providerModelKey(provider, model string) string {
 	if provider == "" || model == "" {

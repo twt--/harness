@@ -348,6 +348,7 @@ type setupModelPick struct {
 
 func (m setupModelPick) PickerID() string   { return m.ID }
 func (m setupModelPick) PickerName() string { return m.Name }
+func (m setupModelPick) PickerPrice() string { return formatPickerPrice(m.Cost) }
 func (m setupModelPick) PickerRelease() string {
 	if m.ReleaseDate != "" {
 		return m.ReleaseDate

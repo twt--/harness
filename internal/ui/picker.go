@@ -23,9 +23,11 @@ type ProviderPickerEntry interface {
 	PickerModelCount() int
 }
 
-// ModelPickerEntry is a PickerEntry that can render a model release date.
+// ModelPickerEntry is a PickerEntry that can render model pricing and a release
+// date.
 type ModelPickerEntry interface {
 	PickerEntry
+	PickerPrice() string
 	PickerRelease() string
 }
 
@@ -184,7 +186,8 @@ func PrintProviderPickerPage[T ProviderPickerEntry](w io.Writer, providers []T, 
 }
 
 // PrintModelPickerPage renders the model picker rows used by setup and the REPL
-// /model command.
+// /model command. Each row shows number, model ID, input/output pricing, release
+// date or last-updated date, and display name.
 func PrintModelPickerPage[T ModelPickerEntry](w io.Writer, providerID string, models []T, page, pageSize int, filter string) {
 	start, end := PickerPageBounds(page, pageSize, len(models))
 	title := fmt.Sprintf("Models for %s %d-%d of %d", providerID, start+1, end, len(models))
@@ -194,11 +197,15 @@ func PrintModelPickerPage[T ModelPickerEntry](w io.Writer, providerID string, mo
 	fmt.Fprintln(w, title)
 	for i := start; i < end; i++ {
 		model := models[i]
+		price := model.PickerPrice()
+		if price == "" {
+			price = "-"
+		}
 		release := model.PickerRelease()
 		if release == "" {
 			release = "-"
 		}
-		fmt.Fprintf(w, "%4d. %-44s %10s  %s\n", i+1, ClipPickerText(model.PickerID(), 44), release, model.PickerName())
+		fmt.Fprintf(w, "%4d. %-34s %12s %10s  %s\n", i+1, ClipPickerText(model.PickerID(), 34), price, release, model.PickerName())
 	}
 }
 
