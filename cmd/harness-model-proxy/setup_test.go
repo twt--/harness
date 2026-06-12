@@ -104,6 +104,75 @@ func TestRunSetupModelSelectorCancelDoesNotWriteConfig(t *testing.T) {
 	}
 }
 
+func TestRunSetupUpdatesExistingProviderConfig(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "harness-model-proxy")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"provider_configs":["testai.json"],"default_context_window":256000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testai.json"), []byte(`{
+  "name": "testai",
+  "api_type": "openai",
+  "base_url": "https://api.test/v1",
+  "api_key": "sk-existing",
+  "models": [{"name":"alpha","context_window":1000}]
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errw bytes.Buffer
+	env := environment{
+		stdin:  strings.NewReader("1\n\n1\nsave\n"),
+		stdout: &out,
+		stderr: &errw,
+		getenv: func(k string) string {
+			if k == "HOME" {
+				return home
+			}
+			return ""
+		},
+		modelsDevCatalog: func(context.Context) (*modelsdev.Catalog, error) {
+			return testSetupCatalog(), nil
+		},
+		terminalRows: func() int { return 12 },
+	}
+
+	if err := runSetup(env, false); err != nil {
+		t.Fatalf("runSetup: %v; stderr=%q", err, errw.String())
+	}
+	output := out.String()
+	if !strings.Contains(output, "*   1.") || !strings.Contains(output, "\x1b[1mtestai\x1b[0m") || !strings.Contains(output, "\x1b[1mTestAI\x1b[0m") {
+		t.Fatalf("provider selector should mark existing provider with star and bold, output=%q", output)
+	}
+	if !strings.Contains(output, "(1 enabled)") {
+		t.Fatalf("model selector should start from existing allowlist, output=%q", output)
+	}
+	if !strings.Contains(output, "Beta") {
+		t.Fatalf("model selector should show disabled catalog models for existing providers, output=%q", output)
+	}
+	if !strings.Contains(output, "Updated "+filepath.Join(dir, "testai.json")) {
+		t.Fatalf("setup should report provider update, output=%q", output)
+	}
+
+	providerData, err := os.ReadFile(filepath.Join(dir, "testai.json"))
+	if err != nil {
+		t.Fatalf("read provider config: %v", err)
+	}
+	var provider setupProviderConfig
+	if err := json.Unmarshal(providerData, &provider); err != nil {
+		t.Fatalf("decode provider config: %v", err)
+	}
+	if provider.APIKey != "sk-existing" {
+		t.Fatalf("provider API key = %q, want preserved existing key", provider.APIKey)
+	}
+	if len(provider.Models) != 2 || provider.Models[0].Name != "alpha" || provider.Models[1].Name != "beta" {
+		t.Fatalf("provider models = %+v, want alpha and beta", provider.Models)
+	}
+}
+
 func TestRunRefreshModelsPreservesConfiguredModelAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

@@ -447,18 +447,20 @@ Precedence: **flags > environment > config file > built-in defaults.**
   `compact_tool_result_max_bytes`, plus `delegate_max_steps` (default `20`) for the
   read-only delegate tool.
 - `harness-model-proxy --setup` creates a proxy config in the default proxy directory,
-  or appends a new provider config to an existing proxy config. It fetches models.dev
-  provider metadata, falls back to a
+  appends a new provider config to an existing proxy config, or updates an existing
+  configured provider. It fetches models.dev provider metadata, falls back to a
   vendored models.dev snapshot when the live catalog is unreachable, lists
-  harness-supported providers, prompts for the API key, pages the selected provider's
-  models newest-first, and asks which models should be locally available. The
-  selector starts with no models enabled. Enabled rows are bold and marked with `*`;
-  the selector accepts number/id toggles plus global `all`, global `none`, `save`,
+  harness-supported providers, marks existing providers with bold text and `*`,
+  prompts for the API key, pages the selected provider's models newest-first, and
+  asks which models should be locally available. New providers start with no models
+  enabled; existing providers start with their configured models enabled and all
+  other catalog models disabled. Enabled rows are bold and marked with `*`; the
+  selector accepts number/id toggles plus global `all`, global `none`, `save`,
   `/search`, `n`, `p`, and `cancel`. The provider config is
   generated from models.dev with only enabled models for that provider: base URL,
   api_type (`responses`, `openai`, or `anthropic`), key env vars, context windows,
   pricing, and reasoning metadata. Without `--force`, setup refuses to overwrite
-  existing provider files.
+  provider files that are not already referenced by the proxy config.
 - `harness-model-proxy --refresh-models` fetches the latest live models.dev catalog
   and refreshes each configured provider file's current model allowlist, preserving
   stored API keys. It errors if models.dev is inaccessible or a configured provider

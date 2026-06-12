@@ -145,17 +145,21 @@ Precedence is **flags > environment > config file > built-in defaults**.
   harness sends it to the proxy only when requested. Proxy catalog metadata is
   used to reject unsupported models or effort values.
 - Run `./harness-model-proxy --setup` to create a proxy config and a provider
-  config from models.dev, or append a new provider config to an existing proxy config
-  without configuring a proxy default model. Setup lists harness-supported providers,
-  prompts for the API key, then lets you choose which provider models are available
-  locally. The model selector starts with no models enabled and marks enabled rows
-  with bold text and `*`; enter a
+  config from models.dev, append a new provider config to an existing proxy config,
+  or update an existing configured provider without configuring a proxy default
+  model. Setup lists harness-supported providers and marks existing providers with
+  bold text and `*`, prompts for the API key, then lets you choose which provider
+  models are available locally. New providers start with no models enabled;
+  existing providers start with their configured models enabled and all other
+  catalog models disabled. The model selector marks enabled rows with bold text and
+  `*`; enter a
   number or id to toggle a model, `all` or `none` to bulk-select the model list,
   `save` to write the allowlist, or `cancel` to quit without saving. The provider
   file includes only enabled models, with URL, API type, key env vars, context
   windows, prices, and reasoning metadata from models.dev. If the live catalog is
   unreachable, setup uses a vendored models.dev snapshot. Existing provider config
-  files are not overwritten unless `--force` is set.
+  files that are not already referenced by the proxy config are not overwritten
+  unless `--force` is set.
 - Run `./harness-model-proxy --refresh-models` to fetch the latest live
   `models.dev` catalog and refresh metadata for the currently configured model
   allowlists, preserving stored API keys. Unlike setup, refresh fails if models.dev

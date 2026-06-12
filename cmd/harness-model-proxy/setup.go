@@ -57,19 +57,30 @@ func runSetup(env environment, force bool) error {
 	if err != nil {
 		return err
 	}
+	existingProviders, err := loadSetupExistingProviders(configPath, configExists)
+	if err != nil {
+		return err
+	}
 
-	providerMeta, err := promptProviderSelection(reader, env.stdout, catalog, setupPageSize(env))
+	providerMeta, err := promptProviderSelection(reader, env.stdout, catalog, existingProviders, setupPageSize(env))
 	if err != nil {
 		return err
 	}
 	providerName := providerMeta.ID
 	providerFile := providerConfigFilename(providerName)
-	providerPath := filepath.Join(dir, providerFile)
+	existingProvider, updatingProvider := existingProviders[providerName]
+	if updatingProvider {
+		providerFile = existingProvider.File
+	}
+	providerPath := providerFile
+	if !filepath.IsAbs(providerPath) {
+		providerPath = filepath.Join(dir, providerFile)
+	}
 	providerExists, err := pathExists(providerPath)
 	if err != nil {
 		return err
 	}
-	if providerExists && !force {
+	if providerExists && !force && !updatingProvider {
 		return fmt.Errorf("%s already exists", providerPath)
 	}
 	if providerMeta.APIType() == "" || providerMeta.BaseURL() == "" {
@@ -83,7 +94,10 @@ func runSetup(env environment, force bool) error {
 	if err != nil {
 		return err
 	}
-	models, err := promptModelSelection(reader, env.stdout, providerMeta, setupPageSize(env))
+	if updatingProvider && apiKey == "" {
+		apiKey = existingProvider.Config.APIKey
+	}
+	models, err := promptModelSelection(reader, env.stdout, providerMeta, setupConfiguredModelSet(existingProvider.Config.Models), setupPageSize(env))
 	if err != nil {
 		return err
 	}
@@ -101,14 +115,14 @@ func runSetup(env environment, force bool) error {
 
 	var configBody any = mainConfig
 	if configExists {
-		updated, err := updatedSetupConfig(configPath, providerFile, force)
+		updated, err := updatedSetupConfig(configPath, providerFile, force, updatingProvider)
 		if err != nil {
 			return err
 		}
 		configBody = updated
 	}
 
-	if err := writeSetupProviderConfig(providerPath, provider, force); err != nil {
+	if err := writeSetupProviderConfig(providerPath, provider, force || updatingProvider); err != nil {
 		return err
 	}
 
@@ -127,7 +141,7 @@ func runSetup(env environment, force bool) error {
 
 	providerVerb := "Wrote"
 	if providerExists {
-		providerVerb = "Overwrote"
+		providerVerb = "Updated"
 	}
 	fmt.Fprintf(env.stdout, "%s %s\n", configVerb, configPath)
 	fmt.Fprintf(env.stdout, "%s %s\n", providerVerb, providerPath)
@@ -212,7 +226,7 @@ func refreshCatalog(env environment) (*modelsdev.Catalog, error) {
 	return defaultModelsDevCatalog(context.Background())
 }
 
-func updatedSetupConfig(path, providerFile string, force bool) (map[string]json.RawMessage, error) {
+func updatedSetupConfig(path, providerFile string, force bool, allowExisting bool) (map[string]json.RawMessage, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -229,7 +243,7 @@ func updatedSetupConfig(path, providerFile string, force bool) (map[string]json.
 	if err != nil {
 		return nil, err
 	}
-	if slices.Contains(configs, providerFile) && !force {
+	if slices.Contains(configs, providerFile) && !force && !allowExisting {
 		return nil, fmt.Errorf("%s already references provider config %s", path, providerFile)
 	}
 	if !slices.Contains(configs, providerFile) {
@@ -247,6 +261,55 @@ func updatedSetupConfig(path, providerFile string, force bool) (map[string]json.
 		}
 	}
 	return cfg, nil
+}
+
+type setupExistingProvider struct {
+	File   string
+	Config llm.ProviderConfig
+}
+
+func loadSetupExistingProviders(configPath string, configExists bool) (map[string]setupExistingProvider, error) {
+	existing := map[string]setupExistingProvider{}
+	if !configExists {
+		return existing, nil
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	files, err := setupProviderConfigs(cfg["provider_configs"])
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Dir(configPath)
+	for _, file := range files {
+		path := file
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, file)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		providers, err := llm.DecodeProviderConfigs(data)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		for _, provider := range providers {
+			if provider.Name == "" {
+				continue
+			}
+			existing[provider.Name] = setupExistingProvider{
+				File:   file,
+				Config: provider,
+			}
+		}
+	}
+	return existing, nil
 }
 
 func setupProviderConfigs(raw json.RawMessage) ([]string, error) {
@@ -276,14 +339,15 @@ func setupProviderFromModelsDev(provider modelsdev.Provider, apiKey string, mode
 	}
 }
 
-func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Catalog, pageSize int) (modelsdev.Provider, error) {
+func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Catalog, existing map[string]setupExistingProvider, pageSize int) (modelsdev.Provider, error) {
 	providers := supportedSetupProviders(catalog)
 	if len(providers) == 0 {
 		return modelsdev.Provider{}, fmt.Errorf("models.dev catalog has no harness-supported providers")
 	}
 	entries := make([]setupProviderPick, 0, len(providers))
 	for _, provider := range providers {
-		entries = append(entries, setupProviderPick{Provider: provider})
+		_, configured := existing[provider.ID]
+		entries = append(entries, setupProviderPick{Provider: provider, Configured: configured})
 	}
 	selected, err := ui.Pick(func(label string) (string, error) {
 		return promptLine(r, w, label)
@@ -293,7 +357,7 @@ func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Ca
 		Prompt:      "Provider (number/id, /search, n/p, q): ",
 		Kind:        "provider",
 		CancelError: fmt.Errorf("setup cancelled"),
-		PrintPage:   ui.PrintProviderPickerPage[setupProviderPick],
+		PrintPage:   printSetupProviderSelectionPage,
 	})
 	if err != nil {
 		return modelsdev.Provider{}, err
@@ -301,14 +365,14 @@ func promptProviderSelection(r *bufio.Reader, w io.Writer, catalog *modelsdev.Ca
 	return selected.Provider, nil
 }
 
-func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provider, pageSize int) ([]modelsdev.Model, error) {
+func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provider, enabled map[string]bool, pageSize int) ([]modelsdev.Model, error) {
 	models := provider.ModelsByReleaseDate()
 	if len(models) == 0 {
 		return nil, fmt.Errorf("provider %q has no models", provider.ID)
 	}
 	entries := make([]setupModelPick, 0, len(models))
 	for _, model := range models {
-		entries = append(entries, setupModelPick{Model: model})
+		entries = append(entries, setupModelPick{Model: model, Enabled: enabled[model.ID]})
 	}
 	selected, err := pickSetupModels(func(label string) (string, error) {
 		return promptLine(r, w, label)
@@ -324,11 +388,33 @@ func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provi
 
 type setupProviderPick struct {
 	modelsdev.Provider
+	Configured bool
 }
 
 func (p setupProviderPick) PickerID() string      { return p.ID }
 func (p setupProviderPick) PickerName() string    { return p.Name }
 func (p setupProviderPick) PickerModelCount() int { return len(p.Models) }
+
+func printSetupProviderSelectionPage(w io.Writer, providers []setupProviderPick, page, pageSize int, filter string) {
+	start, end := ui.PickerPageBounds(page, pageSize, len(providers))
+	title := fmt.Sprintf("Providers %d-%d of %d", start+1, end, len(providers))
+	if filter != "" {
+		title += fmt.Sprintf(" matching %q", filter)
+	}
+	fmt.Fprintln(w, title)
+	for i := start; i < end; i++ {
+		provider := providers[i]
+		marker := " "
+		id := provider.PickerID()
+		name := provider.PickerName()
+		if provider.Configured {
+			marker = "*"
+			id = "\x1b[1m" + id + "\x1b[0m"
+			name = "\x1b[1m" + name + "\x1b[0m"
+		}
+		fmt.Fprintf(w, "%s%4d. %-28s %5d models  %s\n", marker, i+1, id, provider.PickerModelCount(), name)
+	}
+}
 
 type setupModelPick struct {
 	modelsdev.Model
@@ -469,6 +555,16 @@ func selectedSetupModels(items []setupModelPick) []modelsdev.Model {
 		}
 	}
 	return selected
+}
+
+func setupConfiguredModelSet(models []llm.ModelEntry) map[string]bool {
+	enabled := map[string]bool{}
+	for _, model := range models {
+		if model.Name != "" {
+			enabled[model.Name] = true
+		}
+	}
+	return enabled
 }
 
 func resolveSetupModelSelection(items []setupModelPick, input string) (selected int, matches []int, ok bool) {
