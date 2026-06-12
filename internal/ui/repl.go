@@ -1100,8 +1100,11 @@ func (s *accumulatingSink) Notice(msg string) {
 
 func (s *accumulatingSink) TurnComplete(u agent.TurnUsage) {
 	s.app.addUsage(u)
-	line := usageLine(s.r.registry, s.r.model, u, s.r.now().Sub(s.r.turnStart))
 	s.r.TurnComplete(u)
+	// Regenerate the line for the session event record after cumulative totals
+	// have been updated by TurnComplete above.
+	line := usageLine(s.r.registry, s.r.model, u, s.r.now().Sub(s.r.turnStart),
+		s.r.cumInput, s.r.cumOutput, s.r.cumCost)
 	usage := u.Usage
 	s.app.recordEvent(session.Event{
 		Type:    session.EventTurnUsage,

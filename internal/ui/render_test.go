@@ -147,11 +147,15 @@ func TestUsageLineKnownModelShowsCost(t *testing.T) {
 	if !strings.Contains(got, "3 steps") {
 		t.Errorf("usage line should show step count, got %q", got)
 	}
-	if !strings.Contains(got, "12.4k in") || !strings.Contains(got, "1.8k out") {
-		t.Errorf("usage line should show token counts, got %q", got)
+	if !strings.Contains(got, "12.4k (12.4k) in") || !strings.Contains(got, "1.8k (1.8k) out") {
+		t.Errorf("usage line should show per-turn (cumulative) token counts, got %q", got)
 	}
 	if !strings.Contains(got, "$") {
 		t.Errorf("known model should show a cost, got %q", got)
+	}
+	// Both per-turn and cumulative cost should appear (parenthesised cumulative).
+	if !strings.Contains(got, "($") {
+		t.Errorf("usage line should show cumulative cost in parens, got %q", got)
 	}
 	if !strings.Contains(got, "4.3s") {
 		t.Errorf("usage line should show elapsed duration, got %q", got)
@@ -316,5 +320,49 @@ func TestToolUseStreamDisabledSuppressesRawArgs(t *testing.T) {
 	}
 	if errw.Len() != 0 {
 		t.Errorf("disabled tool stream must not touch stderr, got %q", errw.String())
+	}
+}
+
+func TestUsageLineCumulativeAcrossTurns(t *testing.T) {
+	var out, errw bytes.Buffer
+	start := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	r := NewRenderer(&out, &errw, RenderOptions{
+		Model: "claude-opus-4-8",
+		Registry: llm.NewRegistry(map[string]llm.ModelInfo{
+			"claude-opus-4-8": {
+				ContextWindow: 1_000_000,
+				Price:         llm.Price{Input: 5.0, Output: 25.0},
+			},
+		}),
+		Now: fixedClock(start, time.Second),
+	})
+
+	// Turn 1: 1000 in, 200 out.
+	r.StartTurn()
+	r.TurnComplete(agent.TurnUsage{
+		Steps: 1,
+		Usage: llm.Usage{InputTokens: 1000, OutputTokens: 200},
+	})
+	line1 := errw.String()
+	errw.Reset()
+	if !strings.Contains(line1, "1.0k (1.0k) in") {
+		t.Errorf("turn 1 should show per-turn = cumulative, got %q", line1)
+	}
+	if !strings.Contains(line1, "200 (200) out") {
+		t.Errorf("turn 1 output should match cumulative, got %q", line1)
+	}
+
+	// Turn 2: 500 in, 300 out. Cumulative: 1500 in, 500 out.
+	r.StartTurn()
+	r.TurnComplete(agent.TurnUsage{
+		Steps: 2,
+		Usage: llm.Usage{InputTokens: 500, OutputTokens: 300},
+	})
+	line2 := errw.String()
+	if !strings.Contains(line2, "500 (1.5k) in") {
+		t.Errorf("turn 2 should show 500 per-turn and 1.5k cumulative, got %q", line2)
+	}
+	if !strings.Contains(line2, "300 (500) out") {
+		t.Errorf("turn 2 should show 300 per-turn and 500 cumulative, got %q", line2)
 	}
 }

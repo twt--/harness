@@ -54,6 +54,10 @@ type Renderer struct {
 	turnStart         time.Time
 	assistantLineOpen bool
 	pending           map[string]llm.ToolCall // tool_use id -> call, awaiting its result
+
+	cumInput  int
+	cumOutput int
+	cumCost   float64
 }
 
 // NewRenderer builds a Renderer. A nil Now defaults to time.Now.
@@ -132,7 +136,17 @@ func (r *Renderer) Notice(msg string) { r.dimLine(msg) }
 func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
 	r.finishAssistantLine()
 	elapsed := r.now().Sub(r.turnStart)
-	r.dimLine(usageLine(r.registry, r.model, usage, elapsed))
+
+	// Accumulate session totals for the cumulative readout.
+	var cost float64
+	if r.registry != nil {
+		cost, _ = r.registry.Cost(r.model, usage.Usage)
+	}
+	r.cumInput += usage.Usage.InputTokens
+	r.cumOutput += usage.Usage.OutputTokens
+	r.cumCost += cost
+
+	r.dimLine(usageLine(r.registry, r.model, usage, elapsed, r.cumInput, r.cumOutput, r.cumCost))
 }
 
 // dimLine writes one line to errw, wrapping it in dim ANSI codes when color is
@@ -225,17 +239,22 @@ func ToolResultLine(call llm.ToolCall, result llm.ToolResult) string {
 	return fmt.Sprintf("[%s]%s → %s", call.Name, formatArgs(call.Input), resultSummary(result))
 }
 
-// usageLine renders the per-turn summary (design §10):
+// usageLine renders the per-turn summary with cumulative totals (design §10):
 //
-//	[turn: 3 steps · 12.4k in / 1.8k out · $0.071 · 4.3s]
+//	[turn: 3 steps · 12.4k (15.0k) in / 1.8k (2.0k) out · $0.071 ($0.102) · 4.3s]
 //
-// The cost segment is omitted for models with no price entry.
-func usageLine(registry *llm.Registry, model string, u agent.TurnUsage, elapsed time.Duration) string {
+// Per-turn values are shown first; parenthesised values are cumulative across
+// the session. Cumulative cost is omitted for models with no price entry;
+// per-turn cost is also omitted when the model has no price entry.
+func usageLine(registry *llm.Registry, model string, u agent.TurnUsage, elapsed time.Duration, cumIn, cumOut int, cumCost float64) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[turn: %d steps · %s in / %s out", u.Steps, humanTokens(u.Usage.InputTokens), humanTokens(u.Usage.OutputTokens))
+	fmt.Fprintf(&b, "[turn: %d steps · %s (%s) in / %s (%s) out",
+		u.Steps,
+		humanTokens(u.Usage.InputTokens), humanTokens(cumIn),
+		humanTokens(u.Usage.OutputTokens), humanTokens(cumOut))
 	if registry != nil {
-		if usd, known := registry.Cost(model, u.Usage); known {
-			fmt.Fprintf(&b, " · $%.3f", usd)
+		if _, known := registry.Cost(model, u.Usage); known {
+			fmt.Fprintf(&b, " · $%.3f ($%.3f)", turnCost(registry, model, u.Usage), cumCost)
 		}
 	}
 	if u.Context.Total > 0 {
@@ -247,6 +266,13 @@ func usageLine(registry *llm.Registry, model string, u agent.TurnUsage, elapsed 
 	}
 	fmt.Fprintf(&b, " · %s]", humanDuration(elapsed))
 	return b.String()
+}
+
+// turnCost returns the USD cost for a single turn's usage. It returns 0 when
+// the model is unknown.
+func turnCost(registry *llm.Registry, model string, u llm.Usage) float64 {
+	usd, _ := registry.Cost(model, u)
+	return usd
 }
 
 // snippet returns the first snippetLines lines of s for the verbose preview.
