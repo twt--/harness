@@ -689,7 +689,7 @@ func (app *App) modelSummary() string {
 	models = uniqueModels(models, app.Model)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "current: provider=%s model=%s base-url=%s\n", app.Provider, app.Model, app.BaseURL)
+	fmt.Fprintf(&b, "current: provider=%s model=%s proxy-url=%s\n", app.Provider, app.Model, app.BaseURL)
 	b.WriteString("available models:")
 	if len(models) == 0 {
 		b.WriteString(" none configured")
@@ -752,7 +752,7 @@ func (app *App) switchModel(model string) {
 	app.Model = selection.Model
 	app.RegistryModel = selection.RegistryModel
 	app.BaseURL = selection.BaseURL
-	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s base-url=%s]\n", app.Provider, app.Model, app.BaseURL)
+	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s proxy-url=%s]\n", app.Provider, app.Model, app.BaseURL)
 }
 
 // modeSummary renders the current run mode plus the modes available for

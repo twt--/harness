@@ -6,14 +6,16 @@ suites (`go test ./...`, 711 test functions across 27 packages).
 
 The legs split in two groups:
 
-- **Hermetic legs** drive the real, freshly-built binary as a subprocess against
-  a throwaway OpenAI-compatible mock server bound to `127.0.0.1` (no network, no
-  API keys). They are automated in `cmd/harness/integration_test.go` and run as
-  part of `go test ./...`. The mock lives only in `_test.go`, so it is never
-  compiled into the shipped binary.
+- **Hermetic legs** drive the real, freshly-built `harness` binary as a
+  subprocess through an in-process `harness-model-proxy` whose provider config
+  points at a throwaway OpenAI-compatible mock server bound to `127.0.0.1` (no
+  network, no API keys). They are automated in `cmd/harness/integration_test.go`
+  and run as part of `go test ./...`. The proxy and mock live only in `_test.go`,
+  so they are never compiled into the shipped binaries.
 - **Real-API legs** require provider credentials and are **BLOCKED** in this
-  environment (no `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, no local Ollama). They
-  are documented below with the exact commands to run them by hand.
+  environment (no proxy-accessible `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, no
+  local Ollama). They are documented below with the exact commands to run them by
+  hand.
 
 ## Environment at time of writing
 
@@ -105,29 +107,41 @@ notice fires.
 
 ### How the mock works
 
+`startModelProxy` creates a temp proxy config with one `openai` provider whose
+base URL points at `recordingMock`. The subprocess is invoked with
+`-model-proxy-url`, so the tested path is `harness -> harness-model-proxy ->
+provider dialect -> mock endpoint`.
+
 `recordingMock.ServeHTTP` decodes each `/v1/chat/completions` request body,
 records it, and replies with a scripted SSE stream (OpenAI chunk shape:
 `choices[].delta` for text, `choices[].delta.tool_calls[]` fragments for a tool
-call, `finish_reason`, a trailing usage chunk, then `data: [DONE]`). The model
-name `mock-model` infers the OpenAI dialect (design §7); the non-default
-`-base-url` makes an empty API key acceptable.
+call, `finish_reason`, a trailing usage chunk, then `data: [DONE]`).
 
 ## Real-API legs (BLOCKED — run by hand once credentials exist)
 
-These exercise the live provider dialects end to end. The harness reads keys from
-the environment only (design §2/§7); never pass them as flags.
+These exercise the live provider dialects end to end through
+`harness-model-proxy`. Start the proxy in a separate shell first; `harness`
+should receive only the proxy URL, provider id, and model id.
+
+```sh
+go build -o harness ./cmd/harness
+go build -o harness-model-proxy ./cmd/harness-model-proxy
+./harness-model-proxy --setup
+./harness-model-proxy
+```
 
 ### Anthropic Messages API
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
-go build ./cmd/harness
+# Start or restart harness-model-proxy in this environment after setup.
 
 # One-shot, assistant text captured to a file (tool summaries/usage go to stderr):
-./harness -model claude-opus-4-8 -p "list the Go files in this directory using your tools" > answer.txt
+./harness -provider anthropic -model claude-opus-4-8 \
+  -p "list the Go files in this directory using your tools" > answer.txt
 
 # Interactive REPL (try /help, a prompt that needs a tool, then /usage, /exit):
-./harness -model claude-opus-4-8
+./harness -provider anthropic -model claude-opus-4-8
 ```
 
 Expect: a per-turn usage line on stderr with a dollar cost (from configured
@@ -138,10 +152,11 @@ and a session auto-saved under `~/.local/state/harness/sessions/`.
 
 ```sh
 export OPENAI_API_KEY=sk-...
-go build ./cmd/harness
+# Start or restart harness-model-proxy in this environment after setup.
 
-./harness -model gpt-5.5 -p "read README.md and summarize it in two sentences" > answer.txt
-./harness -model gpt-5.5            # interactive
+./harness -provider openai -model gpt-5.5 \
+  -p "read README.md and summarize it in two sentences" > answer.txt
+./harness -provider openai -model gpt-5.5            # interactive
 ```
 
 Expect: same behavior as above. First-party OpenAI models use the Responses
@@ -155,15 +170,30 @@ names show token counts without a dollar figure.
 ollama serve &                 # if not already running
 ollama pull llama3.2
 
-go build ./cmd/harness
-./harness -model llama3.2 -base-url http://localhost:11434/v1 \
-  -p "what files are in this directory?"
+mkdir -p ~/.config/harness-model-proxy
+cat > ~/.config/harness-model-proxy/config.json <<'JSON'
+{
+  "provider": "ollama",
+  "model": "llama3.2",
+  "provider_configs": ["ollama.json"]
+}
+JSON
+cat > ~/.config/harness-model-proxy/ollama.json <<'JSON'
+{
+  "name": "ollama",
+  "api_type": "openai",
+  "base_url": "http://localhost:11434/v1",
+  "models": [{"name": "llama3.2", "context_window": 131072}]
+}
+JSON
+
+./harness-model-proxy
+./harness -provider ollama -model llama3.2 -p "what files are in this directory?"
 ```
 
-Expect: provider inferred as `openai` (non-`claude*` model), empty API key
-accepted because the base URL is non-default, token counts with no dollar figure
-(localhost skips models.dev pricing lookup). Tool reliability depends on the
-local model's tool-calling support.
+Expect: the proxy uses the OpenAI-compatible dialect with an empty API key,
+token counts with no dollar figure, and tool reliability depending on the local
+model's tool-calling support.
 
 ### Interrupt and resume against a real provider
 
@@ -171,12 +201,12 @@ To reproduce the interrupt/resume legs against a live API rather than the mock:
 
 ```sh
 # Start a turn that will take a while, then press Ctrl-C once mid-stream:
-./harness -model claude-opus-4-8 -session /tmp/s.json
+./harness -provider anthropic -model claude-opus-4-8 -session /tmp/s.json
 > write a very long essay about distributed systems
 # ^C  -> [cancelled], partial text kept; ^C again (or at the idle prompt) -> exit 130
 
 # Resume the saved session and continue:
-./harness -model claude-opus-4-8 -resume /tmp/s.json -p "continue"
+./harness -provider anthropic -model claude-opus-4-8 -resume /tmp/s.json -p "continue"
 ```
 
 Expect: the resumed transcript is re-sent intact; if the prior run was saved

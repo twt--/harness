@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"harness/internal/llm"
+	modelserver "harness/internal/modelproxy/server"
 	"harness/internal/session"
 )
 
@@ -200,15 +201,17 @@ func toolCallTurn(callID, path string) string {
 	return strings.Join([]string{start, "", args, "", done, "", "data: [DONE]", ""}, "\n")
 }
 
-// runHarness launches the built binary against the mock base URL with a model
-// name that infers the OpenAI dialect, pinned HOME/XDG so the auto-save path is
+// runHarness launches the built binary against a local model proxy backed by
+// the mock OpenAI-compatible server, pinned HOME/XDG so the auto-save path is
 // the temp dir. It returns the started command, its stdout pipe, and a temp dir.
 func startHarness(t *testing.T, bin, baseURL string, extraArgs ...string) (*exec.Cmd, io.ReadCloser, *safeBuffer, string) {
 	t.Helper()
 	home := t.TempDir()
+	proxyURL := startModelProxy(t, baseURL)
 	args := append([]string{
 		"-model", "mock-model",
-		"-base-url", baseURL,
+		"-provider", "openai",
+		"-model-proxy-url", proxyURL,
 	}, extraArgs...)
 	// bin is the path of the harness binary this test just built with go build;
 	// args are test-controlled literals. No external input reaches this call.
@@ -217,7 +220,6 @@ func startHarness(t *testing.T, bin, baseURL string, extraArgs ...string) (*exec
 	cmd.Env = append(os.Environ(),
 		"HOME="+home,
 		"XDG_STATE_HOME="+filepath.Join(home, "state"),
-		"OPENAI_API_KEY=", // explicitly empty; a non-default base URL needs none
 		"NO_COLOR=1",
 	)
 	stdout, err := cmd.StdoutPipe()
@@ -230,6 +232,35 @@ func startHarness(t *testing.T, bin, baseURL string, extraArgs ...string) (*exec
 		t.Fatal(err)
 	}
 	return cmd, stdout, errBuf, home
+}
+
+func startModelProxy(t *testing.T, baseURL string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "openai.json"), []byte(fmt.Sprintf(`{
+  "name": "openai",
+  "api_type": "openai",
+  "base_url": %q,
+  "models": [{"name":"mock-model","context_window":128000}]
+}`, baseURL)), 0o600); err != nil {
+		t.Fatalf("write proxy provider config: %v", err)
+	}
+	handler, err := modelserver.NewHandler(modelserver.Options{
+		ConfigDir: dir,
+		Config: modelserver.Config{
+			Provider:             "openai",
+			Model:                "mock-model",
+			ProviderConfigs:      []string{"openai.json"},
+			DefaultContextWindow: 128000,
+		},
+		Getenv: func(string) string { return "" },
+	})
+	if err != nil {
+		t.Fatalf("start model proxy: %v", err)
+	}
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+	return proxy.URL
 }
 
 // safeBuffer is a tiny concurrency-safe writer for capturing subprocess stderr.

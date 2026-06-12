@@ -1,13 +1,8 @@
 // Package config resolves user-facing settings from flags, environment
 // variables, an optional config file, and built-in defaults, with precedence
-// flags > env > file > defaults (design §7). It deliberately depends on neither
-// internal/llm nor the provider factory: it is the flag/env/file machinery
-// layer, and main (Phase 10) translates a resolved Config into factory.Options
-// and agent/ui options.
-//
-// API keys are never read from flags or the main config file. Provider config
-// files may carry keys for users who choose that tradeoff; environment variables
-// still take precedence where the main package resolves the selected provider.
+// flags > env > file > defaults. It deliberately depends on neither internal/llm
+// nor the model proxy client: it is the flag/env/file machinery layer, and main
+// translates a resolved Config into agent/ui options.
 package config
 
 import (
@@ -30,15 +25,10 @@ var ErrHelp = flag.ErrHelp
 
 // Config is the fully resolved, provider-neutral configuration.
 type Config struct {
-	Setup         bool // -setup: create or update config in the default config directory
-	SetupForce    bool // -force: allow setup to overwrite existing setup-managed files/fields
-	RefreshModels bool // -refresh-models: update configured provider model metadata from models.dev
-
 	// Provider selection.
-	Provider string // provider config name or api type; resolved after inference
-	Model    string
-	BaseURL  string
-	APIKey   string // env-only; selected by the resolved provider
+	Provider      string // model proxy provider id
+	Model         string
+	ModelProxyURL string
 
 	// System prompt composition (design §8.5).
 	System         string // -system: appended to the builtin instructions
@@ -81,9 +71,6 @@ type Config struct {
 	NoColor    bool   // -no-color or NO_COLOR
 	ReplPrompt string // -prompt: REPL input prompt (default "> ")
 
-	// Provider configs: filenames resolved relative to the config file's directory.
-	ProviderConfigs []string
-
 	// MCP gateway integration (opt-in). Gateway is the unix socket path; an
 	// empty Gateway means "use the shared default", which main resolves via
 	// mcp.DefaultSocketPath at connect time so internal/config stays free of the
@@ -122,36 +109,34 @@ type FileModeConfig struct {
 }
 
 // fileConfig mirrors the subset of Config that the main config file may set.
-// API keys are intentionally absent here; provider config files carry provider
-// connection settings and optional keys.
+// Provider connection settings and secrets belong to harness-model-proxy, not
+// the harness process.
 type fileConfig struct {
-	Provider                  string   `json:"provider"`
-	Model                     string   `json:"model"`
-	BaseURL                   string   `json:"base_url"`
-	System                    string   `json:"system"`
-	NoEnv                     *bool    `json:"no_env"`
-	MaxSteps                  *int     `json:"max_steps"`
-	DefaultContextWindow      *int     `json:"default_context_window"`
-	ContextWindow             *int     `json:"context_window"`
-	ReasoningEffort           string   `json:"reasoning_effort"`
-	OnMaxSteps                string   `json:"on_max_steps"`
-	AgentsMDWarnBytes         *int     `json:"agents_md_warn_bytes"`
-	ToolResultMaxBytes        *int     `json:"tool_result_max_bytes"`
-	ToolResultMaxLines        *int     `json:"tool_result_max_lines"`
-	ReadFileDefaultLimit      *int     `json:"read_file_default_limit"`
-	CompactKeepTurns          *int     `json:"compact_keep_turns"`
-	CompactSummaryMaxTokens   *int     `json:"compact_summary_max_tokens"`
-	CompactToolResultMaxBytes *int     `json:"compact_tool_result_max_bytes"`
-	DelegateMaxSteps          *int     `json:"delegate_max_steps"`
-	Verbose                   *bool    `json:"verbose"`
-	ToolStream                *bool    `json:"tool_stream"`
-	LogLevel                  string   `json:"log_level"`
-	NoColor                   *bool    `json:"no_color"`
-	Prompt                    string   `json:"prompt"`
-	ProviderConfigs           []string `json:"provider_configs"`
-
-	Mode  string                    `json:"mode"`
-	Modes map[string]FileModeConfig `json:"modes"`
+	Provider                  string                    `json:"provider"`
+	Model                     string                    `json:"model"`
+	ModelProxyURL             string                    `json:"model_proxy_url"`
+	System                    string                    `json:"system"`
+	NoEnv                     *bool                     `json:"no_env"`
+	MaxSteps                  *int                      `json:"max_steps"`
+	DefaultContextWindow      *int                      `json:"default_context_window"`
+	ContextWindow             *int                      `json:"context_window"`
+	ReasoningEffort           string                    `json:"reasoning_effort"`
+	OnMaxSteps                string                    `json:"on_max_steps"`
+	AgentsMDWarnBytes         *int                      `json:"agents_md_warn_bytes"`
+	ToolResultMaxBytes        *int                      `json:"tool_result_max_bytes"`
+	ToolResultMaxLines        *int                      `json:"tool_result_max_lines"`
+	ReadFileDefaultLimit      *int                      `json:"read_file_default_limit"`
+	CompactKeepTurns          *int                      `json:"compact_keep_turns"`
+	CompactSummaryMaxTokens   *int                      `json:"compact_summary_max_tokens"`
+	CompactToolResultMaxBytes *int                      `json:"compact_tool_result_max_bytes"`
+	DelegateMaxSteps          *int                      `json:"delegate_max_steps"`
+	Verbose                   *bool                     `json:"verbose"`
+	ToolStream                *bool                     `json:"tool_stream"`
+	LogLevel                  string                    `json:"log_level"`
+	NoColor                   *bool                     `json:"no_color"`
+	Prompt                    string                    `json:"prompt"`
+	Mode                      string                    `json:"mode"`
+	Modes                     map[string]FileModeConfig `json:"modes"`
 
 	MCP *fileMCPConfig `json:"mcp"`
 }
@@ -180,19 +165,12 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		return Config{}, err
 	}
 
-	// -setup is intentionally independent of any resolved config file: it manages
-	// the default config directory directly, so a malformed or missing explicit
-	// config should not block setup from running.
-	if *f.setup {
-		return Config{Setup: true, SetupForce: *f.force}, nil
-	}
-
 	fc, err := readConfigFile(configPath)
 	if err != nil {
 		return Config{}, err
 	}
 
-	fProvider, fModel, fBaseURL := f.provider, f.model, f.baseURL
+	fProvider, fModel, fModelProxyURL := f.provider, f.model, f.modelProxyURL
 	fSystem, fSystemOverride, fNoEnv := f.system, f.systemOverride, f.noEnv
 	fResume, fSession := f.resume, f.session
 	fMaxSteps, fDefaultContextWindow, fContextWindow := f.maxSteps, f.defaultContextWindow, f.contextWindow
@@ -205,8 +183,6 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	var c Config
-	c.RefreshModels = *f.refreshModels
-
 	// Each resolution goes default -> file -> env -> flag, last writer wins.
 
 	c.Model = resolveString(set["model"], *fModel,
@@ -219,6 +195,8 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		}
 		c.Model = model
 	}
+	c.ModelProxyURL = resolveString(set["model-proxy-url"], *fModelProxyURL,
+		getenv("HARNESS_MODEL_PROXY_URL"), fc.ModelProxyURL, "")
 	c.System = resolveString(set["system"], *fSystem,
 		getenv("HARNESS_SYSTEM"), fc.System, "")
 
@@ -284,7 +262,6 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_NO_COLOR"), fc.NoColor, false)
 	c.ReplPrompt = resolveString(set["prompt"], *fReplPrompt,
 		getenv("HARNESS_PROMPT"), fc.Prompt, "> ")
-	c.ProviderConfigs = append([]string(nil), fc.ProviderConfigs...)
 
 	// MCP block (env > file > default; no flags). Gateway is left empty when
 	// unset so main can resolve the shared default socket at connect time.
@@ -318,21 +295,6 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		c.Prompt = *fPrompt
 		c.PromptSet = true
 	}
-
-	// Provider inference (design §7): -model is primary; claude* -> anthropic,
-	// else openai. An explicit provider (flag/env/file, resolved above) wins.
-	if c.Provider == "" && c.Model != "" {
-		c.Provider = inferProvider(c.Model)
-	}
-
-	// Base URL: provider-specific env var seeds the default, then the generic
-	// HARNESS_BASE_URL / file / flag layer on top.
-	base := providerBaseURLEnv(c.Provider, getenv)
-	c.BaseURL = resolveString(set["base-url"], *fBaseURL,
-		getenv("HARNESS_BASE_URL"), fc.BaseURL, base)
-
-	// API key: env-only, selected by the resolved provider.
-	c.APIKey = providerAPIKeyEnv(c.Provider, getenv)
 
 	return c, nil
 }
@@ -431,26 +393,23 @@ func isMCPHeaderVarName(name string) bool {
 // back both Load (parsing) and Usage (the -h screen) — one source of truth, so
 // the help can never drift from what is actually parsed (design §10).
 type flags struct {
-	provider, model, baseURL *string
-	system, systemOverride   *string
-	noEnv                    *bool
-	resume, session          *string
-	maxSteps                 *int
-	defaultContextWindow     *int
-	contextWindow            *int
-	reasoningEffort          *string
-	onMaxSteps               *string
-	mode                     *string
-	prompt                   *string
-	replPrompt               *string
-	logLevel                 *string
-	verbose, toolStream      *bool
-	noColor                  *bool
-	quietShort, quiet        *bool
-	config                   *string
-	setup                    *bool
-	force                    *bool
-	refreshModels            *bool
+	provider, model, modelProxyURL *string
+	system, systemOverride         *string
+	noEnv                          *bool
+	resume, session                *string
+	maxSteps                       *int
+	defaultContextWindow           *int
+	contextWindow                  *int
+	reasoningEffort                *string
+	onMaxSteps                     *string
+	mode                           *string
+	prompt                         *string
+	replPrompt                     *string
+	logLevel                       *string
+	verbose, toolStream            *bool
+	noColor                        *bool
+	quietShort, quiet              *bool
+	config                         *string
 }
 
 // newFlagSet defines every design §10 flag on a fresh FlagSet, used by both Load
@@ -459,9 +418,9 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	fs := flag.NewFlagSet("harness", flag.ContinueOnError)
 	var f flags
 	f.prompt = fs.String("p", "", "one-shot prompt; \"-\" or piped stdin reads the prompt from stdin")
-	f.provider = fs.String("provider", "", "provider config name or api type: openai, responses, anthropic (default inferred)")
-	f.model = fs.String("model", "", "model id (required)")
-	f.baseURL = fs.String("base-url", "", "provider base URL (e.g. http://localhost:11434/v1 for Ollama)")
+	f.provider = fs.String("provider", "", "model proxy provider id")
+	f.model = fs.String("model", "", "model id")
+	f.modelProxyURL = fs.String("model-proxy-url", "", "harness-model-proxy URL")
 	f.system = fs.String("system", "", "append to system prompt (text or @file)")
 	f.systemOverride = fs.String("system-override", "", "replace builtin instructions (text or @file)")
 	f.noEnv = fs.Bool("no-env", false, "omit the environment context block")
@@ -483,15 +442,12 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	// -config is consumed by the caller before Load (it picks the file Load
 	// reads); accepted here so it is not rejected as an unknown flag.
 	f.config = fs.String("config", "", "alternate config path")
-	f.setup = fs.Bool("setup", false, "create or update config in the default config directory")
-	f.force = fs.Bool("force", false, "with -setup, allow overwriting existing provider files and default provider/model fields")
-	f.refreshModels = fs.Bool("refresh-models", false, "fetch models.dev and update configured provider model metadata")
 	return fs, f
 }
 
 // Usage writes the -h/--help screen: a one-line summary followed by every design
-// §10 flag with its description and default. API keys are intentionally absent
-// from flags; use environment variables or provider config files.
+// §10 flag with its description and default. Provider secrets are configured on
+// harness-model-proxy, not exposed through harness flags.
 func Usage(w io.Writer) {
 	fmt.Fprintln(w, "harness — a minimal agentic coding harness.")
 	fmt.Fprintln(w)
@@ -500,7 +456,7 @@ func Usage(w io.Writer) {
 	fmt.Fprintln(w, "  harness -p \"prompt\" [flags]  one-shot: prints the assistant's answer to stdout")
 	fmt.Fprintln(w, "  harness session replay <session-dir>")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "API keys come from environment variables or provider config files; env wins.")
+	fmt.Fprintln(w, "Model provider access goes through harness-model-proxy.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
 	fs, _ := newFlagSet()
@@ -580,15 +536,6 @@ func resolveBool(flagSet bool, flagVal bool, envVal string, fileVal *bool, def b
 	return def
 }
 
-// inferProvider applies the §7 rule: model names starting with "claude" are
-// anthropic; everything else is OpenAI-compatible.
-func inferProvider(model string) string {
-	if strings.HasPrefix(model, "claude") {
-		return "anthropic"
-	}
-	return "openai"
-}
-
 // SplitProviderModel splits a "provider:model" string into its parts. The
 // provider half must look like a provider name ([a-zA-Z0-9._-]); anything else
 // (e.g. a model id with a colon in it) is returned as not-ok. Shared with the
@@ -609,34 +556,4 @@ func SplitProviderModel(model string) (provider, bareModel string, ok bool) {
 		}
 	}
 	return strings.ToLower(provider), bareModel, true
-}
-
-// providerBaseURLEnv returns the provider-specific base-url env var value, or "".
-func providerBaseURLEnv(provider string, getenv func(string) string) string {
-	switch provider {
-	case "anthropic":
-		return getenv("ANTHROPIC_BASE_URL")
-	case "responses":
-		if v := getenv("RESPONSES_BASE_URL"); v != "" {
-			return v
-		}
-		return getenv("OPENAI_BASE_URL")
-	default:
-		return getenv("OPENAI_BASE_URL")
-	}
-}
-
-// providerAPIKeyEnv returns the provider-specific API-key env var value, or "".
-func providerAPIKeyEnv(provider string, getenv func(string) string) string {
-	switch provider {
-	case "anthropic":
-		return getenv("ANTHROPIC_API_KEY")
-	case "responses":
-		if v := getenv("RESPONSES_API_KEY"); v != "" {
-			return v
-		}
-		return getenv("OPENAI_API_KEY")
-	default:
-		return getenv("OPENAI_API_KEY")
-	}
 }

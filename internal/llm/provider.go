@@ -22,22 +22,22 @@ type Provider interface {
 
 // Request is one model call's worth of input, provider-neutral.
 type Request struct {
-	Model       string
-	System      string
-	Messages    []Message
-	Tools       []ToolSchema
-	MaxTokens   int      // 0 = provider policy (see design §5.4)
-	Temperature *float64 // nil = omit
-	Reasoning   ReasoningConfig
-	StopSeqs    []string
+	Model       string          `json:"model"`
+	System      string          `json:"system,omitempty"`
+	Messages    []Message       `json:"messages,omitempty"`
+	Tools       []ToolSchema    `json:"tools,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`  // 0 = provider policy (see design §5.4)
+	Temperature *float64        `json:"temperature,omitempty"` // nil = omit
+	Reasoning   ReasoningConfig `json:"reasoning,omitempty"`
+	StopSeqs    []string        `json:"stop_seqs,omitempty"`
 }
 
 // ToolSchema is the model-facing declaration of one tool. Parameters is the raw
 // JSON Schema object owned by the tool layer; it is passed through unchanged.
 type ToolSchema struct {
-	Name        string
-	Description string
-	Parameters  json.RawMessage // JSON Schema object, owned by the tool layer
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"` // JSON Schema object, owned by the tool layer
 }
 
 // EventKind discriminates the StreamEvent union.
@@ -55,19 +55,19 @@ const (
 // StreamEvent is one event in a provider stream. Which fields are populated
 // depends on Kind.
 type StreamEvent struct {
-	Kind EventKind
+	Kind EventKind `json:"kind"`
 
-	Text string // EventTextDelta
+	Text string `json:"text,omitempty"` // EventTextDelta
 
 	// EventToolCall*; Index disambiguates parallel calls within one turn.
-	Index     int
-	ToolID    string          // Start/Done
-	ToolName  string          // Start/Done
-	ArgsDelta string          // Delta
-	ToolInput json.RawMessage // Done only: complete, valid JSON
+	Index     int             `json:"index,omitempty"`
+	ToolID    string          `json:"tool_id,omitempty"`    // Start/Done
+	ToolName  string          `json:"tool_name,omitempty"`  // Start/Done
+	ArgsDelta string          `json:"args_delta,omitempty"` // Delta
+	ToolInput json.RawMessage `json:"tool_input,omitempty"` // Done only: complete, valid JSON
 
-	Usage      *Usage     // EventUsage / EventDone
-	StopReason StopReason // EventDone
+	Usage      *Usage     `json:"usage,omitempty"`       // EventUsage / EventDone
+	StopReason StopReason `json:"stop_reason,omitempty"` // EventDone
 }
 
 // StopReason is the normalized reason a model turn ended.
@@ -84,8 +84,8 @@ const (
 // normalization InputTokens means the same thing on both dialects: uncached
 // input billed at full rate (see design §6).
 type Usage struct {
-	InputTokens      int // uncached input, billed at full rate
-	OutputTokens     int
-	CacheReadTokens  int
-	CacheWriteTokens int
+	InputTokens      int `json:"input_tokens"` // uncached input, billed at full rate
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
 }

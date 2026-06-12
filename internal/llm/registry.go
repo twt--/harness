@@ -68,6 +68,16 @@ func NewRegistry(models map[string]ModelInfo) *Registry {
 	}
 }
 
+// NewRegistryWithQualified builds a Registry with both unqualified model
+// lookups and provider-qualified lookups such as "openrouter:gpt-5.5".
+func NewRegistryWithQualified(models, qualified map[string]ModelInfo) *Registry {
+	r := NewRegistry(models)
+	if qualified != nil {
+		r.qualified = qualified
+	}
+	return r
+}
+
 // LoadProviderConfigs reads each provider config file, logs warnings for missing
 // or malformed files, and returns a Registry containing all discovered models.
 // Paths are resolved relative to configDir.

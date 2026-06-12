@@ -11,11 +11,10 @@ drives a tool-using LLM loop against local files, shell commands, and git.
   diff application, HTML-to-text reduction, and retries are all small enough to
   own; generic Unix capabilities are delegated to host CLIs where that is the
   simpler, battle-tested path.
-- **Generic over providers.** One internal message/streaming model with three
-  HTTP dialects: **Anthropic Messages**, **OpenAI Responses**, and **OpenAI Chat
-  Completions**. Responses is the default for first-party OpenAI models when
-  models.dev identifies them; Chat Completions remains the OpenAI-compatible path
-  for vLLM, Ollama, OpenRouter, llama.cpp, and custom base URLs.
+- **Provider access is isolated.** `harness` talks to a local
+  `harness-model-proxy` over HTTP. The proxy owns API keys, provider configs,
+  model metadata, and the Anthropic/OpenAI dialects; the main CLI only sees a
+  provider/model catalog and normalized stream events.
 - **No sandbox, no permission prompts.** The harness assumes it is launched
   inside an already-sandboxed environment; tools run with the process's
   privileges, immediately.
@@ -29,10 +28,11 @@ The end-to-end verification matrix is in [`docs/smoke.md`](docs/smoke.md).
 
 ```sh
 go build -o harness ./cmd/harness
+go build -o harness-model-proxy ./cmd/harness-model-proxy
 go build -o harness-mcp-gateway ./cmd/harness-mcp-gateway
 ```
 
-`make build` builds the same two binaries. `harness-mcp-gateway` is only needed
+`make build` builds the same binaries. `harness-mcp-gateway` is only needed
 for the optional [MCP servers](#mcp-servers-optional) integration; `go build -o
 harness ./cmd/harness` alone produces just the main binary.
 
@@ -44,35 +44,25 @@ go build ./... && go vet ./... && go test ./...
 
 ## Quickstart
 
-API keys are read from environment variables or provider config files — never
-from flags or the main config file, because those leak into shell history and
-committed dotfiles.
-
-### Anthropic
+Configure and start the model proxy first. API keys are read by
+`harness-model-proxy` from its environment or provider config files; the
+`harness` process does not need direct access to them.
 
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...
-./harness -model claude-opus-4-8                       # interactive REPL
-./harness -model claude-opus-4-8 -p "summarize README.md"   # one-shot
+harness-model-proxy --setup
+harness-model-proxy
 ```
 
-### OpenAI
+Then run `harness` against the proxy catalog:
 
 ```sh
-export OPENAI_API_KEY=sk-...
-./harness -model gpt-5.5
-./harness -model gpt-5.5 -p "what files are in internal/?"
+./harness                                      # uses proxy default provider/model
+./harness -provider anthropic -model claude-opus-4-8
+./harness -provider openai -model gpt-5.5 -p "summarize README.md"
 ```
 
-### A local OpenAI-compatible server (Ollama)
-
-No key is needed when the base URL is non-default (local servers need none):
-
-```sh
-ollama serve &
-ollama pull llama3.2
-./harness -model llama3.2 -base-url http://localhost:11434/v1
-```
+`harness-model-proxy` listens on `127.0.0.1:8765` by default. Use
+`harness -model-proxy-url http://host:port` when the proxy runs elsewhere.
 
 ### Session replay
 
@@ -80,19 +70,12 @@ ollama pull llama3.2
 ./harness session replay ~/.local/state/harness/sessions/20260611T123456Z
 ```
 
-The base URL supplies scheme/host/prefix only; the dialect appends its standard
-path (`/responses`, `/chat/completions`, or `/messages`).
-
 ### Provider selection
 
-`-model` is primary. The provider is **inferred** from the model name: anything
-starting with `claude` uses the Anthropic dialect, everything else uses the
-OpenAI-compatible dialect unless models.dev identifies the selected first-party
-OpenAI model, in which case the Responses dialect is used. Custom and local base
-URLs stay on Chat Completions unless `-provider responses` or a provider config
-with `api_type: "responses"` selects Responses explicitly. A model value like
-`openrouter:openai/gpt-5.5` selects the configured `openrouter` provider while
-sending `openai/gpt-5.5` as the provider-local model id.
+`harness` fetches providers and models from `harness-model-proxy`. A model value
+like `openrouter:openai/gpt-5.5` selects the proxy provider `openrouter` while
+sending `openai/gpt-5.5` as the provider-local model id. Without `-provider` or
+`-model`, the proxy default is used.
 
 ### One-shot mode
 
@@ -113,10 +96,9 @@ interrupted.
 
 ```
 -p <prompt|->     one-shot mode; "-" or piped stdin reads the prompt from stdin
--provider <name>  openai | responses | anthropic, or a configured provider name
-                  (default: inferred from -model and models.dev when available)
--model <id>       model id (required)
--base-url <url>   provider base URL (e.g. http://localhost:11434/v1 for Ollama)
+-provider <name>  model proxy provider id
+-model <id>       model id (defaults to the proxy default when omitted)
+-model-proxy-url <url>   harness-model-proxy URL (default http://127.0.0.1:8765)
 -system <text|@file>           append to the system prompt (project notes)
 -system-override <text|@file>  replace the builtin instructions
 -no-env           omit the environment context block (cwd/os/date/git)
@@ -133,9 +115,6 @@ interrupted.
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
 -config <file>    alternate config path
---setup           create or update config in ~/.config/harness
---force           with --setup, overwrite existing provider files and defaults
---refresh-models  fetch models.dev and update configured provider model metadata
 -h, --help        print this usage screen and exit 0
 ```
 
@@ -146,20 +125,15 @@ escaped as `@@`).
 
 Precedence is **flags > environment > config file > built-in defaults**.
 
-- Environment: `OPENAI_API_KEY`, `RESPONSES_API_KEY`, `ANTHROPIC_API_KEY`,
-  `OPENAI_BASE_URL`, `RESPONSES_BASE_URL`, `ANTHROPIC_BASE_URL`, plus `HARNESS_*`
-  equivalents for most flags
-  (`HARNESS_MODEL`, `HARNESS_MAX_STEPS`, `HARNESS_DEFAULT_CONTEXT_WINDOW`, …).
-  Environment API keys override keys from provider config files.
+- Environment: `HARNESS_MODEL_PROXY_URL`, `HARNESS_PROVIDER`, `HARNESS_MODEL`,
+  `HARNESS_MAX_STEPS`, `HARNESS_DEFAULT_CONTEXT_WINDOW`, and other `HARNESS_*`
+  equivalents for user-facing flags. Provider API-key environment variables are
+  read only by `harness-model-proxy`.
 - Optional config file at `~/.config/harness/config.json` (override with
-  `-config`): `provider`, `model`, `provider_configs`, `mode`, `modes` (see
-  [Run modes](#run-modes)), and flag defaults. Provider
-  config paths are resolved relative to the config file and may define `api_type`
-  (`responses`, `openai`, or `anthropic`), `base_url`, `api_key`, `api_key_env`,
-  models, context windows, reasoning metadata, and pricing. The
-  `default_context_window` fallback is used only when a model has no
-  configured context window; `context_window` forces an override. See
-  `examples/config/` for sample files.
+  `-config`): `model_proxy_url`, `provider`, `model`, `mode`, `modes` (see
+  [Run modes](#run-modes)), and flag defaults. The `default_context_window`
+  fallback is used only when proxy metadata has no configured context window;
+  `context_window` forces an override.
 - Context-efficiency knobs are config-file only: `agents_md_warn_bytes`
   (default `8192`, warning only; `AGENTS.md` is still included in full),
   `tool_result_max_bytes`, `tool_result_max_lines`, `read_file_default_limit`,
@@ -167,15 +141,10 @@ Precedence is **flags > environment > config file > built-in defaults**.
   `compact_tool_result_max_bytes`. The read-only delegate tool also has
   `delegate_max_steps` (default `20`) as a config-file-only cap.
 - If `reasoning_effort` / `HARNESS_REASONING_EFFORT` / `-reasoning-effort` is set,
-  harness sends the provider-specific effort field only when requested. Known
-  models.dev metadata is used to reject unsupported models or effort values; unknown
-  local models are left to the provider.
-- If a model is missing context-window, pricing, or needed reasoning metadata locally,
-  harness makes a best-effort lookup against `https://models.dev/api.json` and uses
-  the discovered model metadata when available. That lookup also promotes
-  first-party OpenAI models to the Responses dialect. Localhost base URLs skip it.
-- Run `./harness --setup` to create a default config and a provider config from
-  models.dev, or append a new provider config to an existing default config
+  harness sends it to the proxy only when requested. Proxy catalog metadata is
+  used to reject unsupported models or effort values.
+- Run `./harness-model-proxy --setup` to create a proxy config and a provider
+  config from models.dev, or append a new provider config to an existing proxy config
   without changing existing defaults. Setup lists harness-supported providers,
   prompts for the API key, pages the provider's models newest-first, and asks
   which model should be the default. The provider file includes all models known
@@ -184,9 +153,10 @@ Precedence is **flags > environment > config file > built-in defaults**.
   setup uses a vendored models.dev snapshot. Existing provider config files and
   existing default provider/model settings are not overwritten unless `--force`
   is set.
-- Run `./harness --refresh-models` to fetch the latest live `models.dev` catalog
-  and regenerate every provider config referenced by the config file, preserving
-  stored API keys. Unlike setup, refresh fails if models.dev is inaccessible.
+- Run `./harness-model-proxy --refresh-models` to fetch the latest live
+  `models.dev` catalog and regenerate every provider config referenced by the
+  proxy config file, preserving stored API keys. Unlike setup, refresh fails if
+  models.dev is inaccessible.
 
 ## Meta-commands (REPL)
 

@@ -1,3 +1,4 @@
 /harness
+/harness-model-proxy
 /harness-mcp-gateway
 *.test

@@ -5,7 +5,7 @@ import "strings"
 // ReasoningConfig is the provider-neutral user request for model reasoning
 // controls. Empty fields mean the provider default is used.
 type ReasoningConfig struct {
-	Effort string
+	Effort string `json:"effort,omitempty"`
 }
 
 // Empty reports whether no reasoning controls were requested.

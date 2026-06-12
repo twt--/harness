@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,9 +16,8 @@ import (
 	"time"
 
 	"harness/internal/llm"
-	"harness/internal/llm/factory"
 	"harness/internal/llm/llmtest"
-	"harness/internal/modelsdev"
+	"harness/internal/modelproxy/protocol"
 	"harness/internal/session"
 	"harness/internal/tools"
 	"harness/internal/ui"
@@ -27,7 +27,13 @@ import (
 // run is exercised without real network calls. stateDir/HOME are pinned to a
 // temp dir so auto-save paths are deterministic.
 func fakeProviderEnv(t *testing.T, args []string, fp *llmtest.FakeProvider, stdin string) (environment, *bytes.Buffer, *bytes.Buffer, func(string) string) {
+	env, out, errw, getenv, _ := fakeProviderEnvWithProxy(t, args, fp, stdin)
+	return env, out, errw, getenv
+}
+
+func fakeProviderEnvWithProxy(t *testing.T, args []string, fp *llmtest.FakeProvider, stdin string) (environment, *bytes.Buffer, *bytes.Buffer, func(string) string, *fakeModelProxy) {
 	t.Helper()
+	proxy := newFakeModelProxy(t, fp)
 	dir := t.TempDir()
 	getenv := func(k string) string {
 		switch k {
@@ -41,7 +47,7 @@ func fakeProviderEnv(t *testing.T, args []string, fp *llmtest.FakeProvider, stdi
 	}
 	var out, errw bytes.Buffer
 	env := environment{
-		args:       args,
+		args:       append(append([]string{}, args...), "-model-proxy-url", proxy.URL()),
 		stdin:      strings.NewReader(stdin),
 		stdout:     &out,
 		stderr:     &errw,
@@ -50,11 +56,99 @@ func fakeProviderEnv(t *testing.T, args []string, fp *llmtest.FakeProvider, stdi
 		colorTTY:   false,
 		stdinPiped: false,
 		sigCh:      nil, // no signal handling in tests
-		newProvider: func(factory.Options) (llm.Provider, error) {
-			return fp, nil
+	}
+	return env, &out, &errw, getenv, proxy
+}
+
+type fakeModelProxy struct {
+	t        *testing.T
+	fp       *llmtest.FakeProvider
+	server   *httptest.Server
+	catalog  protocol.Catalog
+	requests []protocol.StreamRequest
+}
+
+func newFakeModelProxy(t *testing.T, fp *llmtest.FakeProvider) *fakeModelProxy {
+	t.Helper()
+	proxy := &fakeModelProxy{
+		t:  t,
+		fp: fp,
+		catalog: protocol.Catalog{
+			DefaultProvider: "anthropic",
+			DefaultModel:    "claude-opus-4-8",
+			Providers: []protocol.Provider{
+				{
+					ID:   "anthropic",
+					Name: "Anthropic",
+					Models: []protocol.Model{{
+						ID:            "claude-opus-4-8",
+						ContextWindow: 1_000_000,
+					}},
+				},
+				{
+					ID:   "openai",
+					Name: "OpenAI",
+					Models: []protocol.Model{{
+						ID:            "gpt-5.5",
+						ContextWindow: 1_050_000,
+						Price:         llm.Price{Input: 5, Output: 30, CacheRead: 0.5},
+					}},
+				},
+				{
+					ID:   "openrouter",
+					Name: "OpenRouter",
+					Models: []protocol.Model{{
+						ID:            "openai/gpt-5.5",
+						ContextWindow: 1_050_000,
+						Price:         llm.Price{Input: 5, Output: 30, CacheRead: 0.5},
+						Reasoning: &llm.ReasoningInfo{
+							Supported: true,
+							Options:   []llm.ReasoningOption{{Type: "effort", Values: []string{"low", "medium", "high"}}},
+						},
+					}},
+				},
+			},
 		},
 	}
-	return env, &out, &errw, getenv
+	proxy.server = httptest.NewServer(proxy)
+	t.Cleanup(proxy.server.Close)
+	return proxy
+}
+
+func (p *fakeModelProxy) URL() string { return p.server.URL }
+
+func (p *fakeModelProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(p.catalog)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/stream":
+		var req protocol.StreamRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		p.requests = append(p.requests, req)
+		w.Header().Set("content-type", protocol.ContentTypeNDJSON)
+		enc := json.NewEncoder(w)
+		flusher, _ := w.(http.Flusher)
+		for ev, err := range p.fp.Stream(r.Context(), req.Request) {
+			if err != nil {
+				_ = enc.Encode(protocol.StreamEnvelope{Error: protocol.ErrorFrom(err)})
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+			event := ev
+			_ = enc.Encode(protocol.StreamEnvelope{Event: &event})
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 // okStep is the canned single-step script most wiring tests use: one "ok"
@@ -71,78 +165,6 @@ func okStepWithUsage(in, out int) llmtest.Step {
 	s := okStep()
 	s.Usage = llm.Usage{InputTokens: in, OutputTokens: out}
 	return s
-}
-
-// captureOptions replaces env's provider factory with one that records the
-// factory.Options it receives (still returning fp), so tests can assert on the
-// resolved wiring through the returned pointer after run() completes.
-func captureOptions(env *environment, fp *llmtest.FakeProvider) *factory.Options {
-	var got factory.Options
-	env.newProvider = func(opts factory.Options) (llm.Provider, error) {
-		got = opts
-		return fp, nil
-	}
-	return &got
-}
-
-func testModelsDevCatalog(t *testing.T) *modelsdev.Catalog {
-	t.Helper()
-	catalog, err := modelsdev.Decode(strings.NewReader(`{
-  "openai": {
-    "id": "openai",
-    "name": "OpenAI",
-    "env": ["OPENAI_API_KEY"],
-    "npm": "@ai-sdk/openai",
-    "models": {
-      "gpt-5.5": {
-        "id": "gpt-5.5",
-        "name": "GPT-5.5",
-        "release_date": "2026-06-01",
-        "reasoning": true,
-        "reasoning_options": [{"type":"effort","values":["none","low","medium","high","xhigh"]}],
-        "limit": {"context": 1050000},
-        "cost": {"input": 5, "output": 30, "cache_read": 0.5}
-      }
-    }
-  },
-  "openrouter": {
-    "id": "openrouter",
-    "name": "OpenRouter",
-    "api": "https://openrouter.ai/api/v1",
-    "env": ["OPENROUTER_API_KEY"],
-    "npm": "@openrouter/ai-sdk-provider",
-    "models": {
-      "openai/gpt-5.5": {
-        "id": "openai/gpt-5.5",
-        "name": "GPT-5.5",
-        "release_date": "2026-06-01",
-        "reasoning": true,
-        "reasoning_options": [{"type":"effort","values":["low","medium","high"]}],
-        "limit": {"context": 1050000},
-        "cost": {"input": 5, "output": 30, "cache_read": 0.5}
-      }
-    }
-  },
-  "deepseek": {
-    "id": "deepseek",
-    "name": "DeepSeek",
-    "api": "https://api.deepseek.com",
-    "env": ["DEEPSEEK_API_KEY"],
-    "models": {
-      "deepseek-chat": {
-        "id": "deepseek-chat",
-        "name": "DeepSeek Chat",
-        "release_date": "2026-01-01",
-        "limit": {"context": 128000},
-        "cost": {"input": 0.27, "output": 1.1}
-      }
-    }
-  }
-}`))
-	if err != nil {
-		t.Fatalf("decode test models.dev catalog: %v", err)
-	}
-	return catalog
 }
 
 func TestRunOneShotAssistantToStdout(t *testing.T) {
@@ -173,36 +195,18 @@ func TestRunOneShotAssistantToStdout(t *testing.T) {
 }
 
 func TestRunREPLModelCommandSwitchesProvider(t *testing.T) {
-	initial := llmtest.New("initial")
-	switched := llmtest.New("switched", okStep())
-	env, _, errw, _ := fakeProviderEnv(t,
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
 		[]string{"-model", "claude-opus-4-8"},
-		initial,
+		fp,
 		"/model gpt-5.5\nhello\n/exit\n",
 	)
-	var opts []factory.Options
-	env.newProvider = func(opt factory.Options) (llm.Provider, error) {
-		opts = append(opts, opt)
-		if len(opts) == 1 {
-			return initial, nil
-		}
-		return switched, nil
-	}
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	if len(opts) != 2 {
-		t.Fatalf("provider factory calls = %d, want 2 (%+v)", len(opts), opts)
-	}
-	if opts[1].Provider != "openai" || opts[1].Model != "gpt-5.5" {
-		t.Fatalf("switch provider options = %+v, want openai/gpt-5.5", opts[1])
-	}
-	if len(initial.Requests) != 0 {
-		t.Fatalf("initial provider should receive no turns after switch, got %d", len(initial.Requests))
-	}
-	if len(switched.Requests) != 1 || switched.Requests[0].Model != "gpt-5.5" {
-		t.Fatalf("switched requests = %+v, want one gpt-5.5 request", switched.Requests)
+	if len(proxy.requests) != 1 || proxy.requests[0].Provider != "openai" || proxy.requests[0].Request.Model != "gpt-5.5" {
+		t.Fatalf("proxy requests = %+v, want one openai/gpt-5.5 request", proxy.requests)
 	}
 	if !strings.Contains(errw.String(), "model switched") {
 		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
@@ -210,129 +214,37 @@ func TestRunREPLModelCommandSwitchesProvider(t *testing.T) {
 }
 
 func TestRunREPLModelCommandAcceptsProviderQualifiedModel(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-  "provider": "openai",
-  "model": "gpt-5.5",
-  "provider_configs": ["openai.json", "openrouter.json"]
-}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "openai.json"), []byte(`{
-  "name": "openai",
-  "api_type": "openai",
-  "base_url": "https://api.openai.com/v1",
-  "models": [{"name":"gpt-5.5","context_window":400000}]
-}`), 0o644); err != nil {
-		t.Fatalf("write openai provider: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "openrouter.json"), []byte(`{
-  "name": "openrouter",
-  "api_type": "openai",
-  "base_url": "https://openrouter.ai/api/v1",
-  "models": [{"name":"gpt-5.5","context_window":1050000}]
-}`), 0o644); err != nil {
-		t.Fatalf("write openrouter provider: %v", err)
-	}
-
-	initial := llmtest.New("initial")
-	switched := llmtest.New("switched", okStep())
-	env, _, errw, _ := fakeProviderEnv(t,
-		[]string{"-config", cfgPath},
-		initial,
-		"/model openrouter:gpt-5.5\nhello\n/exit\n",
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
+		"/model openrouter:openai/gpt-5.5\nhello\n/exit\n",
 	)
-	var opts []factory.Options
-	env.newProvider = func(opt factory.Options) (llm.Provider, error) {
-		opts = append(opts, opt)
-		if len(opts) == 1 {
-			return initial, nil
-		}
-		return switched, nil
-	}
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	if len(opts) != 2 {
-		t.Fatalf("provider factory calls = %d, want 2 (%+v)", len(opts), opts)
-	}
-	got := opts[1]
-	if got.Provider != "openai" || got.ProviderName != "openrouter" || got.Model != "gpt-5.5" ||
-		got.BaseURL != "https://openrouter.ai/api/v1" || got.ContextWindow != 1_050_000 {
-		t.Fatalf("qualified switch options = %+v", got)
-	}
-	if len(switched.Requests) != 1 || switched.Requests[0].Model != "gpt-5.5" {
-		t.Fatalf("switched requests = %+v, want one provider-local gpt-5.5 request", switched.Requests)
+	if len(proxy.requests) != 1 || proxy.requests[0].Provider != "openrouter" || proxy.requests[0].Request.Model != "openai/gpt-5.5" {
+		t.Fatalf("proxy requests = %+v, want one openrouter/openai/gpt-5.5 request", proxy.requests)
 	}
 }
 
 func TestRunREPLModelCommandPromptsConfiguredProviderAndModel(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-  "provider": "openai",
-  "model": "gpt-5.5",
-  "provider_configs": ["openai.json", "openrouter.json"]
-}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "openai.json"), []byte(`{
-  "name": "openai",
-  "api_type": "responses",
-  "base_url": "https://api.openai.com/v1",
-  "models": [{"name":"gpt-5.5","context_window":400000}]
-}`), 0o644); err != nil {
-		t.Fatalf("write openai provider: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "openrouter.json"), []byte(`{
-  "name": "openrouter",
-  "api_type": "openai",
-  "base_url": "https://openrouter.ai/api/v1",
-  "models": [
-    {"name":"anthropic/claude-sonnet-4","context_window":200000},
-    {"name":"openai/gpt-5.5","context_window":1050000}
-  ]
-}`), 0o644); err != nil {
-		t.Fatalf("write openrouter provider: %v", err)
-	}
-
-	initial := llmtest.New("initial")
-	switched := llmtest.New("switched", okStep())
-	env, _, errw, _ := fakeProviderEnv(t,
-		[]string{"-config", cfgPath},
-		initial,
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
 		"/model\nopenrouter\nopenai/gpt-5.5\nhello\n/exit\n",
 	)
-	var opts []factory.Options
-	env.newProvider = func(opt factory.Options) (llm.Provider, error) {
-		opts = append(opts, opt)
-		if len(opts) == 1 {
-			return initial, nil
-		}
-		return switched, nil
-	}
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	if len(opts) != 2 {
-		t.Fatalf("provider factory calls = %d, want 2 (%+v)", len(opts), opts)
-	}
-	got := opts[1]
-	if got.Provider != "openai" || got.ProviderName != "openrouter" || got.Model != "openai/gpt-5.5" ||
-		got.BaseURL != "https://openrouter.ai/api/v1" || got.ContextWindow != 1_050_000 {
-		t.Fatalf("interactive switch options = %+v", got)
-	}
-	if len(initial.Requests) != 0 {
-		t.Fatalf("initial provider should receive no turns after switch, got %d", len(initial.Requests))
-	}
-	if len(switched.Requests) != 1 || switched.Requests[0].Model != "openai/gpt-5.5" {
-		t.Fatalf("switched requests = %+v, want one openrouter-local request", switched.Requests)
+	if len(proxy.requests) != 1 || proxy.requests[0].Provider != "openrouter" || proxy.requests[0].Request.Model != "openai/gpt-5.5" {
+		t.Fatalf("proxy requests = %+v, want one openrouter-local request", proxy.requests)
 	}
 	stderr := errw.String()
-	if !strings.Contains(stderr, "Providers 1-2 of 2") || !strings.Contains(stderr, "Models for openrouter") ||
+	if !strings.Contains(stderr, "Providers 1-3 of 3") || !strings.Contains(stderr, "Models for openrouter") ||
 		!strings.Contains(stderr, "model switched") {
 		t.Fatalf("/model should render provider/model picker and acknowledge switch, stderr=%q", stderr)
 	}
@@ -374,9 +286,9 @@ func TestRunEnvBlockReportsAbsoluteCwd(t *testing.T) {
 // and exits 0 (the prior defect exited 2 with a terse "flag: help requested").
 func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	flags := []string{
-		"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
+		"-p", "-provider", "-model", "-model-proxy-url", "-system", "-system-override",
 		"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-		"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
+		"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
 	}
 	for _, arg := range []string{"-h", "--help"} {
 		fp := llmtest.New("fake")
@@ -398,616 +310,44 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	}
 }
 
-func TestRunSetupCreatesDefaultConfigAndProviderConfig(t *testing.T) {
-	fp := llmtest.New("fake")
-	stdin := strings.Join([]string{
-		"openrouter",
-		"sk-openrouter",
-		"openai/gpt-5.5",
-	}, "\n") + "\n"
-	env, out, errw, getenv := fakeProviderEnv(t, []string{"--setup"}, fp, stdin)
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return testModelsDevCatalog(t), nil
-	}
-
-	code := run(env)
-	if code != ui.ExitOK {
-		t.Fatalf("setup exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if len(fp.Requests) != 0 {
-		t.Fatalf("setup should not call provider, got %d requests", len(fp.Requests))
-	}
-
-	configPath := filepath.Join(getenv("HOME"), ".config", "harness", "config.json")
-	providerPath := filepath.Join(getenv("HOME"), ".config", "harness", "openrouter.json")
-	if !strings.Contains(out.String(), configPath) || !strings.Contains(out.String(), providerPath) {
-		t.Fatalf("setup output should name written files, got %q", out.String())
-	}
-
-	var mainCfg struct {
-		Provider             string   `json:"provider"`
-		Model                string   `json:"model"`
-		ProviderConfigs      []string `json:"provider_configs"`
-		DefaultContextWindow int      `json:"default_context_window"`
-	}
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read generated config: %v", err)
-	}
-	if err := json.Unmarshal(data, &mainCfg); err != nil {
-		t.Fatalf("decode generated config: %v", err)
-	}
-	if mainCfg.Provider != "openrouter" || mainCfg.Model != "openai/gpt-5.5" {
-		t.Fatalf("generated config = %+v", mainCfg)
-	}
-	if len(mainCfg.ProviderConfigs) != 1 || mainCfg.ProviderConfigs[0] != "openrouter.json" {
-		t.Fatalf("provider configs = %#v", mainCfg.ProviderConfigs)
-	}
-	if mainCfg.DefaultContextWindow != llm.DefaultContextWindow {
-		t.Fatalf("default context window = %d, want %d", mainCfg.DefaultContextWindow, llm.DefaultContextWindow)
-	}
-
-	var providerCfg struct {
-		Name    string `json:"name"`
-		APIType string `json:"api_type"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-		Models  []struct {
-			Name string `json:"name"`
-		} `json:"models"`
-	}
-	data, err = os.ReadFile(providerPath)
-	if err != nil {
-		t.Fatalf("read generated provider config: %v", err)
-	}
-	if err := json.Unmarshal(data, &providerCfg); err != nil {
-		t.Fatalf("decode generated provider config: %v", err)
-	}
-	if providerCfg.Name != "openrouter" || providerCfg.APIType != "openai" ||
-		providerCfg.BaseURL != "https://openrouter.ai/api/v1" || providerCfg.APIKey != "sk-openrouter" {
-		t.Fatalf("generated provider config = %+v", providerCfg)
-	}
-	if len(providerCfg.Models) != 1 || providerCfg.Models[0].Name != "openai/gpt-5.5" {
-		t.Fatalf("generated models = %#v", providerCfg.Models)
-	}
-}
-
-func TestRunSetupUsesModelsDevDefaults(t *testing.T) {
-	fp := llmtest.New("fake")
-	stdin := strings.Join([]string{
-		"openr",
-		"sk-openrouter",
-		"openai/gpt-5",
-	}, "\n") + "\n"
-	env, out, errw, getenv := fakeProviderEnv(t, []string{"--setup"}, fp, stdin)
-	catalog := testModelsDevCatalog(t)
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return catalog, nil
-	}
-
-	code := run(env)
-	if code != ui.ExitOK {
-		t.Fatalf("setup exit = %d, want 0; errw=%q", code, errw.String())
-	}
-
-	providerPath := filepath.Join(getenv("HOME"), ".config", "harness", "openrouter.json")
-	if !strings.Contains(out.String(), "Using provider openrouter") || !strings.Contains(out.String(), "Using model openai/gpt-5.5") {
-		t.Fatalf("setup output should show resolved provider/model, got %q", out.String())
-	}
-	var providerCfg struct {
-		Name      string   `json:"name"`
-		APIType   string   `json:"api_type"`
-		BaseURL   string   `json:"base_url"`
-		APIKey    string   `json:"api_key"`
-		APIKeyEnv []string `json:"api_key_env"`
-		Models    []struct {
-			Name             string                `json:"name"`
-			ContextWindow    int                   `json:"context_window"`
-			Price            llm.Price             `json:"price"`
-			Reasoning        bool                  `json:"reasoning"`
-			ReasoningOptions []llm.ReasoningOption `json:"reasoning_options"`
-		} `json:"models"`
-	}
-	data, err := os.ReadFile(providerPath)
-	if err != nil {
-		t.Fatalf("read generated provider config: %v", err)
-	}
-	if err := json.Unmarshal(data, &providerCfg); err != nil {
-		t.Fatalf("decode generated provider config: %v", err)
-	}
-	if providerCfg.Name != "openrouter" || providerCfg.APIType != "openai" ||
-		providerCfg.BaseURL != "https://openrouter.ai/api/v1" || providerCfg.APIKey != "sk-openrouter" {
-		t.Fatalf("generated provider config = %+v", providerCfg)
-	}
-	if len(providerCfg.APIKeyEnv) != 1 || providerCfg.APIKeyEnv[0] != "OPENROUTER_API_KEY" {
-		t.Fatalf("api key env = %#v", providerCfg.APIKeyEnv)
-	}
-	if len(providerCfg.Models) != 1 {
-		t.Fatalf("models = %#v", providerCfg.Models)
-	}
-	model := providerCfg.Models[0]
-	if model.Name != "openai/gpt-5.5" || model.ContextWindow != 1_050_000 ||
-		model.Price.Input != 5 || model.Price.Output != 30 || model.Price.CacheRead != 0.5 {
-		t.Fatalf("generated model = %+v", model)
-	}
-	if !model.Reasoning || len(model.ReasoningOptions) != 1 || model.ReasoningOptions[0].Type != "effort" {
-		t.Fatalf("generated reasoning metadata = reasoning:%v options:%+v", model.Reasoning, model.ReasoningOptions)
-	}
-}
-
-func TestRunSetupAddsProviderToExistingDefaultConfig(t *testing.T) {
-	fp := llmtest.New("fake")
-	stdin := strings.Join([]string{
-		"deepseek",
-		"sk-deepseek",
-		"deepseek-chat",
-	}, "\n") + "\n"
-	env, out, errw, getenv := fakeProviderEnv(t, []string{"--setup"}, fp, stdin)
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return testModelsDevCatalog(t), nil
-	}
-	configDir := filepath.Join(getenv("HOME"), ".config", "harness")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	configPath := filepath.Join(configDir, "config.json")
-	if err := os.WriteFile(configPath, []byte(`{
-  "provider": "openai",
-  "model": "gpt-5.5",
-  "default_context_window": 123,
-  "provider_configs": ["openai.json"],
-  "system": "keep me"
-}`), 0o600); err != nil {
-		t.Fatalf("write existing config: %v", err)
-	}
-
-	code := run(env)
-	if code != ui.ExitOK {
-		t.Fatalf("setup with existing config exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	providerPath := filepath.Join(configDir, "deepseek.json")
-	if !strings.Contains(out.String(), "Updated "+configPath) || !strings.Contains(out.String(), "Wrote "+providerPath) {
-		t.Fatalf("setup output should name updated/written files, got %q", out.String())
-	}
-
-	var mainCfg struct {
-		Provider             string   `json:"provider"`
-		Model                string   `json:"model"`
-		DefaultContextWindow int      `json:"default_context_window"`
-		ProviderConfigs      []string `json:"provider_configs"`
-		System               string   `json:"system"`
-	}
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read updated config: %v", err)
-	}
-	if err := json.Unmarshal(data, &mainCfg); err != nil {
-		t.Fatalf("decode updated config: %v", err)
-	}
-	if mainCfg.Provider != "openai" || mainCfg.Model != "gpt-5.5" || mainCfg.DefaultContextWindow != 123 || mainCfg.System != "keep me" {
-		t.Fatalf("existing config fields were overwritten: %+v", mainCfg)
-	}
-	if got, want := strings.Join(mainCfg.ProviderConfigs, ","), "openai.json,deepseek.json"; got != want {
-		t.Fatalf("provider configs = %q, want %q", got, want)
-	}
-
-	var providerCfg struct {
-		Name   string                  `json:"name"`
-		APIKey string                  `json:"api_key"`
-		Models []struct{ Name string } `json:"models"`
-	}
-	data, err = os.ReadFile(providerPath)
-	if err != nil {
-		t.Fatalf("read provider config: %v", err)
-	}
-	if err := json.Unmarshal(data, &providerCfg); err != nil {
-		t.Fatalf("decode provider config: %v", err)
-	}
-	if providerCfg.Name != "deepseek" || providerCfg.APIKey != "sk-deepseek" ||
-		len(providerCfg.Models) != 1 || providerCfg.Models[0].Name != "deepseek-chat" {
-		t.Fatalf("provider config = %+v", providerCfg)
-	}
-}
-
-func TestRunSetupRefusesExistingProviderConfigWithoutForce(t *testing.T) {
-	fp := llmtest.New("fake")
-	env, _, errw, getenv := fakeProviderEnv(t, []string{"--setup"}, fp, "deepseek\n")
-	configDir := filepath.Join(getenv("HOME"), ".config", "harness")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	configPath := filepath.Join(configDir, "config.json")
-	providerPath := filepath.Join(configDir, "deepseek.json")
-	if err := os.WriteFile(configPath, []byte(`{"provider_configs":["openai.json"]}`), 0o600); err != nil {
-		t.Fatalf("write existing config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{"name":"old"}`), 0o600); err != nil {
-		t.Fatalf("write existing provider config: %v", err)
-	}
-
-	code := run(env)
-	if code != ui.ExitUsage {
-		t.Fatalf("setup with existing provider config exit = %d, want 2", code)
-	}
-	if !strings.Contains(errw.String(), "already exists") || !strings.Contains(errw.String(), providerPath) {
-		t.Fatalf("stderr should name existing provider config, got %q", errw.String())
-	}
-	data, err := os.ReadFile(providerPath)
-	if err != nil {
-		t.Fatalf("read provider config: %v", err)
-	}
-	if string(data) != `{"name":"old"}` {
-		t.Fatalf("provider config should not be overwritten without --force, got %q", string(data))
-	}
-}
-
-func TestRunSetupForceOverwritesProviderConfigAndDefaults(t *testing.T) {
-	fp := llmtest.New("fake")
-	stdin := strings.Join([]string{
-		"deepseek",
-		"sk-new",
-		"deepseek-chat",
-	}, "\n") + "\n"
-	env, out, errw, getenv := fakeProviderEnv(t, []string{"--setup", "--force"}, fp, stdin)
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return testModelsDevCatalog(t), nil
-	}
-	configDir := filepath.Join(getenv("HOME"), ".config", "harness")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	configPath := filepath.Join(configDir, "config.json")
-	providerPath := filepath.Join(configDir, "deepseek.json")
-	if err := os.WriteFile(configPath, []byte(`{
-  "provider": "openai",
-  "model": "gpt-5.5",
-  "provider_configs": ["openai.json", "deepseek.json"]
-}`), 0o600); err != nil {
-		t.Fatalf("write existing config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{"name":"old","api_key":"sk-old"}`), 0o600); err != nil {
-		t.Fatalf("write existing provider config: %v", err)
-	}
-
-	code := run(env)
-	if code != ui.ExitOK {
-		t.Fatalf("setup --force exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if !strings.Contains(out.String(), "Updated "+configPath) || !strings.Contains(out.String(), "Overwrote "+providerPath) {
-		t.Fatalf("setup output should name overwritten provider, got %q", out.String())
-	}
-
-	var mainCfg struct {
-		Provider             string   `json:"provider"`
-		Model                string   `json:"model"`
-		DefaultContextWindow int      `json:"default_context_window"`
-		ProviderConfigs      []string `json:"provider_configs"`
-	}
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read updated config: %v", err)
-	}
-	if err := json.Unmarshal(data, &mainCfg); err != nil {
-		t.Fatalf("decode updated config: %v", err)
-	}
-	if mainCfg.Provider != "deepseek" || mainCfg.Model != "deepseek-chat" || mainCfg.DefaultContextWindow != llm.DefaultContextWindow {
-		t.Fatalf("force should update defaults, got %+v", mainCfg)
-	}
-	if got, want := strings.Join(mainCfg.ProviderConfigs, ","), "openai.json,deepseek.json"; got != want {
-		t.Fatalf("provider configs = %q, want %q", got, want)
-	}
-
-	var providerCfg struct {
-		Name   string `json:"name"`
-		APIKey string `json:"api_key"`
-	}
-	data, err = os.ReadFile(providerPath)
-	if err != nil {
-		t.Fatalf("read provider config: %v", err)
-	}
-	if err := json.Unmarshal(data, &providerCfg); err != nil {
-		t.Fatalf("decode provider config: %v", err)
-	}
-	if providerCfg.Name != "deepseek" || providerCfg.APIKey != "sk-new" {
-		t.Fatalf("provider config was not overwritten: %+v", providerCfg)
-	}
-}
-
-func TestRunRefreshModelsUpdatesConfiguredProviders(t *testing.T) {
-	fp := llmtest.New("fake")
-	env, out, errw, getenv := fakeProviderEnv(t, []string{"--refresh-models"}, fp, "")
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return testModelsDevCatalog(t), nil
-	}
-	configDir := filepath.Join(getenv("HOME"), ".config", "harness")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	configPath := filepath.Join(configDir, "config.json")
-	providerPath := filepath.Join(configDir, "openrouter.json")
-	if err := os.WriteFile(configPath, []byte(`{
-  "provider": "openrouter",
-  "model": "openai/gpt-5.5",
-  "provider_configs": ["openrouter.json"]
-}`), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{
-  "name": "openrouter",
-  "api_type": "openai",
-  "base_url": "https://old.example/v1",
-  "api_key": "sk-keep",
-  "models": [
-    {"name":"old-model","context_window":1}
-  ]
-}`), 0o600); err != nil {
-		t.Fatalf("write provider: %v", err)
-	}
+func TestRunUsesProxyDefaultModel(t *testing.T) {
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("refresh exit = %d, want 0; errw=%q", code, errw.String())
+		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
 	}
-	if !strings.Contains(out.String(), "Updated "+providerPath) {
-		t.Fatalf("refresh output should name updated provider, got %q", out.String())
-	}
-	var providerCfg struct {
-		Name      string   `json:"name"`
-		BaseURL   string   `json:"base_url"`
-		APIKey    string   `json:"api_key"`
-		APIKeyEnv []string `json:"api_key_env"`
-		Models    []struct {
-			Name          string    `json:"name"`
-			ContextWindow int       `json:"context_window"`
-			Price         llm.Price `json:"price"`
-		} `json:"models"`
-	}
-	data, err := os.ReadFile(providerPath)
-	if err != nil {
-		t.Fatalf("read refreshed provider: %v", err)
-	}
-	if err := json.Unmarshal(data, &providerCfg); err != nil {
-		t.Fatalf("decode refreshed provider: %v", err)
-	}
-	if providerCfg.Name != "openrouter" || providerCfg.BaseURL != "https://openrouter.ai/api/v1" || providerCfg.APIKey != "sk-keep" {
-		t.Fatalf("refreshed provider = %+v", providerCfg)
-	}
-	if len(providerCfg.APIKeyEnv) != 1 || providerCfg.APIKeyEnv[0] != "OPENROUTER_API_KEY" {
-		t.Fatalf("api key env = %#v", providerCfg.APIKeyEnv)
-	}
-	if len(providerCfg.Models) != 1 || providerCfg.Models[0].Name != "openai/gpt-5.5" ||
-		providerCfg.Models[0].ContextWindow != 1_050_000 || providerCfg.Models[0].Price.Input != 5 {
-		t.Fatalf("refreshed models = %#v", providerCfg.Models)
+	if len(fp.Requests) != 1 || fp.Requests[0].Model != "claude-opus-4-8" {
+		t.Fatalf("request model = %+v, want proxy default", fp.Requests)
 	}
 }
 
-func TestRunRefreshModelsErrorsWhenModelsDevUnavailable(t *testing.T) {
+func TestRunMissingProxyDefaultUsageError(t *testing.T) {
 	fp := llmtest.New("fake")
-	env, _, errw, getenv := fakeProviderEnv(t, []string{"--refresh-models"}, fp, "")
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return nil, errors.New("offline")
-	}
-	configDir := filepath.Join(getenv("HOME"), ".config", "harness")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(`{"provider_configs":["openrouter.json"]}`), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "openrouter.json"), []byte(`{"name":"openrouter"}`), 0o600); err != nil {
-		t.Fatalf("write provider: %v", err)
-	}
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, []string{"-p", "hi"}, fp, "")
+	proxy.catalog.DefaultProvider = ""
+	proxy.catalog.DefaultModel = ""
 
-	if code := run(env); code != ui.ExitUsage {
-		t.Fatalf("refresh exit = %d, want usage error", code)
-	}
-	if !strings.Contains(errw.String(), "offline") {
-		t.Fatalf("stderr should include fetch error, got %q", errw.String())
-	}
-}
-
-func TestRunMissingModelUsageError(t *testing.T) {
-	fp := llmtest.New("fake")
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-p", "hi"}, fp, "")
 	code := run(env)
 	if code != ui.ExitUsage {
-		t.Errorf("missing model should exit 2, got %d", code)
+		t.Errorf("missing proxy default should exit 2, got %d", code)
 	}
 	if !strings.Contains(strings.ToLower(errw.String()), "model") {
 		t.Errorf("error should mention the missing model, errw=%q", errw.String())
 	}
 }
 
-func TestRunProviderConfigSelectsAPITypeAndConnectionSettings(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	providerPath := filepath.Join(dir, "openrouter.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-	  "provider": "openrouter",
-	  "model": "openai/gpt-5.1",
-	  "default_context_window": 512000,
-	  "provider_configs": ["openrouter.json"]
-	}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{
-  "name": "openrouter",
-  "api_type": "openai",
-  "base_url": "https://openrouter.ai/api/v1",
-  "api_key": "sk-openrouter-file",
-  "models": [
-    {"name":"openai/gpt-5.1","context_window":1000000,"price":{"input":2,"output":8}}
-  ]
-}`), 0o644); err != nil {
-		t.Fatalf("write provider config: %v", err)
-	}
-
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.Provider != "openai" {
-		t.Fatalf("factory provider = %q, want api_type openai", got.Provider)
-	}
-	if got.BaseURL != "https://openrouter.ai/api/v1" {
-		t.Fatalf("factory base URL = %q", got.BaseURL)
-	}
-	if got.APIKey != "sk-openrouter-file" {
-		t.Fatalf("factory API key = %q", got.APIKey)
-	}
-	if got.ContextWindow != 1_000_000 {
-		t.Fatalf("factory context window = %d, want 1000000", got.ContextWindow)
-	}
-}
-
-func TestRunModelsDevOpenAIDefaultsToResponses(t *testing.T) {
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-p", "hi"}, fp, "")
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return testModelsDevCatalog(t), nil
-	}
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.Provider != "responses" || got.ProviderName != "openai" {
-		t.Fatalf("factory options = %+v, want openai provider name on responses api type", got)
-	}
-}
-
-func TestRunModelsDevOpenAICompatibleBaseURLStaysChatCompletions(t *testing.T) {
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-base-url", "https://proxy.example/v1", "-p", "hi"}, fp, "")
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return testModelsDevCatalog(t), nil
-	}
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.Provider != "openai" {
-		t.Fatalf("factory provider = %q, want chat-completions api type for custom base URL", got.Provider)
-	}
-}
-
-func TestRunExplicitResponsesUsesOpenAIModelsDevMetadata(t *testing.T) {
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-provider", "responses", "-model", "gpt-5.5", "-p", "hi"}, fp, "")
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return testModelsDevCatalog(t), nil
-	}
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.Provider != "responses" {
-		t.Fatalf("factory provider = %q, want responses", got.Provider)
-	}
-	if got.ContextWindow != 1_050_000 {
-		t.Fatalf("context window = %d, want OpenAI models.dev value", got.ContextWindow)
-	}
-}
-
-func TestRunProviderConfigCanSelectResponses(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	providerPath := filepath.Join(dir, "openai.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-	  "provider": "openai",
-	  "model": "gpt-5.5",
-	  "provider_configs": ["openai.json"]
-	}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{
-  "name": "openai",
-  "api_type": "responses",
-  "base_url": "https://api.openai.com/v1",
-  "models": [
-    {"name":"gpt-5.5","context_window":1050000,"price":{"input":5,"output":30}}
-  ]
-}`), 0o644); err != nil {
-		t.Fatalf("write provider config: %v", err)
-	}
-
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.Provider != "responses" || got.ProviderName != "openai" {
-		t.Fatalf("factory options = %+v, want responses api type", got)
-	}
-}
-
-func TestRunReasoningEffortUsesOpenRouterModeAndRequestConfig(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	providerPath := filepath.Join(dir, "openrouter.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-	  "provider": "openrouter",
-	  "model": "openai/gpt-5.5",
-	  "provider_configs": ["openrouter.json"],
-	  "reasoning_effort": "medium"
-	}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{
-  "name": "openrouter",
-  "api_type": "openai",
-  "base_url": "https://openrouter.ai/api/v1",
-  "models": [
-    {"name":"openai/gpt-5.5","context_window":1050000,"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]}
-  ]
-}`), 0o644); err != nil {
-		t.Fatalf("write provider config: %v", err)
-	}
-
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.Provider != "openai" || got.ProviderName != "openrouter" || got.ReasoningMode != "openrouter" {
-		t.Fatalf("factory options = %+v, want openrouter reasoning mode over openai dialect", got)
-	}
-	if len(fp.Requests) != 1 || fp.Requests[0].Reasoning.Effort != "medium" {
-		t.Fatalf("request reasoning = %+v", fp.Requests)
-	}
-}
-
-func TestRunReasoningEffortRejectedWhenModelsDevSaysUnsupported(t *testing.T) {
+func TestRunReasoningEffortRejectedWhenProxyCatalogSaysUnsupported(t *testing.T) {
 	fp := llmtest.New("fake")
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-4o", "-reasoning-effort", "high", "-p", "hi"}, fp, "")
-	catalog, err := modelsdev.Decode(strings.NewReader(`{
-  "openai": {
-    "id": "openai",
-    "name": "OpenAI",
-    "models": {
-      "gpt-4o": {
-        "id": "gpt-4o",
-        "name": "GPT-4o",
-        "reasoning": false,
-        "limit": {"context": 128000},
-        "cost": {"input": 2.5, "output": 10}
-      }
-    }
-  }
-}`))
-	if err != nil {
-		t.Fatalf("decode catalog: %v", err)
-	}
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return catalog, nil
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, []string{"-provider", "openai", "-model", "gpt-4o", "-reasoning-effort", "high", "-p", "hi"}, fp, "")
+	for i := range proxy.catalog.Providers {
+		if proxy.catalog.Providers[i].ID == "openai" {
+			proxy.catalog.Providers[i].Models = append(proxy.catalog.Providers[i].Models, protocol.Model{
+				ID:            "gpt-4o",
+				ContextWindow: 128000,
+				Reasoning:     &llm.ReasoningInfo{Supported: false},
+			})
+		}
 	}
 
 	if code := run(env); code != ui.ExitUsage {
@@ -1021,31 +361,22 @@ func TestRunReasoningEffortRejectedWhenModelsDevSaysUnsupported(t *testing.T) {
 	}
 }
 
-func TestRunReasoningEffortRejectedWhenValueUnsupported(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	providerPath := filepath.Join(dir, "openai.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-	  "provider": "openai",
-	  "model": "gpt-5-pro",
-	  "provider_configs": ["openai.json"],
-	  "reasoning_effort": "xhigh"
-	}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{
-  "name": "openai",
-  "api_type": "openai",
-  "base_url": "https://api.openai.com/v1",
-  "models": [
-    {"name":"gpt-5-pro","context_window":400000,"reasoning":true,"reasoning_options":[{"type":"effort","values":["high"]}]}
-  ]
-}`), 0o644); err != nil {
-		t.Fatalf("write provider config: %v", err)
+func TestRunReasoningEffortRejectedWhenProxyValueUnsupported(t *testing.T) {
+	fp := llmtest.New("fake")
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, []string{"-provider", "openai", "-model", "gpt-5-pro", "-reasoning-effort", "xhigh", "-p", "hi"}, fp, "")
+	for i := range proxy.catalog.Providers {
+		if proxy.catalog.Providers[i].ID == "openai" {
+			proxy.catalog.Providers[i].Models = append(proxy.catalog.Providers[i].Models, protocol.Model{
+				ID:            "gpt-5-pro",
+				ContextWindow: 400000,
+				Reasoning: &llm.ReasoningInfo{
+					Supported: true,
+					Options:   []llm.ReasoningOption{{Type: "effort", Values: []string{"high"}}},
+				},
+			})
+		}
 	}
 
-	fp := llmtest.New("fake")
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
 	if code := run(env); code != ui.ExitUsage {
 		t.Fatalf("exit = %d, want usage error; errw=%q", code, errw.String())
 	}
@@ -1057,163 +388,20 @@ func TestRunReasoningEffortRejectedWhenValueUnsupported(t *testing.T) {
 	}
 }
 
-func TestRunProviderConfigUsesProviderSpecificAPIKeyEnv(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	providerPath := filepath.Join(dir, "openrouter.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-	  "provider": "openrouter",
-	  "model": "openai/gpt-5.1",
-	  "provider_configs": ["openrouter.json"]
-	}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{
-  "name": "openrouter",
-  "api_type": "openai",
-  "base_url": "https://openrouter.ai/api/v1",
-  "api_key": "sk-openrouter-file",
-  "api_key_env": ["OPENROUTER_API_KEY"],
-  "models": [
-    {"name":"openai/gpt-5.1","context_window":1000000,"price":{"input":2,"output":8}}
-  ]
-}`), 0o644); err != nil {
-		t.Fatalf("write provider config: %v", err)
-	}
-
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	baseGetenv := env.getenv
-	env.getenv = func(k string) string {
-		if k == "OPENROUTER_API_KEY" {
-			return "sk-openrouter-env"
-		}
-		if k == "OPENAI_API_KEY" {
-			return "sk-openai-env"
-		}
-		return baseGetenv(k)
-	}
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.APIKey != "sk-openrouter-env" {
-		t.Fatalf("factory API key = %q, want provider-specific env key", got.APIKey)
-	}
-}
-
-func TestRunEnrichesUnknownModelFromModelsDev(t *testing.T) {
-	fp := llmtest.New("fake", okStepWithUsage(1_000_000, 1_000_000))
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "gpt-5.5", "-p", "hi"}, fp, "")
-	catalog := testModelsDevCatalog(t)
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		return catalog, nil
-	}
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.ContextWindow != 1_050_000 {
-		t.Fatalf("factory context window = %d, want models.dev context", got.ContextWindow)
-	}
-	if !strings.Contains(errw.String(), "$35.000") {
-		t.Fatalf("usage line should include models.dev cost, errw=%q", errw.String())
-	}
-}
-
-func TestRunDefaultContextWindowUsedForUnknownModel(t *testing.T) {
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{
-		"-model", "local-model",
-		"-base-url", "http://localhost:11434/v1",
-		"-default-context-window", "512000",
-		"-p", "hi",
-	}, fp, "")
-	got := captureOptions(&env, fp)
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if got.ContextWindow != 512_000 {
-		t.Fatalf("factory context window = %d, want default fallback 512000", got.ContextWindow)
-	}
-}
-
-func TestRunSkipsModelsDevForLocalBaseURL(t *testing.T) {
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{
-		"-model", "local-model",
-		"-base-url", "http://localhost:11434/v1",
-		"-p", "hi",
-	}, fp, "")
-	env.modelsDevCatalog = func(context.Context) (*modelsdev.Catalog, error) {
-		t.Fatal("models.dev should not be queried for localhost base URLs")
-		return nil, nil
-	}
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-}
-
 func TestRunContextWindowOverrideStillWins(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	providerPath := filepath.Join(dir, "openrouter.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-	  "provider": "openrouter",
-	  "model": "openai/gpt-5.1",
-	  "default_context_window": 512000,
-	  "context_window": 64000,
-	  "provider_configs": ["openrouter.json"]
-	}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(providerPath, []byte(`{
-	  "name": "openrouter",
-	  "api_type": "openai",
-	  "base_url": "https://openrouter.ai/api/v1",
-	  "models": [
-	    {"name":"openai/gpt-5.1","context_window":1000000}
-	  ]
-	}`), 0o644); err != nil {
-		t.Fatalf("write provider config: %v", err)
-	}
-
 	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-	got := captureOptions(&env, fp)
+	env, _, errw, _ := fakeProviderEnv(t, []string{
+		"-provider", "openrouter",
+		"-model", "openai/gpt-5.5",
+		"-context-window", "64000",
+		"-p", "hi",
+	}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
 	}
-	if got.ContextWindow != 64_000 {
-		t.Fatalf("factory context window = %d, want explicit override 64000", got.ContextWindow)
-	}
-}
-
-func TestRunMissingProviderConfigWarnsAndSkips(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{
-  "provider": "openai",
-  "model": "gpt-5.1",
-  "base_url": "http://localhost:11434/v1",
-  "provider_configs": ["missing.json"]
-}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
-
-	if code := run(env); code != ui.ExitOK {
-		t.Fatalf("exit = %d, want 0; errw=%q", code, errw.String())
-	}
-	if !strings.Contains(errw.String(), "warning") || !strings.Contains(errw.String(), "missing.json") {
-		t.Fatalf("stderr should warn and name missing config, got %q", errw.String())
+	if len(fp.Requests) != 1 || fp.Requests[0].Model != "openai/gpt-5.5" {
+		t.Fatalf("requests = %+v", fp.Requests)
 	}
 }
 
@@ -1359,6 +547,7 @@ func TestRunSigintExitDuringTurnNoRace(t *testing.T) {
 			<-ctx.Done() // released by the first ^C cancelling the turn
 		},
 	})
+	proxy := newFakeModelProxy(t, fp)
 
 	dir := t.TempDir()
 	getenv := func(k string) string {
@@ -1374,7 +563,7 @@ func TestRunSigintExitDuringTurnNoRace(t *testing.T) {
 	sigCh := make(chan os.Signal, 2)
 	var out, errw bytes.Buffer
 	env := environment{
-		args:     []string{"-model", "claude-opus-4-8"},
+		args:     []string{"-model", "claude-opus-4-8", "-model-proxy-url", proxy.URL()},
 		stdin:    &pausingReader{line: []byte("trigger a turn\n"), block: stdinBlock},
 		stdout:   &out,
 		stderr:   &errw,
@@ -1382,9 +571,6 @@ func TestRunSigintExitDuringTurnNoRace(t *testing.T) {
 		now:      func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
 		colorTTY: false,
 		sigCh:    sigCh,
-		newProvider: func(factory.Options) (llm.Provider, error) {
-			return fp, nil
-		},
 	}
 
 	codeCh := make(chan int, 1)

@@ -1,8 +1,7 @@
-// Setup wizard and provider-config refresh for cmd harness: the `harness setup`
-// interactive flow (models.dev-backed provider/model pickers) and the
-// `-refresh-models` re-sync of provider config files. Split from main.go so the
-// entrypoint stays the thin config -> factory -> tools -> agent -> ui wiring it
-// documents.
+// Setup wizard and provider-config refresh for harness-model-proxy: the
+// `harness-model-proxy --setup` interactive flow (models.dev-backed
+// provider/model pickers) and the `--refresh-models` re-sync of provider config
+// files. Split from main.go so the entrypoint stays focused on serving HTTP.
 package main
 
 import (
@@ -346,8 +345,8 @@ type setupModelPick struct {
 	modelsdev.Model
 }
 
-func (m setupModelPick) PickerID() string   { return m.ID }
-func (m setupModelPick) PickerName() string { return m.Name }
+func (m setupModelPick) PickerID() string    { return m.ID }
+func (m setupModelPick) PickerName() string  { return m.Name }
 func (m setupModelPick) PickerPrice() string { return formatPickerPrice(m.Cost) }
 func (m setupModelPick) PickerRelease() string {
 	if m.ReleaseDate != "" {
@@ -456,7 +455,7 @@ func setupCatalog(env environment) (*modelsdev.Catalog, error) {
 		if fallbackErr != nil {
 			return nil, fmt.Errorf("models.dev lookup failed: %v; vendored fallback failed: %w", err, fallbackErr)
 		}
-		fmt.Fprintf(env.stderr, "harness: setup: warning: models.dev lookup failed: %v; using vendored fallback\n", err)
+		fmt.Fprintf(env.stderr, "harness-model-proxy: setup: warning: models.dev lookup failed: %v; using vendored fallback\n", err)
 		return fallback, nil
 	}
 	return modelsdev.Fallback()
@@ -479,6 +478,20 @@ func setupModelFromModelsDev(model modelsdev.Model) setupModelConfig {
 
 func setupPriceKnown(p llm.Price) bool {
 	return p.Input != 0 || p.Output != 0 || p.CacheRead != 0 || p.CacheWrite != 0
+}
+
+func formatPickerPrice(p llm.Price) string {
+	if p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0 {
+		return ""
+	}
+	return fmt.Sprintf("$%s/$%s", formatPriceComponent(p.Input), formatPriceComponent(p.Output))
+}
+
+func formatPriceComponent(v float64) string {
+	if v == float64(int64(v)) {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", v), "0"), ".")
 }
 
 func promptLine(r *bufio.Reader, w io.Writer, label string) (string, error) {

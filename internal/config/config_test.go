@@ -73,7 +73,7 @@ func TestLoadSplitsProviderModel(t *testing.T) {
 	}{
 		{name: "plain split", model: "anthropic:claude-opus-4-8", wantProvider: "anthropic", wantModel: "claude-opus-4-8"},
 		{name: "padded value is trimmed before split", model: " anthropic:claude-opus-4-8 ", wantProvider: "anthropic", wantModel: "claude-opus-4-8"},
-		{name: "colon inside model id is not a provider prefix", model: "org/model:fp16", wantProvider: "openai", wantModel: "org/model:fp16"},
+		{name: "colon inside model id is not a provider prefix", model: "org/model:fp16", wantProvider: "", wantModel: "org/model:fp16"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,194 +117,36 @@ func TestProviderPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
 	}
 }
 
-func TestBaseURLPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"base_url":"http://file.example"}`)
-	env := envFrom(map[string]string{"HARNESS_BASE_URL": "http://env.example"})
+func TestModelProxyURLPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"model_proxy_url":"http://file.example"}`)
+	env := envFrom(map[string]string{"HARNESS_MODEL_PROXY_URL": "http://env.example"})
 
-	c, err := Load([]string{"-base-url", "http://flag.example"}, env, cfgPath)
+	c, err := Load([]string{"-model-proxy-url", "http://flag.example"}, env, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.BaseURL != "http://flag.example" {
-		t.Fatalf("flag precedence: got base-url %q", c.BaseURL)
+	if c.ModelProxyURL != "http://flag.example" {
+		t.Fatalf("flag precedence: got model proxy URL %q", c.ModelProxyURL)
 	}
 
 	c, err = Load(nil, env, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.BaseURL != "http://env.example" {
-		t.Fatalf("env precedence: got base-url %q", c.BaseURL)
+	if c.ModelProxyURL != "http://env.example" {
+		t.Fatalf("env precedence: got model proxy URL %q", c.ModelProxyURL)
 	}
 
 	c, err = Load(nil, noEnv, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.BaseURL != "http://file.example" {
-		t.Fatalf("file precedence: got base-url %q", c.BaseURL)
+	if c.ModelProxyURL != "http://file.example" {
+		t.Fatalf("file precedence: got model proxy URL %q", c.ModelProxyURL)
 	}
 }
 
-func TestProviderConfigsReadFromConfigFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"provider_configs":["openai.json","anthropic.json"]}`)
-	c, err := Load(nil, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := strings.Join(c.ProviderConfigs, ","); got != "openai.json,anthropic.json" {
-		t.Fatalf("provider configs %q, want openai.json,anthropic.json", got)
-	}
-}
-
-// The provider-specific base-url env vars seed the base URL for the selected
-// provider. A custom base URL also lets the empty-API-key case stand.
-func TestProviderSpecificBaseURLEnv(t *testing.T) {
-	env := envFrom(map[string]string{"OPENAI_BASE_URL": "http://localhost:11434/v1"})
-	c, err := Load([]string{"-model", "llama3"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Provider != "openai" {
-		t.Fatalf("inferred provider %q, want openai", c.Provider)
-	}
-	if c.BaseURL != "http://localhost:11434/v1" {
-		t.Fatalf("base-url %q, want OPENAI_BASE_URL value", c.BaseURL)
-	}
-}
-
-func TestAnthropicBaseURLEnv(t *testing.T) {
-	env := envFrom(map[string]string{"ANTHROPIC_BASE_URL": "http://local-anthropic"})
-	c, err := Load([]string{"-model", "claude-opus-4-8"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Provider != "anthropic" {
-		t.Fatalf("inferred provider %q, want anthropic", c.Provider)
-	}
-	if c.BaseURL != "http://local-anthropic" {
-		t.Fatalf("base-url %q, want ANTHROPIC_BASE_URL value", c.BaseURL)
-	}
-}
-
-func TestResponsesBaseURLEnvFallsBackToOpenAI(t *testing.T) {
-	env := envFrom(map[string]string{"OPENAI_BASE_URL": "http://openai.example/v1"})
-	c, err := Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.BaseURL != "http://openai.example/v1" {
-		t.Fatalf("base-url %q, want OPENAI_BASE_URL fallback", c.BaseURL)
-	}
-
-	env = envFrom(map[string]string{
-		"OPENAI_BASE_URL":    "http://openai.example/v1",
-		"RESPONSES_BASE_URL": "http://responses.example/v1",
-	})
-	c, err = Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.BaseURL != "http://responses.example/v1" {
-		t.Fatalf("base-url %q, want RESPONSES_BASE_URL value", c.BaseURL)
-	}
-}
-
-// An explicit -base-url flag overrides the provider-specific base-url env var.
-func TestBaseURLFlagBeatsProviderEnv(t *testing.T) {
-	env := envFrom(map[string]string{"OPENAI_BASE_URL": "http://env.example"})
-	c, err := Load([]string{"-model", "gpt-5.5", "-base-url", "http://flag.example"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.BaseURL != "http://flag.example" {
-		t.Fatalf("base-url %q, want flag value", c.BaseURL)
-	}
-}
-
-func TestAPIKeyReadFromEnvOnlyAnthropic(t *testing.T) {
-	env := envFrom(map[string]string{"ANTHROPIC_API_KEY": "sk-ant-secret"})
-	c, err := Load([]string{"-model", "claude-opus-4-8"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.APIKey != "sk-ant-secret" {
-		t.Fatalf("api key %q, want ANTHROPIC_API_KEY value", c.APIKey)
-	}
-}
-
-func TestAPIKeyReadFromEnvOnlyOpenAI(t *testing.T) {
-	env := envFrom(map[string]string{"OPENAI_API_KEY": "sk-openai-secret"})
-	c, err := Load([]string{"-model", "gpt-5.5"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.APIKey != "sk-openai-secret" {
-		t.Fatalf("api key %q, want OPENAI_API_KEY value", c.APIKey)
-	}
-}
-
-func TestAPIKeyReadFromEnvResponsesFallsBackToOpenAI(t *testing.T) {
-	env := envFrom(map[string]string{"OPENAI_API_KEY": "sk-openai-secret"})
-	c, err := Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.APIKey != "sk-openai-secret" {
-		t.Fatalf("api key %q, want OPENAI_API_KEY fallback", c.APIKey)
-	}
-
-	env = envFrom(map[string]string{
-		"OPENAI_API_KEY":    "sk-openai-secret",
-		"RESPONSES_API_KEY": "sk-responses-secret",
-	})
-	c, err = Load([]string{"-provider", "responses", "-model", "gpt-5.4"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.APIKey != "sk-responses-secret" {
-		t.Fatalf("api key %q, want RESPONSES_API_KEY value", c.APIKey)
-	}
-}
-
-// API keys are never read from the config file. A key-like field there must be
-// ignored entirely.
-func TestAPIKeyNotReadFromConfigFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"model":"gpt-5.5","api_key":"sk-leaked","openai_api_key":"sk-leaked2"}`)
-	c, err := Load(nil, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.APIKey != "" {
-		t.Fatalf("api key %q, want empty (keys are env-only)", c.APIKey)
-	}
-}
-
-// The provider chooses which API-key env var is read: anthropic -> ANTHROPIC_API_KEY.
-func TestAPIKeySelectedByProvider(t *testing.T) {
-	env := envFrom(map[string]string{
-		"OPENAI_API_KEY":    "sk-openai",
-		"ANTHROPIC_API_KEY": "sk-ant",
-	})
-	c, err := Load([]string{"-model", "claude-opus-4-8"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.APIKey != "sk-ant" {
-		t.Fatalf("api key %q, want sk-ant for anthropic provider", c.APIKey)
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5"}, env, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.APIKey != "sk-openai" {
-		t.Fatalf("api key %q, want sk-openai for openai provider", c.APIKey)
-	}
-}
-
-func TestExplicitProviderOverridesInference(t *testing.T) {
-	// A claude* model would infer anthropic, but explicit -provider wins.
+func TestExplicitProviderIsPreserved(t *testing.T) {
 	c, err := Load([]string{"-model", "claude-opus-4-8", "-provider", "openai"}, noEnv, "")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -314,28 +156,11 @@ func TestExplicitProviderOverridesInference(t *testing.T) {
 	}
 }
 
-func TestProviderInferenceFromModel(t *testing.T) {
-	for _, tc := range []struct{ model, want string }{
-		{"claude-opus-4-8", "anthropic"},
-		{"claude-haiku-4-5", "anthropic"},
-		{"gpt-5.5", "openai"},
-		{"llama3.2", "openai"},
-		{"some-local-model", "openai"},
-	} {
-		c, err := Load([]string{"-model", tc.model}, noEnv, "")
-		if err != nil {
-			t.Fatalf("Load %q: %v", tc.model, err)
-		}
-		if c.Provider != tc.want {
-			t.Fatalf("model %q inferred provider %q, want %q", tc.model, c.Provider, tc.want)
-		}
-	}
-}
-
-// HARNESS_* env mapping covers the non-key, non-base-url flags too.
+// HARNESS_* env mapping covers the user-facing flags.
 func TestHarnessEnvMapping(t *testing.T) {
 	env := envFrom(map[string]string{
 		"HARNESS_MODEL":                  "env-model",
+		"HARNESS_MODEL_PROXY_URL":        "http://proxy.example",
 		"HARNESS_MAX_STEPS":              "12",
 		"HARNESS_DEFAULT_CONTEXT_WINDOW": "512000",
 		"HARNESS_CONTEXT_WINDOW":         "256000",
@@ -354,6 +179,9 @@ func TestHarnessEnvMapping(t *testing.T) {
 	}
 	if c.Model != "env-model" {
 		t.Fatalf("model %q", c.Model)
+	}
+	if c.ModelProxyURL != "http://proxy.example" {
+		t.Fatalf("model proxy URL %q", c.ModelProxyURL)
 	}
 	if c.MaxSteps != 12 {
 		t.Fatalf("max-steps %d, want 12", c.MaxSteps)
@@ -698,9 +526,9 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 // helpFlags are every flag the design §10 table lists. The -h usage screen must
 // name every one of them so the help is an accurate reference.
 var helpFlags = []string{
-	"-p", "-provider", "-model", "-base-url", "-system", "-system-override",
+	"-p", "-provider", "-model", "-model-proxy-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
-	"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-setup", "-force", "-refresh-models", "-prompt",
+	"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the
@@ -711,45 +539,6 @@ func TestHelpFlagReturnsErrHelp(t *testing.T) {
 		if !errors.Is(err, ErrHelp) {
 			t.Fatalf("Load(%q) err = %v, want ErrHelp", arg, err)
 		}
-	}
-}
-
-func TestSetupFlagReturnsSetupWithoutReadingConfig(t *testing.T) {
-	c, err := Load([]string{"--setup"}, noEnv, filepath.Join(t.TempDir(), "missing.json"))
-	if err != nil {
-		t.Fatalf("Load --setup: %v", err)
-	}
-	if !c.Setup {
-		t.Fatalf("Setup = false, want true")
-	}
-	if c.Model != "" || c.Provider != "" {
-		t.Fatalf("setup config should not resolve model/provider, got %+v", c)
-	}
-}
-
-func TestSetupForceFlag(t *testing.T) {
-	c, err := Load([]string{"--setup", "--force"}, noEnv, filepath.Join(t.TempDir(), "missing.json"))
-	if err != nil {
-		t.Fatalf("Load --setup --force: %v", err)
-	}
-	if !c.Setup || !c.SetupForce {
-		t.Fatalf("setup force flags = Setup:%v SetupForce:%v, want both true", c.Setup, c.SetupForce)
-	}
-}
-
-func TestRefreshModelsFlag(t *testing.T) {
-	c, err := Load([]string{"--refresh-models"}, noEnv, filepath.Join(t.TempDir(), "missing.json"))
-	if err == nil {
-		t.Fatalf("Load --refresh-models should still read explicit config")
-	}
-
-	cfgPath := writeConfig(t, `{"provider_configs":["openai.json"]}`)
-	c, err = Load([]string{"--refresh-models"}, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load --refresh-models: %v", err)
-	}
-	if !c.RefreshModels {
-		t.Fatalf("RefreshModels = false, want true")
 	}
 }
 
@@ -768,8 +557,8 @@ func TestModelColonWithoutProviderQualifierStaysModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load colon model: %v", err)
 	}
-	if c.Provider != "openai" || c.Model != "qwen/qwen3-coder:free" {
-		t.Fatalf("provider/model = %q/%q, want inferred openai and unchanged model", c.Provider, c.Model)
+	if c.Provider != "" || c.Model != "qwen/qwen3-coder:free" {
+		t.Fatalf("provider/model = %q/%q, want no provider and unchanged model", c.Provider, c.Model)
 	}
 }
 

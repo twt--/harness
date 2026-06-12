@@ -15,11 +15,10 @@ codebase works today and evolves as harness gains capabilities.
 - **Unix philosophy for tools.** When the job is already owned by a mature host CLI
   (`grep`, `rg`, `git`, shell commands), expose a thin argv wrapper instead of
   reimplementing optimized search or command semantics in the harness.
-- **Generic over providers.** One internal message/streaming model with three HTTP
-  dialects: Anthropic Messages, OpenAI Responses, and OpenAI Chat Completions.
-  Responses is the default for first-party OpenAI models when models.dev identifies
-  them; Chat Completions remains the OpenAI-compatible path for vLLM, Ollama,
-  OpenRouter, llama.cpp, and custom base URLs.
+- **Provider access is isolated.** `harness` uses one provider-neutral
+  message/streaming model and talks to `harness-model-proxy` over HTTP. The proxy
+  owns API keys, provider configs, model metadata, and the Anthropic/OpenAI
+  dialects; the main CLI sees only a catalog and normalized stream events.
 - **No sandboxing or permission prompts.** The harness assumes it is launched inside an
   already-sandboxed environment. Tools run with the process's privileges, immediately.
 - **First-class git.** A dedicated `git` tool plus git context in the system prompt.
@@ -32,7 +31,7 @@ codebase works today and evolves as harness gains capabilities.
 | Dependencies | stdlib only |
 | Module / binary | `module harness`, binary built from `cmd/harness` |
 | Interface | line-oriented plain text; optional dim ANSI color only when stdout is a TTY; `NO_COLOR` and `-no-color` disable |
-| Secrets | API keys from environment variables only — never flags or config files |
+| Secrets | API keys live in `harness-model-proxy`; the `harness` process talks to it over HTTP |
 
 ## 3. Architecture
 
@@ -48,13 +47,15 @@ codebase works today and evolves as harness gains capabilities.
                  └────┬──────────────────────────┬────────────┘
                       │ Request                  │ ToolCall
         ┌─────────────▼────────────┐   ┌─────────▼────────────┐
-        │ internal/llm             │   │ internal/tools       │
-        │   Provider interface     │   │   registry+dispatch  │
-        │   message model, prices  │   │   built-in tools     │
-        ├───────────┬──────────────┤   └──────────────────────┘
-        │ llm/openai│ llm/responses│ llm/anthropic│
-        └───────────┴──────────────┴──────────────┘
-              │ HTTP + SSE (internal/sse, internal/retry)
+        │ modelproxy/client        │   │ internal/tools       │
+        │   HTTP catalog + stream  │   │   registry+dispatch  │
+        └─────────────┬────────────┘   │   built-in tools     │
+                      │                └──────────────────────┘
+        ┌─────────────▼────────────┐
+        │ harness-model-proxy      │
+        │   llm factory + dialects │
+        └─────────────┬────────────┘
+              │ provider HTTP + SSE (internal/sse, internal/retry)
               ▼
         provider endpoint
 ```
@@ -62,8 +63,10 @@ codebase works today and evolves as harness gains capabilities.
 ### Package layout
 
 ```
-cmd/harness/main.go      flags, config load, wiring, signal setup, REPL-vs-oneshot dispatch
-internal/llm             provider-agnostic types, Provider interface, model/price registry, factory
+cmd/harness/main.go      flags, config load, proxy catalog wiring, signal setup, REPL-vs-oneshot dispatch
+cmd/harness-model-proxy  provider setup/refresh and HTTP model proxy server
+internal/modelproxy      proxy protocol, client Provider, server handler
+internal/llm             provider-agnostic types, Provider interface, model/price registry
 internal/llm/openai      Chat Completions dialect: wire structs, request builder, stream decode, tool-call assembly
 internal/llm/responses   OpenAI Responses dialect: same responsibilities
 internal/llm/anthropic   Messages dialect: same responsibilities
@@ -74,7 +77,7 @@ internal/tools           Tool interface, registry, dispatch (recover + central t
 internal/delegate        read-only sub-agent tool; starts child agents without an import cycle
 internal/session         session state, replay log, compaction archives, tool artifacts
 internal/config          flags > env > config-file resolution
-internal/modelsdev       optional models.dev catalog reduction for setup/pricing metadata
+internal/modelsdev       optional models.dev catalog reduction for proxy setup/pricing metadata
 internal/ui              REPL, streaming renderer, tool summaries, usage line
 internal/sysprompt       builtin instructions + environment context (cwd/os/date/git summary)
 cmd/harness-mcp-gateway  optional MCP gateway daemon + debug client (serve / tools / version)
@@ -84,11 +87,10 @@ internal/mcpgateway      gateway internals: config, supervisors, tool registry, 
 internal/mcptools        harness-side adapter: tools.Tool over a reconnecting gateway Conn (§15)
 ```
 
-`internal/llm` is the shared contract between the agent loop and the dialects. The loop
-imports only `internal/llm`; a small factory package (`internal/llm/factory`,
-`factory.New(opts)`) selects the dialect. The factory is its own package — not a file in
-`internal/llm` — because it imports both dialect packages, which themselves import
-`internal/llm` (an import cycle otherwise).
+`internal/llm` is the shared contract between the agent loop and any model provider.
+In the main CLI, the only runtime provider is `modelproxy/client.Provider`; concrete
+OpenAI/Anthropic dialects are constructed inside `harness-model-proxy` via
+`internal/llm/factory`.
 
 ## 4. Message model (`internal/llm`)
 
@@ -427,32 +429,26 @@ func Models() []string // sorted configured model ids
 Unknown models (arbitrary names on OpenAI-compatible servers) display token counts
 without a dollar figure, and use a conservative 256k context-window default,
 configurable with `-default-context-window` and overridable for a run with
-`-context-window`. Model prices and context windows are loaded from provider
-config files referenced by the main config, then filled from a best-effort
-`https://models.dev/api.json` lookup when local metadata is missing. When
-`-reasoning-effort` is set, the same metadata is used to validate known
-provider/model reasoning support and effort values. Localhost base URLs skip the
-online lookup.
+`-context-window`. Model prices, context windows, and reasoning metadata are loaded
+from the model proxy catalog. When `-reasoning-effort` is set, that metadata is used
+to validate known provider/model reasoning support and effort values.
 
 ## 7. Configuration and provider selection
 
 Precedence: **flags > environment > config file > built-in defaults.**
 
-- Environment: `OPENAI_API_KEY`, `RESPONSES_API_KEY`, `ANTHROPIC_API_KEY`,
-  `OPENAI_BASE_URL`, `RESPONSES_BASE_URL`, `ANTHROPIC_BASE_URL`, plus `HARNESS_*`
-  equivalents for most flags. `RESPONSES_*` falls back to `OPENAI_*` when unset.
-  Provider configs may also name provider-specific `api_key_env` variables such as
-  `OPENROUTER_API_KEY`. Environment API keys override provider-config keys.
+- Environment: `HARNESS_MODEL_PROXY_URL`, `HARNESS_PROVIDER`, `HARNESS_MODEL`, plus
+  `HARNESS_*` equivalents for user-facing flags. Provider API keys and provider base
+  URLs are resolved only by `harness-model-proxy`.
 - Config file (optional): `~/.config/harness/config.json` — provider, model,
-  provider_configs, run modes, flag defaults, and config-only context-efficiency knobs:
+  model_proxy_url, run modes, flag defaults, and config-only context-efficiency knobs:
   `agents_md_warn_bytes`, `tool_result_max_bytes`, `tool_result_max_lines`,
   `read_file_default_limit`, `compact_keep_turns`, `compact_summary_max_tokens`, and
   `compact_tool_result_max_bytes`, plus `delegate_max_steps` (default `20`) for the
-  read-only delegate tool. Provider config paths are resolved relative to the config
-  file and may define api_type, base_url, api_key, api_key_env, models, context
-  windows, reasoning metadata, and pricing.
-- `--setup` creates a config in the default directory, or appends a new provider config
-  to an existing default config. It fetches models.dev provider metadata, falls back to a
+  read-only delegate tool.
+- `harness-model-proxy --setup` creates a proxy config in the default proxy directory,
+  or appends a new provider config to an existing proxy config. It fetches models.dev
+  provider metadata, falls back to a
   vendored models.dev snapshot when the live catalog is unreachable, lists
   harness-supported providers, prompts for the API key, pages the selected provider's
   models newest-first, and asks which model should be the default. The provider config
@@ -461,26 +457,15 @@ Precedence: **flags > environment > config file > built-in defaults.**
   pricing, and reasoning metadata. Without
   `--force`, setup refuses to overwrite existing provider files and preserves existing
   default provider/model fields; `--force` opts into those overwrites.
-- `--refresh-models` fetches the latest live models.dev catalog and regenerates each
-  configured provider file, preserving stored API keys. It errors if models.dev is
+- `harness-model-proxy --refresh-models` fetches the latest live models.dev catalog
+  and regenerates each configured provider file, preserving stored API keys. It errors if models.dev is
   inaccessible or a configured provider is missing/unsupported.
-- **Selection rule:** `-model` is primary. A `provider:model` value sets the provider and
-  strips the prefix before sending requests. Otherwise provider is inferred — model names
-  starting with `claude` → Anthropic, everything else → OpenAI-compatible (the right
-  fallback for arbitrary local model names). When models.dev identifies the selected
-  model as first-party OpenAI on the default OpenAI base URL, the effective `api_type`
-  is promoted to `responses`; custom and localhost base URLs stay on Chat Completions
-  unless `api_type:"responses"` is explicit. Explicit `-provider` overrides inference
-  and may name a provider config whose `api_type` selects the Responses, Chat
-  Completions, or Anthropic dialect. An empty API key is allowed when the base URL is
-  non-default (local servers need none).
-- A custom base URL supplies scheme/host/prefix only; the dialect appends its standard
-  path (`/responses`, `/chat/completions`, `/messages`) — so
-  `-base-url http://localhost:11434/v1` works for Ollama.
-- `internal/config` resolves the user-facing settings, then hands the provider factory a
-  small `factory.Options` struct (provider, model, base URL, API key, max tokens,
-  temperature, context window, reasoning mode). This keeps `internal/llm` free of any
-  dependency on the flag/env/file machinery.
+- **Selection rule:** `harness` fetches `GET /v1/models` from the proxy. A
+  `provider:model` value sets the provider and strips the prefix before sending
+  requests. Otherwise an explicit `-provider` selects a proxy provider, and missing
+  provider/model values fall back to the proxy defaults.
+- `internal/config` resolves only user-facing settings. Provider connection settings
+  are resolved by `harness-model-proxy` from its config and environment.
 
 ## 8. Agent loop (`internal/agent`)
 
@@ -1002,10 +987,9 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 
 ```
 -p <prompt|->     one-shot mode; "-" or piped stdin reads the prompt from stdin
--provider <name>  openai | responses | anthropic, or configured provider name
-                  (default: inferred from -model and models.dev when available)
+-provider <name>  model proxy provider id
 -model <id>
--base-url <url>
+-model-proxy-url <url>
 -system <text|@file>           append to system prompt
 -system-override <text|@file>  replace builtin instructions
 -no-env           omit environment context block
@@ -1021,9 +1005,6 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color
 -config <file>    alternate config path
---setup           create or update config in ~/.config/harness
---force           with --setup, overwrite existing provider files and defaults
---refresh-models  fetch models.dev and update configured provider model metadata
 ```
 
 ### One-shot mode (`-p`)

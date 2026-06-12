@@ -1,7 +1,7 @@
-// Command harness is the entrypoint: it loads configuration, constructs the
-// provider, tool registry, and agent, wires SIGINT handling, prints the session
-// path, and dispatches to the interactive REPL or one-shot mode (design §10,
-// §11). It is deliberately thin: config -> factory -> tools -> agent -> ui.
+// Command harness is the entrypoint: it loads configuration, connects to
+// harness-model-proxy, constructs the tool registry and agent, wires SIGINT
+// handling, prints the session path, and dispatches to the interactive REPL or
+// one-shot mode.
 package main
 
 import (
@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,11 +20,11 @@ import (
 	"harness/internal/config"
 	"harness/internal/delegate"
 	"harness/internal/llm"
-	"harness/internal/llm/factory"
 	"harness/internal/logging"
 	"harness/internal/mcptools"
 	"harness/internal/mode"
-	"harness/internal/modelsdev"
+	modelclient "harness/internal/modelproxy/client"
+	"harness/internal/modelproxy/protocol"
 	"harness/internal/session"
 	"harness/internal/skills"
 	"harness/internal/sysprompt"
@@ -41,17 +39,16 @@ func main() {
 	defer signal.Stop(sigCh)
 
 	os.Exit(run(environment{
-		args:             os.Args[1:],
-		stdin:            os.Stdin,
-		stdout:           os.Stdout,
-		stderr:           os.Stderr,
-		getenv:           os.Getenv,
-		now:              time.Now,
-		colorTTY:         isTTY(os.Stdout),
-		stdinPiped:       pipedStdin(os.Stdin),
-		sigCh:            sigCh,
-		modelsDevCatalog: defaultModelsDevCatalog,
-		terminalRows:     defaultTerminalRows,
+		args:         os.Args[1:],
+		stdin:        os.Stdin,
+		stdout:       os.Stdout,
+		stderr:       os.Stderr,
+		getenv:       os.Getenv,
+		now:          time.Now,
+		colorTTY:     isTTY(os.Stdout),
+		stdinPiped:   pipedStdin(os.Stdin),
+		sigCh:        sigCh,
+		terminalRows: defaultTerminalRows,
 	}))
 }
 
@@ -70,14 +67,7 @@ type environment struct {
 	stdinPiped bool // stdin is piped/redirected (gates one-shot stdin read)
 	sigCh      chan os.Signal
 
-	// newProvider builds the llm.Provider; nil uses factory.New. Tests inject a
-	// scripted provider so run is exercised without real network calls.
-	newProvider func(factory.Options) (llm.Provider, error)
-
-	// modelsDevCatalog fetches optional model metadata. A nil fetcher disables
-	// online enrichment, which keeps tests and offline runs deterministic.
-	modelsDevCatalog func(context.Context) (*modelsdev.Catalog, error)
-	terminalRows     func() int
+	terminalRows func() int
 }
 
 // run wires everything together and returns the process exit code (design §10
@@ -108,46 +98,37 @@ func run(env environment) int {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
 	}
-	if cfg.Setup {
-		if err := runSetup(env, cfg.SetupForce); err != nil {
-			fmt.Fprintf(stderr, "harness: setup: %v\n", err)
-			return ui.ExitUsage
-		}
-		return ui.ExitOK
-	}
-	if cfg.RefreshModels {
-		if err := runRefreshModels(env, cfgPath); err != nil {
-			fmt.Fprintf(stderr, "harness: refresh-models: %v\n", err)
-			return ui.ExitUsage
-		}
-		return ui.ExitOK
-	}
-	if cfg.Model == "" {
-		fmt.Fprintln(stderr, "harness: a model is required (-model or HARNESS_MODEL)")
-		return ui.ExitUsage
-	}
 	logger, err := logging.NewLogger(stderr, cfg.LogLevel, cfg.Quiet)
 	if err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
 	}
 
-	modelRegistry, providerConfigs, err := llm.LoadProviderConfigs(configDir(cfgPath), cfg.ProviderConfigs, func(msg string) {
-		fmt.Fprintf(stderr, "harness: %s\n", msg)
-	})
+	proxyURL := cfg.ModelProxyURL
+	if proxyURL == "" {
+		proxyURL = protocol.DefaultURL
+	}
+	proxyClient, err := modelclient.New(proxyURL, nil)
 	if err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
 	}
-	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
-	effectiveProvider, effectiveBaseURL, effectiveAPIKey := resolveProvider(cfg, providerConfigs, getenv)
-	reasoning := llm.ReasoningConfig{Effort: cfg.ReasoningEffort}
-	if apiType, ok := enrichRegistryFromModelsDev(modelRegistry, cfg.Model, cfg.Provider, effectiveProvider, effectiveBaseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr); ok {
-		if useModelsDevAPIType(effectiveProvider, apiType, effectiveBaseURL) {
-			effectiveProvider = apiType
-		}
+	catalog, err := proxyClient.Catalog(context.Background())
+	if err != nil {
+		fmt.Fprintf(stderr, "harness: model proxy: %v\n", err)
+		return ui.ExitRuntime
 	}
-	registryModel := registryModelKey(modelRegistry, cfg.Provider, cfg.Model)
+	selection, err := resolveCatalogSelection(catalog, cfg.Provider, cfg.Model, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "harness: %v\n", err)
+		return ui.ExitUsage
+	}
+	cfg.Provider = selection.Provider
+	cfg.Model = selection.Model
+	modelRegistry := modelclient.Registry(catalog)
+	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
+	reasoning := llm.ReasoningConfig{Effort: cfg.ReasoningEffort}
+	registryModel := selection.RegistryModel
 	if err := validateReasoningEffort(modelRegistry, registryModel, reasoning); err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
@@ -202,7 +183,7 @@ func run(env environment) int {
 	for _, w := range skillWarnings {
 		fmt.Fprintf(stderr, "skills: %s\n", w)
 	}
-	catalog := skills.BuildCatalog(discoveredSkills)
+	skillsCatalog := skills.BuildCatalog(discoveredSkills)
 	instructions := skills.Instructions(len(discoveredSkills))
 
 	// buildSystem assembles the full system prompt for a given run-mode prompt,
@@ -214,7 +195,7 @@ func run(env environment) int {
 			Override:      overrideText,
 			NoEnv:         cfg.NoEnv,
 			AgentsMD:      agentsMD,
-			SkillsCatalog: catalog,
+			SkillsCatalog: skillsCatalog,
 			ModePrompt:    modePrompt,
 			Env:           sysprompt.EnvOptions{Dir: wd},
 		})
@@ -341,69 +322,31 @@ func run(env environment) int {
 		return ui.ModeSelection{Name: m.Name, Tools: reg, System: system}, nil
 	}
 
-	newProvider := env.newProvider
-	if newProvider == nil {
-		newProvider = factory.New
-	}
-	provider, err := newProvider(factory.Options{
-		Provider:      effectiveProvider,
-		ProviderName:  cfg.Provider,
-		Model:         cfg.Model,
-		BaseURL:       effectiveBaseURL,
-		APIKey:        effectiveAPIKey,
-		ContextWindow: effectiveContextWindow,
-		ReasoningMode: reasoningMode(cfg.Provider, effectiveProvider, effectiveBaseURL),
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "harness: %v\n", err)
-		return ui.ExitUsage
-	}
+	provider := proxyClient.Provider(cfg.Provider)
 
 	switchModel := func(input string) (ui.ModelSelection, error) {
-		model := strings.TrimSpace(input)
-		if model == "" {
+		input = strings.TrimSpace(input)
+		if input == "" {
 			return ui.ModelSelection{}, fmt.Errorf("model is required")
 		}
-		providerName, apiType, baseURL, apiKey, modelName, registryKey, err := resolveSwitchProvider(model, cfg, providerConfigs, getenv)
+		next, err := resolveCatalogSelection(catalog, "", input, cfg.Provider)
 		if err != nil {
 			return ui.ModelSelection{}, err
 		}
-		model = modelName
-		if discoveredAPIType, ok := enrichRegistryFromModelsDev(modelRegistry, model, providerName, apiType, baseURL, env.modelsDevCatalog, !reasoning.Empty(), cfg.Verbose, stderr); ok {
-			if useModelsDevAPIType(apiType, discoveredAPIType, baseURL) {
-				apiType = discoveredAPIType
-			}
-		}
-		registryKey = registryModelKey(modelRegistry, providerName, model)
-		if err := validateReasoningEffort(modelRegistry, registryKey, reasoning); err != nil {
+		if err := validateReasoningEffort(modelRegistry, next.RegistryModel, reasoning); err != nil {
 			return ui.ModelSelection{}, err
 		}
-		contextWindow := cfg.ContextWindow
-		if contextWindow <= 0 {
-			contextWindow = modelRegistry.ContextWindow(registryKey)
-		}
-		runtime, err := newProvider(factory.Options{
-			Provider:      apiType,
-			ProviderName:  providerName,
-			Model:         model,
-			BaseURL:       baseURL,
-			APIKey:        apiKey,
-			ContextWindow: contextWindow,
-			ReasoningMode: reasoningMode(providerName, apiType, baseURL),
-		})
-		if err != nil {
-			return ui.ModelSelection{}, err
-		}
+		runtime := proxyClient.Provider(next.Provider)
 		snap := delegateState.Snapshot()
 		snap.Provider = runtime
-		snap.Model = model
+		snap.Model = next.Model
 		snap.ContextWindow = cfg.ContextWindow
 		delegateState.Set(snap)
 		return ui.ModelSelection{
-			Provider:      providerName,
-			Model:         model,
-			RegistryModel: registryKey,
-			BaseURL:       baseURL,
+			Provider:      next.Provider,
+			Model:         next.Model,
+			RegistryModel: next.RegistryModel,
+			BaseURL:       proxyClient.URL(),
 			Runtime:       runtime,
 			ContextWindow: cfg.ContextWindow,
 		}, nil
@@ -482,13 +425,13 @@ func run(env environment) int {
 		Provider:        cfg.Provider,
 		Model:           cfg.Model,
 		RegistryModel:   registryModel,
-		BaseURL:         effectiveBaseURL,
+		BaseURL:         proxyClient.URL(),
 		Registry:        modelRegistry,
 		System:          systemPrompt,
 		AvailableModels: modelRegistry.Models(),
 		SwitchModel:     switchModel,
-		PickModel:       configuredModelPicker(providerConfigs),
-		PickerPageSize:  setupPageSize(env),
+		PickModel:       catalogModelPicker(catalog),
+		PickerPageSize:  pickerPageSize(env),
 		Mode:            modeName,
 		AvailableModes:  mode.Names(modes),
 		SwitchMode:      switchMode,
@@ -557,13 +500,6 @@ func run(env environment) int {
 	return ui.Run(env.stdin, app, exitCh)
 }
 
-func configDir(path string) string {
-	if path == "" {
-		return "."
-	}
-	return filepath.Dir(path)
-}
-
 func delegateReadOnlyToolNames() []string {
 	names := []string{"read_file", "list_dir", "grep"}
 	if tools.RipgrepAvailable() {
@@ -599,12 +535,6 @@ func runSessionCommand(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func defaultModelsDevCatalog(ctx context.Context) (*modelsdev.Catalog, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	return modelsdev.Fetch(ctx, http.DefaultClient, modelsdev.DefaultURL)
-}
-
 func defaultTerminalRows() int {
 	rows, _, ok := term.Size()
 	if !ok {
@@ -613,61 +543,180 @@ func defaultTerminalRows() int {
 	return rows
 }
 
-func enrichRegistryFromModelsDev(registry *llm.Registry, model, providerID, apiType, baseURL string, fetch func(context.Context) (*modelsdev.Catalog, error), needReasoning bool, verbose bool, errw io.Writer) (string, bool) {
-	if registry == nil || fetch == nil || model == "" {
-		return "", false
-	}
-	if isLocalBaseURL(baseURL) {
-		return "", false
-	}
-	if info, ok := registry.Lookup(model); ok && info.ContextWindow > 0 && registry.HasPrice(model) && (!needReasoning || info.Reasoning != nil) {
-		return "", false
-	}
-
-	catalog, err := fetch(context.Background())
-	if err != nil {
-		if verbose {
-			fmt.Fprintf(errw, "harness: warning: models.dev lookup skipped: %v\n", err)
-		}
-		return "", false
-	}
-	provider, ok := catalog.Provider(providerID)
-	if !ok {
-		provider, ok = catalog.ProviderByAPI(baseURL)
-	}
-	if !ok {
-		provider, ok = catalog.Provider(apiType)
-	}
-	if !ok && apiType == "responses" {
-		provider, ok = catalog.Provider("openai")
-	}
-	if !ok {
-		return "", false
-	}
-	info, ok := provider.ModelInfo(model)
-	if !ok && apiType != "" && provider.ID != apiType {
-		if fallback, found := catalog.Provider(apiType); found {
-			info, ok = fallback.ModelInfo(model)
-		}
-	}
-	if ok {
-		registry.MergeModel(model, info)
-		if discoveredAPIType := provider.APIType(); discoveredAPIType != "" {
-			return discoveredAPIType, true
-		}
-	}
-	return "", false
+type catalogSelection struct {
+	Provider      string
+	Model         string
+	RegistryModel string
 }
 
-func useModelsDevAPIType(current, discovered, baseURL string) bool {
-	if discovered == "" || discovered == current {
-		return false
+func resolveCatalogSelection(catalog protocol.Catalog, provider, model, preferredProvider string) (catalogSelection, error) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if p, m, ok := config.SplitProviderModel(model); ok {
+		provider = p
+		model = m
 	}
-	if discovered == "responses" {
-		return isDefaultOpenAIBaseURL(baseURL)
+	if provider == "" && model == "" {
+		provider = catalog.DefaultProvider
+		model = catalog.DefaultModel
 	}
-	return true
+	if provider != "" && model == "" {
+		if provider == catalog.DefaultProvider && catalog.DefaultModel != "" {
+			model = catalog.DefaultModel
+		} else if p, ok := catalogProvider(catalog, provider); ok && len(p.Models) == 1 {
+			model = p.Models[0].ID
+		}
+	}
+	if provider != "" && model != "" {
+		p, ok := catalogProvider(catalog, provider)
+		if !ok {
+			return catalogSelection{}, fmt.Errorf("provider %q is not available from the model proxy", provider)
+		}
+		if !catalogProviderHasModel(p, model) {
+			return catalogSelection{}, fmt.Errorf("provider %q has no model %q", provider, model)
+		}
+		return catalogSelection{Provider: provider, Model: model, RegistryModel: providerModelKey(provider, model)}, nil
+	}
+	if provider == "" && model != "" {
+		if preferredProvider != "" {
+			if p, ok := catalogProvider(catalog, preferredProvider); ok && catalogProviderHasModel(p, model) {
+				return catalogSelection{Provider: preferredProvider, Model: model, RegistryModel: providerModelKey(preferredProvider, model)}, nil
+			}
+		}
+		matches := catalogProvidersForModel(catalog, model)
+		switch len(matches) {
+		case 0:
+			return catalogSelection{}, fmt.Errorf("model %q is not available from the model proxy", model)
+		case 1:
+			return catalogSelection{Provider: matches[0], Model: model, RegistryModel: providerModelKey(matches[0], model)}, nil
+		default:
+			return catalogSelection{}, fmt.Errorf("model %q is available from multiple providers (%s); use provider:%s", model, strings.Join(matches, ", "), model)
+		}
+	}
+	return catalogSelection{}, fmt.Errorf("a model is required (-model or proxy default)")
 }
+
+func catalogProvider(catalog protocol.Catalog, id string) (protocol.Provider, bool) {
+	for _, provider := range catalog.Providers {
+		if provider.ID == id {
+			return provider, true
+		}
+	}
+	return protocol.Provider{}, false
+}
+
+func catalogProviderHasModel(provider protocol.Provider, model string) bool {
+	for _, entry := range provider.Models {
+		if entry.ID == model {
+			return true
+		}
+	}
+	return false
+}
+
+func catalogProvidersForModel(catalog protocol.Catalog, model string) []string {
+	var providers []string
+	for _, provider := range catalog.Providers {
+		if catalogProviderHasModel(provider, model) {
+			providers = append(providers, provider.ID)
+		}
+	}
+	return providers
+}
+
+func catalogModelPicker(catalog protocol.Catalog) func(ui.PickerIO) (string, error) {
+	providerEntries := catalogProviderPickerEntries(catalog)
+	if len(providerEntries) == 0 {
+		return nil
+	}
+	return func(pio ui.PickerIO) (string, error) {
+		w := pio.Writer
+		if w == nil {
+			w = io.Discard
+		}
+		provider, err := ui.Pick(pio.ReadLine, w, ui.PickerOptions[catalogProviderPick]{
+			Items:       providerEntries,
+			PageSize:    pio.PageSize,
+			Prompt:      "Provider (number/id, /search, n/p, q): ",
+			Kind:        "provider",
+			CancelError: ui.ErrPickerCancelled,
+			PrintPage:   ui.PrintProviderPickerPage[catalogProviderPick],
+		})
+		if err != nil {
+			return "", err
+		}
+		models := catalogModelPickerEntries(provider.provider.Models)
+		model, err := ui.Pick(pio.ReadLine, w, ui.PickerOptions[catalogModelPick]{
+			Items:       models,
+			PageSize:    pio.PageSize,
+			Prompt:      "Model (number/id, /search, n/p, q): ",
+			Kind:        "model",
+			CancelError: ui.ErrPickerCancelled,
+			PrintPage: func(w io.Writer, models []catalogModelPick, page, pageSize int, filter string) {
+				ui.PrintModelPickerPage(w, provider.provider.ID, models, page, pageSize, filter)
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+		return provider.provider.ID + ":" + model.model.ID, nil
+	}
+}
+
+type catalogProviderPick struct {
+	provider protocol.Provider
+}
+
+func catalogProviderPickerEntries(catalog protocol.Catalog) []catalogProviderPick {
+	seen := make(map[string]bool, len(catalog.Providers))
+	entries := make([]catalogProviderPick, 0, len(catalog.Providers))
+	for _, provider := range catalog.Providers {
+		if provider.ID == "" || len(provider.Models) == 0 || seen[provider.ID] {
+			continue
+		}
+		seen[provider.ID] = true
+		entries = append(entries, catalogProviderPick{provider: provider})
+	}
+	return entries
+}
+
+func (p catalogProviderPick) PickerID() string { return p.provider.ID }
+
+func (p catalogProviderPick) PickerName() string {
+	if p.provider.Name != "" {
+		return p.provider.Name
+	}
+	return p.provider.ID
+}
+
+func (p catalogProviderPick) PickerModelCount() int {
+	return len(p.provider.Models)
+}
+
+type catalogModelPick struct {
+	model protocol.Model
+}
+
+func catalogModelPickerEntries(models []protocol.Model) []catalogModelPick {
+	entries := make([]catalogModelPick, 0, len(models))
+	for _, model := range models {
+		if model.ID == "" {
+			continue
+		}
+		entries = append(entries, catalogModelPick{model: model})
+	}
+	return entries
+}
+
+func (m catalogModelPick) PickerID() string { return m.model.ID }
+func (m catalogModelPick) PickerName() string {
+	if m.model.Name != "" {
+		return m.model.Name
+	}
+	return m.model.ID
+}
+func (m catalogModelPick) PickerPrice() string   { return formatPickerPrice(m.model.Price) }
+func (m catalogModelPick) PickerRelease() string { return "" }
 
 func validateReasoningEffort(registry *llm.Registry, model string, reasoning llm.ReasoningConfig) error {
 	if reasoning.Empty() || registry == nil {
@@ -688,189 +737,6 @@ func validateReasoningEffort(registry *llm.Registry, model string, reasoning llm
 	}
 	return fmt.Errorf("model %q does not support reasoning effort", model)
 }
-
-func reasoningMode(providerName, apiType, baseURL string) string {
-	if apiType == "anthropic" {
-		return "anthropic"
-	}
-	if strings.EqualFold(providerName, "openrouter") || strings.Contains(strings.ToLower(baseURL), "openrouter.ai") {
-		return "openrouter"
-	}
-	return "openai"
-}
-
-func isLocalBaseURL(raw string) bool {
-	if raw == "" {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
-}
-
-func isDefaultOpenAIBaseURL(raw string) bool {
-	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
-	return raw == "" || raw == "https://api.openai.com/v1"
-}
-
-func resolveProvider(cfg config.Config, providers []llm.ProviderConfig, getenv func(string) string) (provider, baseURL, apiKey string) {
-	provider = cfg.Provider
-	baseURL = cfg.BaseURL
-	apiKey = cfg.APIKey
-	pc, ok := providerConfigByName(providers, cfg.Provider)
-	if !ok {
-		return provider, baseURL, apiKey
-	}
-	if pc.APIType != "" {
-		provider = pc.APIType
-	}
-	if baseURL == "" {
-		baseURL = pc.BaseURL
-	}
-	for _, name := range pc.APIKeyEnv {
-		if value := getenv(name); value != "" {
-			apiKey = value
-			break
-		}
-	}
-	if apiKey == "" {
-		apiKey = pc.APIKey
-	}
-	return provider, baseURL, apiKey
-}
-
-func resolveSwitchProvider(input string, cfg config.Config, providers []llm.ProviderConfig, getenv func(string) string) (provider, apiType, baseURL, apiKey, model, registryKey string, err error) {
-	model = input
-	if requestedProvider, requestedModel, ok := config.SplitProviderModel(input); ok {
-		model = requestedModel
-		pc, found := providerConfigByName(providers, requestedProvider)
-		if !found {
-			return "", "", "", "", "", "", fmt.Errorf("provider %q is not configured", requestedProvider)
-		}
-		if !providerConfigHasModel(pc, model) {
-			return "", "", "", "", "", "", fmt.Errorf("provider %q has no configured model %q", requestedProvider, model)
-		}
-		provider, apiType, baseURL, apiKey = runtimeProviderConfig(pc, cfg, getenv)
-		return provider, apiType, baseURL, apiKey, model, providerModelKey(provider, model), nil
-	}
-	if pc, ok := providerConfigForModel(providers, model, cfg.Provider); ok {
-		provider, apiType, baseURL, apiKey = runtimeProviderConfig(pc, cfg, getenv)
-		return provider, apiType, baseURL, apiKey, model, providerModelKey(provider, model), nil
-	}
-	if pc, ok := providerConfigByName(providers, cfg.Provider); ok {
-		provider, apiType, baseURL, apiKey = runtimeProviderConfig(pc, cfg, getenv)
-		return provider, apiType, baseURL, apiKey, model, providerModelKey(provider, model), nil
-	}
-
-	apiType = inferAPIType(model)
-	provider = apiType
-	baseURL = providerBaseURLEnv(apiType, getenv)
-	apiKey = providerAPIKeyEnv(apiType, getenv)
-	if cfg.Provider == provider {
-		if cfg.BaseURL != "" {
-			baseURL = cfg.BaseURL
-		}
-		if cfg.APIKey != "" {
-			apiKey = cfg.APIKey
-		}
-	}
-	return provider, apiType, baseURL, apiKey, model, providerModelKey(provider, model), nil
-}
-
-func configuredModelPicker(providers []llm.ProviderConfig) func(ui.PickerIO) (string, error) {
-	providerEntries := configuredProviderPickerEntries(providers)
-	if len(providerEntries) == 0 {
-		return nil
-	}
-	return func(pio ui.PickerIO) (string, error) {
-		w := pio.Writer
-		if w == nil {
-			w = io.Discard
-		}
-		provider, err := ui.Pick(pio.ReadLine, w, ui.PickerOptions[configuredProviderPick]{
-			Items:       providerEntries,
-			PageSize:    pio.PageSize,
-			Prompt:      "Provider (number/id, /search, n/p, q): ",
-			Kind:        "provider",
-			CancelError: ui.ErrPickerCancelled,
-			PrintPage:   ui.PrintProviderPickerPage[configuredProviderPick],
-		})
-		if err != nil {
-			return "", err
-		}
-		models := configuredModelPickerEntries(provider.config.Models)
-		model, err := ui.Pick(pio.ReadLine, w, ui.PickerOptions[configuredModelPick]{
-			Items:       models,
-			PageSize:    pio.PageSize,
-			Prompt:      "Model (number/id, /search, n/p, q): ",
-			Kind:        "model",
-			CancelError: ui.ErrPickerCancelled,
-			PrintPage: func(w io.Writer, models []configuredModelPick, page, pageSize int, filter string) {
-				ui.PrintModelPickerPage(w, provider.config.Name, models, page, pageSize, filter)
-			},
-		})
-		if err != nil {
-			return "", err
-		}
-		return provider.config.Name + ":" + model.entry.Name, nil
-	}
-}
-
-type configuredProviderPick struct {
-	config llm.ProviderConfig
-}
-
-func configuredProviderPickerEntries(providers []llm.ProviderConfig) []configuredProviderPick {
-	seen := make(map[string]bool, len(providers))
-	entries := make([]configuredProviderPick, 0, len(providers))
-	for _, provider := range providers {
-		if provider.Name == "" || len(provider.Models) == 0 || seen[provider.Name] {
-			continue
-		}
-		seen[provider.Name] = true
-		entries = append(entries, configuredProviderPick{config: provider})
-	}
-	return entries
-}
-
-func (p configuredProviderPick) PickerID() string { return p.config.Name }
-
-func (p configuredProviderPick) PickerName() string {
-	if p.config.BaseURL != "" {
-		return p.config.BaseURL
-	}
-	if p.config.APIType != "" && p.config.APIType != p.config.Name {
-		return p.config.APIType
-	}
-	return p.config.Name
-}
-
-func (p configuredProviderPick) PickerModelCount() int {
-	return len(p.config.Models)
-}
-
-type configuredModelPick struct {
-	entry llm.ModelEntry
-}
-
-func configuredModelPickerEntries(models []llm.ModelEntry) []configuredModelPick {
-	entries := make([]configuredModelPick, 0, len(models))
-	for _, model := range models {
-		if model.Name == "" {
-			continue
-		}
-		entries = append(entries, configuredModelPick{entry: model})
-	}
-	return entries
-}
-
-func (m configuredModelPick) PickerID() string      { return m.entry.Name }
-func (m configuredModelPick) PickerName() string    { return m.entry.Name }
-func (m configuredModelPick) PickerPrice() string   { return formatPickerPrice(m.entry.Price) }
-func (m configuredModelPick) PickerRelease() string { return "" }
 
 // formatPickerPrice formats an llm.Price as "$in/$out" per 1M tokens,
 // or "" when no price is configured.
@@ -895,109 +761,12 @@ func providerModelKey(provider, model string) string {
 	return provider + ":" + model
 }
 
-func registryModelKey(registry *llm.Registry, provider, model string) string {
-	key := providerModelKey(provider, model)
-	if registry != nil && key != model {
-		if _, ok := registry.Lookup(key); ok {
-			return key
-		}
+func pickerPageSize(env environment) int {
+	rows := 0
+	if env.terminalRows != nil {
+		rows = env.terminalRows()
 	}
-	return model
-}
-
-func runtimeProviderConfig(pc llm.ProviderConfig, cfg config.Config, getenv func(string) string) (provider, apiType, baseURL, apiKey string) {
-	provider = pc.Name
-	apiType = pc.APIType
-	if apiType == "" {
-		apiType = pc.Name
-	}
-	baseURL = pc.BaseURL
-	if pc.Name == cfg.Provider && cfg.BaseURL != "" {
-		baseURL = cfg.BaseURL
-	}
-	if pc.Name == cfg.Provider {
-		apiKey = cfg.APIKey
-	}
-	for _, name := range pc.APIKeyEnv {
-		if value := getenv(name); value != "" {
-			apiKey = value
-			break
-		}
-	}
-	if apiKey == "" {
-		apiKey = providerAPIKeyEnv(apiType, getenv)
-	}
-	if apiKey == "" {
-		apiKey = pc.APIKey
-	}
-	return provider, apiType, baseURL, apiKey
-}
-
-func providerConfigForModel(providers []llm.ProviderConfig, model, preferred string) (llm.ProviderConfig, bool) {
-	for _, pc := range providers {
-		if pc.Name == preferred && providerConfigHasModel(pc, model) {
-			return pc, true
-		}
-	}
-	for _, pc := range providers {
-		if providerConfigHasModel(pc, model) {
-			return pc, true
-		}
-	}
-	return llm.ProviderConfig{}, false
-}
-
-func providerConfigHasModel(pc llm.ProviderConfig, model string) bool {
-	for _, entry := range pc.Models {
-		if entry.Name == model {
-			return true
-		}
-	}
-	return false
-}
-
-func inferAPIType(model string) string {
-	if strings.HasPrefix(model, "claude") {
-		return "anthropic"
-	}
-	return "openai"
-}
-
-func providerBaseURLEnv(provider string, getenv func(string) string) string {
-	switch provider {
-	case "anthropic":
-		return getenv("ANTHROPIC_BASE_URL")
-	case "responses":
-		if v := getenv("RESPONSES_BASE_URL"); v != "" {
-			return v
-		}
-		return getenv("OPENAI_BASE_URL")
-	default:
-		return getenv("OPENAI_BASE_URL")
-	}
-}
-
-func providerAPIKeyEnv(provider string, getenv func(string) string) string {
-	switch provider {
-	case "anthropic":
-		return getenv("ANTHROPIC_API_KEY")
-	case "responses":
-		if v := getenv("RESPONSES_API_KEY"); v != "" {
-			return v
-		}
-		return getenv("OPENAI_API_KEY")
-	default:
-		return getenv("OPENAI_API_KEY")
-	}
-}
-
-func providerConfigByName(providers []llm.ProviderConfig, name string) (llm.ProviderConfig, bool) {
-	for _, pc := range providers {
-		if pc.Name == name {
-			return pc, true
-		}
-	}
-	return llm.ProviderConfig{}, false
+	return ui.PickerPageSize(rows)
 }
 
 // resolveConfigPath determines the config-file path config.Load should read: an
