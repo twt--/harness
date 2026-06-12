@@ -106,6 +106,7 @@ interrupted.
 -resume <file>    load a session transcript and continue
 -session <file>   explicit session save path
 -max-steps <n>    model round-trips per user turn (default 50)
+-on-max-steps <action>  when the step budget is hit: stop (default) or continue (up to 3 fresh budgets)
 -default-context-window <n>   fallback window for unknown/unconfigured models (default 256000)
 -context-window <n>   override the model's context window (tokens)
 -reasoning-effort <level>   reasoning/thinking effort when supported
@@ -115,6 +116,7 @@ interrupted.
 -q, --quiet       suppress informational diagnostics
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
+-prompt <text>    REPL input prompt string (default "> ")
 -config <file>    alternate config path
 -h, --help        print this usage screen and exit 0
 ```
