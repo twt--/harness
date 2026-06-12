@@ -86,6 +86,13 @@ func (r *Renderer) StartTurn() { r.turnStart = r.now() }
 // SetModel updates the model used for subsequent usage/cost summaries.
 func (r *Renderer) SetModel(model string) { r.model = model }
 
+// SetCumulativeUsage seeds the session totals used by per-turn usage lines.
+func (r *Renderer) SetCumulativeUsage(inputTokens, outputTokens int, costUSD float64) {
+	r.cumInput = inputTokens
+	r.cumOutput = outputTokens
+	r.cumCost = costUSD
+}
+
 func (r *Renderer) TextDelta(text string) {
 	if text == "" {
 		return

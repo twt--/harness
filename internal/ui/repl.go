@@ -814,7 +814,7 @@ func (app *App) refreshMCP() {
 // §10, §11). Cumulative usage resets with the conversation.
 func (app *App) clear() {
 	app.Agent.SetTranscript(nil)
-	app.usage = session.UsageTotals{}
+	app.SetUsage(session.UsageTotals{})
 	app.Created = app.clock()()
 	app.Turn = 0
 	app.SessionPath = session.DefaultPath(app.StateDir, app.Created)
@@ -898,7 +898,12 @@ func (app *App) compact() {
 
 // SetUsage seeds the cumulative session totals, used when resuming a session so
 // /usage and saved totals continue from the prior run (design §11).
-func (app *App) SetUsage(u session.UsageTotals) { app.usage = u }
+func (app *App) SetUsage(u session.UsageTotals) {
+	app.usage = u
+	if app.Renderer != nil {
+		app.Renderer.SetCumulativeUsage(u.InputTokens, u.OutputTokens, u.CostUSD)
+	}
+}
 
 // addUsage folds one turn's usage into the cumulative session totals.
 func (app *App) addUsage(u agent.TurnUsage) {
@@ -914,6 +919,9 @@ func (app *App) addUsage(u agent.TurnUsage) {
 		if usd, known := app.Registry.Cost(model, u.Usage); known {
 			app.usage.CostUSD += usd
 		}
+	}
+	if app.Renderer != nil {
+		app.Renderer.SetCumulativeUsage(app.usage.InputTokens, app.usage.OutputTokens, app.usage.CostUSD)
 	}
 }
 
@@ -1099,8 +1107,8 @@ func (s *accumulatingSink) Notice(msg string) {
 }
 
 func (s *accumulatingSink) TurnComplete(u agent.TurnUsage) {
-	s.app.addUsage(u)
 	s.r.TurnComplete(u)
+	s.app.addUsage(u)
 	// Regenerate the line for the session event record after cumulative totals
 	// have been updated by TurnComplete above.
 	line := usageLine(s.r.registry, s.r.model, u, s.r.now().Sub(s.r.turnStart),

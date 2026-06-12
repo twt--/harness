@@ -778,7 +778,7 @@ func TestRunDelegateToolUsesReadOnlyChildAgent(t *testing.T) {
 	if !strings.Contains(errw.String(), "[delegate]") {
 		t.Fatalf("delegate tool result was not rendered: %q", errw.String())
 	}
-	if !strings.Contains(errw.String(), "60 in / 13 out") {
+	if !strings.Contains(errw.String(), "60 (60) in / 13 (13) out") {
 		t.Fatalf("turn usage should include parent and child model calls, stderr=%q", errw.String())
 	}
 }

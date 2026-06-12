@@ -15,6 +15,7 @@ import (
 	"harness/internal/agent"
 	"harness/internal/llm"
 	"harness/internal/llm/llmtest"
+	"harness/internal/session"
 	"harness/internal/tools"
 )
 
@@ -226,6 +227,82 @@ func TestREPLUsageCumulative(t *testing.T) {
 	// Cumulative: 300 in / 30 out across both turns.
 	if !strings.Contains(got, "300") || !strings.Contains(got, "30 out") {
 		t.Errorf("/usage should show cumulative tokens, errw=%q", got)
+	}
+}
+
+func TestREPLUsageLineSeedsFromSavedUsage(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake",
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("a")}, Stop: llm.StopEndTurn, Usage: llm.Usage{InputTokens: 50, OutputTokens: 5}},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+	app.SetUsage(session.UsageTotals{Usage: llm.Usage{InputTokens: 300, OutputTokens: 30}})
+
+	in := strings.NewReader("p1\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := errw.String()
+	if !strings.Contains(got, "50 (350) in") {
+		t.Errorf("usage line should include seeded input total, errw=%q", got)
+	}
+	if !strings.Contains(got, "5 (35) out") {
+		t.Errorf("usage line should include seeded output total, errw=%q", got)
+	}
+}
+
+func TestREPLClearResetsUsageLineCumulative(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake",
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("a")}, Stop: llm.StopEndTurn, Usage: llm.Usage{InputTokens: 100, OutputTokens: 10}},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("b")}, Stop: llm.StopEndTurn, Usage: llm.Usage{InputTokens: 200, OutputTokens: 20}},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+
+	in := strings.NewReader("p1\n/clear\np2\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := errw.String()
+	if !strings.Contains(got, "100 (100) in") {
+		t.Errorf("first turn should show its own cumulative input, errw=%q", got)
+	}
+	if !strings.Contains(got, "200 (200) in") {
+		t.Errorf("post-clear turn should reset cumulative input, errw=%q", got)
+	}
+	if strings.Contains(got, "200 (300) in") {
+		t.Errorf("post-clear turn leaked pre-clear input total, errw=%q", got)
+	}
+}
+
+func TestREPLUsageLineIncludesCompactUsage(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake",
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("CANNED SUMMARY")}, Stop: llm.StopEndTurn, Usage: llm.Usage{InputTokens: 9100, OutputTokens: 400}},
+		llmtest.Step{Events: []llm.StreamEvent{textDelta("after compact")}, Stop: llm.StopEndTurn, Usage: llm.Usage{InputTokens: 100, OutputTokens: 10}},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+
+	var seed []llm.Message
+	for i := 0; i < 10; i++ {
+		label := string(rune('a' + i))
+		seed = append(seed,
+			llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: label + " q"}}},
+			llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: label + " a"}}},
+		)
+	}
+	app.Agent.SetTranscript(seed)
+
+	in := strings.NewReader("/compact\np1\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := errw.String()
+	if !strings.Contains(got, "100 (9.2k) in") {
+		t.Errorf("post-compact turn should include compact input usage in cumulative total, errw=%q", got)
+	}
+	if !strings.Contains(got, "10 (410) out") {
+		t.Errorf("post-compact turn should include compact output usage in cumulative total, errw=%q", got)
 	}
 }
 
