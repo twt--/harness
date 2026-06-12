@@ -7,11 +7,13 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -479,6 +481,67 @@ func readConfigFile(path string) (fileConfig, error) {
 		return fileConfig{}, err
 	}
 	return fc, nil
+}
+
+// SaveSelectedModel writes provider/model into the harness config file,
+// preserving any existing top-level keys. Missing files are created atomically.
+func SaveSelectedModel(path, provider, model string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("config path is required")
+	}
+	raw := map[string]json.RawMessage{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	} else if len(strings.TrimSpace(string(data))) > 0 {
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return err
+		}
+	}
+	providerJSON, err := json.Marshal(provider)
+	if err != nil {
+		return err
+	}
+	modelJSON, err := json.Marshal(model)
+	if err != nil {
+		return err
+	}
+	raw["provider"] = providerJSON
+	raw["model"] = modelJSON
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 // resolveString returns the highest-precedence non-empty value among an

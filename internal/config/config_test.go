@@ -562,6 +562,37 @@ func TestModelColonWithoutProviderQualifierStaysModel(t *testing.T) {
 	}
 }
 
+func TestSaveSelectedModelCreatesConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "config.json")
+	if err := SaveSelectedModel(path, "openai", "gpt-5.5"); err != nil {
+		t.Fatalf("SaveSelectedModel: %v", err)
+	}
+	c, err := Load(nil, noEnv, path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	if c.Provider != "openai" || c.Model != "gpt-5.5" {
+		t.Fatalf("provider/model = %q/%q, want openai/gpt-5.5", c.Provider, c.Model)
+	}
+}
+
+func TestSaveSelectedModelPreservesOtherConfigKeys(t *testing.T) {
+	path := writeConfig(t, `{"mode":"plan","max_steps":7,"provider":"old","model":"old-model"}`)
+	if err := SaveSelectedModel(path, "anthropic", "claude-opus-4-8"); err != nil {
+		t.Fatalf("SaveSelectedModel: %v", err)
+	}
+	c, err := Load(nil, noEnv, path)
+	if err != nil {
+		t.Fatalf("Load saved config: %v", err)
+	}
+	if c.Provider != "anthropic" || c.Model != "claude-opus-4-8" {
+		t.Fatalf("provider/model = %q/%q, want anthropic/claude-opus-4-8", c.Provider, c.Model)
+	}
+	if c.Mode != "plan" || c.MaxSteps != 7 {
+		t.Fatalf("preserved mode/max_steps = %q/%d, want plan/7", c.Mode, c.MaxSteps)
+	}
+}
+
 // Usage writes a screen that names every design §10 flag with its default, so the
 // help output is a complete and accurate reference.
 func TestUsageListsEveryFlag(t *testing.T) {

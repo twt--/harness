@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -74,6 +75,7 @@ type environment struct {
 // exit codes: 0 ok, 1 runtime, 2 usage, 130 interrupted).
 func run(env environment) int {
 	args := env.args
+	stdin := env.stdin
 	stdout := env.stdout
 	stderr := env.stderr
 	getenv := env.getenv
@@ -118,16 +120,41 @@ func run(env environment) int {
 		fmt.Fprintf(stderr, "harness: model proxy: %v\n", err)
 		return ui.ExitRuntime
 	}
-	selection, err := resolveCatalogSelection(catalog, cfg.Provider, cfg.Model, "")
-	if err != nil {
-		fmt.Fprintf(stderr, "harness: %v\n", err)
-		return ui.ExitUsage
-	}
-	cfg.Provider = selection.Provider
-	cfg.Model = selection.Model
 	modelRegistry := modelclient.Registry(catalog)
 	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
 	reasoning := llm.ReasoningConfig{Effort: cfg.ReasoningEffort}
+	selection, err := resolveCatalogSelection(catalog, cfg.Provider, cfg.Model, "")
+	if err != nil {
+		if cfg.Model != "" {
+			fmt.Fprintf(stderr, "harness: %v\n", err)
+			return ui.ExitUsage
+		}
+		reader := bufio.NewReader(stdin)
+		stdin = reader
+		selection, err = pickStartupModel(reader, stderr, catalog, pickerPageSize(env))
+		if err != nil {
+			if errors.Is(err, ui.ErrPickerCancelled) {
+				fmt.Fprintln(stderr, "harness: model selection cancelled")
+			} else {
+				fmt.Fprintf(stderr, "harness: model selection: %v\n", err)
+			}
+			return ui.ExitUsage
+		}
+		cfg.Provider = selection.Provider
+		cfg.Model = selection.Model
+		if err := validateReasoningEffort(modelRegistry, selection.RegistryModel, reasoning); err != nil {
+			fmt.Fprintf(stderr, "harness: %v\n", err)
+			return ui.ExitUsage
+		}
+		configPath := writableConfigPath(args, getenv)
+		if err := config.SaveSelectedModel(configPath, selection.Provider, selection.Model); err != nil {
+			fmt.Fprintf(stderr, "harness: save selected model: %v\n", err)
+			return ui.ExitRuntime
+		}
+		fmt.Fprintf(stderr, "harness: saved selected model to %s\n", configPath)
+	}
+	cfg.Provider = selection.Provider
+	cfg.Model = selection.Model
 	registryModel := selection.RegistryModel
 	if err := validateReasoningEffort(modelRegistry, registryModel, reasoning); err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
@@ -478,7 +505,7 @@ func run(env environment) int {
 
 	// One-shot mode: a single turn, then exit (design §10).
 	if cfg.PromptSet {
-		prompt, err := ui.BuildPrompt(cfg.Prompt, env.stdin, env.stdinPiped)
+		prompt, err := ui.BuildPrompt(cfg.Prompt, stdin, env.stdinPiped)
 		if err != nil {
 			fmt.Fprintf(stderr, "harness: read prompt: %v\n", err)
 			return ui.ExitRuntime
@@ -497,7 +524,7 @@ func run(env environment) int {
 	// including SIGINT, so the exit-save never races an in-flight turn's own save
 	// or usage update (design §8.4); main only forwards the exit request.
 	fmt.Fprintf(stderr, "session: %s\n", sessionPath)
-	return ui.Run(env.stdin, app, exitCh)
+	return ui.Run(stdin, app, exitCh)
 }
 
 func delegateReadOnlyToolNames() []string {
@@ -655,6 +682,42 @@ func catalogModelPicker(catalog protocol.Catalog) func(ui.PickerIO) (string, err
 		}
 		return provider.provider.ID + ":" + model.model.ID, nil
 	}
+}
+
+func pickStartupModel(reader *bufio.Reader, w io.Writer, catalog protocol.Catalog, pageSize int) (catalogSelection, error) {
+	picker := catalogModelPicker(catalog)
+	if picker == nil {
+		return catalogSelection{}, fmt.Errorf("model proxy catalog has no selectable models")
+	}
+	fmt.Fprintln(w, "Select a provider and model to use with harness.")
+	input, err := picker(ui.PickerIO{
+		ReadLine: func(prompt string) (string, error) {
+			if _, err := fmt.Fprint(w, prompt); err != nil {
+				return "", err
+			}
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if errors.Is(err, io.EOF) && line != "" {
+					return strings.TrimSpace(line), nil
+				}
+				return "", err
+			}
+			return strings.TrimSpace(line), nil
+		},
+		Writer:   w,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		return catalogSelection{}, err
+	}
+	return resolveCatalogSelection(catalog, "", input, "")
+}
+
+func writableConfigPath(args []string, getenv func(string) string) string {
+	if p := flagValue(args, "config"); p != "" {
+		return p
+	}
+	return filepath.Join(defaultConfigDir(getenv), "config.json")
 }
 
 type catalogProviderPick struct {

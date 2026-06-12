@@ -308,19 +308,34 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	}
 }
 
-func TestRunRequiresHarnessConfiguredModel(t *testing.T) {
+func TestRunPromptsForModelAndSavesConfigWhenModelMissing(t *testing.T) {
 	fp := llmtest.New("fake", okStep())
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-p", "hi"}, fp, "")
+	env, _, errw, getenv := fakeProviderEnv(t, nil, fp, "2\n1\n/exit\n")
 
 	code := run(env)
-	if code != ui.ExitUsage {
-		t.Fatalf("exit = %d, want usage error; errw=%q", code, errw.String())
+	if code != ui.ExitOK {
+		t.Fatalf("exit = %d, want ok; errw=%q", code, errw.String())
 	}
 	if len(fp.Requests) != 0 {
-		t.Fatalf("provider should not be called without a model, got %d requests", len(fp.Requests))
+		t.Fatalf("provider should not be called before a prompt, got %d requests", len(fp.Requests))
 	}
-	if !strings.Contains(strings.ToLower(errw.String()), "model") {
-		t.Fatalf("error should mention the missing model, errw=%q", errw.String())
+	configPath := filepath.Join(getenv("HOME"), ".config", "harness", "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var got struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode config: %v\n%s", err, data)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-5.5" {
+		t.Fatalf("saved provider/model = %q/%q, want openai/gpt-5.5\n%s", got.Provider, got.Model, data)
+	}
+	if !strings.Contains(errw.String(), "Select a provider and model") {
+		t.Fatalf("stderr should show startup picker, got %q", errw.String())
 	}
 }
 
