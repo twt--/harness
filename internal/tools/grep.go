@@ -10,7 +10,7 @@ type grep struct{}
 func (grep) Name() string { return "grep" }
 
 func (grep) Description() string {
-	return `Run the host grep command directly. Pass grep options and operands as args, e.g. ["-R","-n","TODO","."]. No shell; returns combined stdout+stderr and the exit code.`
+	return `Run the host grep command directly. Provide a JSON object with an args array, e.g. {"args":["-R","-n","TODO","."]}. No shell; returns combined stdout+stderr and the exit code.`
 }
 
 func (grep) Schema() json.RawMessage { return json.RawMessage(searchCommandSchema) }

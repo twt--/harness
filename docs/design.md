@@ -635,9 +635,9 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.3 `grep` and optional `rg`
 
-> `grep`: Run the host grep command directly. Pass grep options and operands as args, e.g. ["-R","-n","TODO","."]. No shell; returns combined stdout+stderr and the exit code.
+> `grep`: Run the host grep command directly. Provide a JSON object with an args array, e.g. {"args":["-R","-n","TODO","."]}. No shell; returns combined stdout+stderr and the exit code.
 
-> `rg`: Run the host rg (ripgrep) command directly. Pass ripgrep options and operands as args, e.g. ["-n","TODO","."]. No shell; returns combined stdout+stderr and the exit code.
+> `rg`: Run the host rg (ripgrep) command directly. Provide a JSON object with an args array, e.g. {"args":["-n","TODO","."]}. No shell; returns combined stdout+stderr and the exit code.
 
 | param | type | notes |
 |---|---|---|
@@ -655,6 +655,8 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
   `[warn] [cli_tools] Tool "rg" is disabled. Reason: "rg" binary not found.`
   `-q`/`--quiet` suppresses these diagnostics, and `--log-level`/`LOG_LEVEL` filters
   them by level.
+- The advertised shape is `{"args":[...]}`. The decoder also accepts a bare
+  string array because earlier wording told models to provide that shape.
 - Both tools use `exec.Command(program, args...)`: no shell, glob expansion, pipes,
   redirection, `$VAR`, or `~` expansion. Each argument arrives byte-for-byte.
 - Search semantics are the host tool's semantics. Regex syntax, recursion,
@@ -746,7 +748,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.8 `exec`
 
-> Run a program directly with an argv array (no shell). Use when arguments contain quotes, spaces, or newlines; no globbing/pipes/$VAR — use run_command for those. Returns combined stdout+stderr and the exit code.
+> Run a program directly. Provide a JSON object with an argv array, e.g. {"argv":["grep","-n","foo bar","file.txt"]}. No shell/globbing/pipes/$VAR; use run_command for shell features.
 
 | param | type | notes |
 |---|---|---|
@@ -757,6 +759,8 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 - `exec.Command(argv[0], argv[1:]...)` — no shell anywhere, so arguments arrive
   byte-for-byte: nothing to quote, nothing to escape, nothing to inject.
+- The advertised shape is `{"argv":[...]}`. The decoder also accepts a bare
+  string array because earlier wording could be read that way.
 - **Why it exists:** shell quoting is the dominant model failure when generated content
   (commit messages with apostrophes, `python -c` one-liners, sed programs, JSON) travels
   through `run_command` as part of a command line. The argv form eliminates that failure

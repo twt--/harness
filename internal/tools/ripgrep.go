@@ -36,7 +36,7 @@ func RipgrepAvailable() bool {
 func (ripgrep) Name() string { return "rg" }
 
 func (ripgrep) Description() string {
-	return `Run the host rg (ripgrep) command directly. Pass ripgrep options and operands as args, e.g. ["-n","TODO","."]. No shell; returns combined stdout+stderr and the exit code.`
+	return `Run the host rg (ripgrep) command directly. Provide a JSON object with an args array, e.g. {"args":["-n","TODO","."]}. No shell; returns combined stdout+stderr and the exit code.`
 }
 
 func (ripgrep) Schema() json.RawMessage { return json.RawMessage(searchCommandSchema) }

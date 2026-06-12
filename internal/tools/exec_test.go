@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +113,47 @@ func TestExecEmptyArgv(t *testing.T) {
 	_, err := runExec(t, map[string]any{"argv": []string{}})
 	if err == nil {
 		t.Fatal("expected error for empty argv")
+	}
+}
+
+func TestDecodeExecArgsAcceptsObjectAndBareArray(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  execArgs
+	}{
+		{
+			name:  "object",
+			input: `{"argv":["echo","hello"],"cwd":"/tmp","timeout_seconds":5}`,
+			want:  execArgs{Argv: []string{"echo", "hello"}, Cwd: "/tmp", TimeoutSeconds: 5},
+		},
+		{
+			name:  "bare array",
+			input: `["echo","hello"]`,
+			want:  execArgs{Argv: []string{"echo", "hello"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeExecArgs(json.RawMessage(tt.input))
+			if err != nil {
+				t.Fatalf("decodeExecArgs: %v", err)
+			}
+			if !slices.Equal(got.Argv, tt.want.Argv) || got.Cwd != tt.want.Cwd || got.TimeoutSeconds != tt.want.TimeoutSeconds {
+				t.Errorf("decodeExecArgs() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecDescriptionSteersToObjectArgv(t *testing.T) {
+	desc := execTool{}.Description()
+	if !strings.Contains(desc, "JSON object") || !strings.Contains(desc, `{"argv":[`) {
+		t.Errorf("description should show object-shaped argv, got %q", desc)
+	}
+	if strings.Contains(desc, "Run a program directly with an argv array") {
+		t.Errorf("description still encourages bare array argv: %q", desc)
 	}
 }
 

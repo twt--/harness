@@ -33,8 +33,8 @@ type searchCommandArgs struct {
 }
 
 func runSearchCommand(ctx context.Context, input json.RawMessage, displayName, program string) (string, error) {
-	var args searchCommandArgs
-	if err := json.Unmarshal(input, &args); err != nil {
+	args, err := decodeSearchCommandArgs(input)
+	if err != nil {
 		return "", err
 	}
 	if len(args.Args) == 0 {
@@ -64,4 +64,17 @@ func runSearchCommand(ctx context.Context, input json.RawMessage, displayName, p
 		return "", fmt.Errorf("%s: %w", displayName, err)
 	}
 	return out, nil
+}
+
+func decodeSearchCommandArgs(input json.RawMessage) (searchCommandArgs, error) {
+	var bare []string
+	if err := json.Unmarshal(input, &bare); err == nil && bare != nil {
+		return searchCommandArgs{Args: bare}, nil
+	}
+
+	var args searchCommandArgs
+	if err := json.Unmarshal(input, &args); err != nil {
+		return searchCommandArgs{}, err
+	}
+	return args, nil
 }

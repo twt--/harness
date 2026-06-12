@@ -33,10 +33,17 @@ const execSchema = `{
 // output formatting are shared with run_command via runProcess.
 type execTool struct{}
 
+type execArgs struct {
+	Argv           []string `json:"argv"`
+	Stdin          string   `json:"stdin"`
+	Cwd            string   `json:"cwd"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+}
+
 func (execTool) Name() string { return "exec" }
 
 func (execTool) Description() string {
-	return "Run a program directly with an argv array (no shell). Use when arguments contain quotes, spaces, or newlines; no globbing/pipes/$VAR — use run_command for those. Returns combined stdout+stderr and the exit code."
+	return `Run a program directly. Provide a JSON object with an argv array, e.g. {"argv":["grep","-n","foo bar","file.txt"]}. No shell/globbing/pipes/$VAR; use run_command for shell features.`
 }
 
 func (execTool) Schema() json.RawMessage { return json.RawMessage(execSchema) }
@@ -44,13 +51,8 @@ func (execTool) Schema() json.RawMessage { return json.RawMessage(execSchema) }
 func (execTool) ReadOnly() bool { return false }
 
 func (execTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
-	var args struct {
-		Argv           []string `json:"argv"`
-		Stdin          string   `json:"stdin"`
-		Cwd            string   `json:"cwd"`
-		TimeoutSeconds int      `json:"timeout_seconds"`
-	}
-	if err := json.Unmarshal(input, &args); err != nil {
+	args, err := decodeExecArgs(input)
+	if err != nil {
 		return "", err
 	}
 	if len(args.Argv) == 0 {
@@ -82,4 +84,17 @@ func (execTool) Run(ctx context.Context, input json.RawMessage) (string, error) 
 		return "", fmt.Errorf("%s: %w", args.Argv[0], err)
 	}
 	return out, nil
+}
+
+func decodeExecArgs(input json.RawMessage) (execArgs, error) {
+	var bare []string
+	if err := json.Unmarshal(input, &bare); err == nil && bare != nil {
+		return execArgs{Argv: bare}, nil
+	}
+
+	var args execArgs
+	if err := json.Unmarshal(input, &args); err != nil {
+		return execArgs{}, err
+	}
+	return args, nil
 }

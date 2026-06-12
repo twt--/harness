@@ -101,6 +101,48 @@ func TestGrepValidatesArgs(t *testing.T) {
 	}
 }
 
+func TestDecodeSearchCommandArgsAcceptsObjectAndBareArray(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  searchCommandArgs
+	}{
+		{
+			name:  "object",
+			input: `{"args":["-n","needle","."],"cwd":"/tmp","timeout_seconds":5}`,
+			want:  searchCommandArgs{Args: []string{"-n", "needle", "."}, Cwd: "/tmp", TimeoutSeconds: 5},
+		},
+		{
+			name:  "bare array",
+			input: `["-n","needle","."]`,
+			want:  searchCommandArgs{Args: []string{"-n", "needle", "."}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeSearchCommandArgs(json.RawMessage(tt.input))
+			if err != nil {
+				t.Fatalf("decodeSearchCommandArgs: %v", err)
+			}
+			if !slices.Equal(got.Args, tt.want.Args) || got.Cwd != tt.want.Cwd || got.TimeoutSeconds != tt.want.TimeoutSeconds {
+				t.Errorf("decodeSearchCommandArgs() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearchCommandDescriptionsSteerToObjectArgs(t *testing.T) {
+	for _, desc := range []string{grep{}.Description(), ripgrep{}.Description()} {
+		if !strings.Contains(desc, "JSON object") || !strings.Contains(desc, `{"args":[`) {
+			t.Errorf("description should show object-shaped args, got %q", desc)
+		}
+		if strings.Contains(desc, "Pass grep options") || strings.Contains(desc, "Pass ripgrep options") {
+			t.Errorf("description still encourages bare array args: %q", desc)
+		}
+	}
+}
+
 func TestRipgrepNotRegisteredWhenMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
