@@ -182,8 +182,8 @@ func (r *Registry) Unsubscribe(s *mcp.ServerSession) {
 }
 
 // BroadcastListChanged notifies every subscribed session that the tool list
-// changed. Dead sessions (whose Done channel is closed) are dropped. Notify is
-// peer-buffered, so a slow session does not block the fan-out.
+// changed. Dead or backpressured sessions are dropped so one blocked client
+// cannot wedge supervisor callbacks.
 func (r *Registry) BroadcastListChanged() {
 	r.mu.RLock()
 	sessions := make([]*mcp.ServerSession, 0, len(r.sessions))
@@ -200,7 +200,7 @@ func (r *Registry) BroadcastListChanged() {
 			continue
 		default:
 		}
-		if err := s.NotifyToolsListChanged(); err != nil {
+		if err := s.TryNotifyToolsListChanged(); err != nil {
 			dead = append(dead, s)
 		}
 	}

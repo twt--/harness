@@ -110,6 +110,15 @@ func TestIDIsZero(t *testing.T) {
 	}
 }
 
+func TestIDEqualPreservesJSONType(t *testing.T) {
+	if !IntID(1).Equal(IntID(1)) {
+		t.Fatal("same numeric ids should be equal")
+	}
+	if IntID(1).Equal(StringID("#1")) {
+		t.Fatal("numeric 1 and string \"#1\" must not be equal")
+	}
+}
+
 func TestMessageKind(t *testing.T) {
 	intID := IntID(1)
 	tests := []struct {

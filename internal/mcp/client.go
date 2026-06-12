@@ -69,7 +69,7 @@ func NewClient(rwc io.ReadWriteCloser, opts ClientOptions) *Client {
 // NewClientTransport returns a Client over an already-built Transport. It does
 // not register the peer-level ping/list_changed handlers (a non-peer transport
 // like HTTP has no inbound request channel for them); NewClient is the wiring
-// for stream transports. Provided for Task 3 (HTTP) reuse.
+// for stream transports. Provided for HTTP transport reuse.
 func NewClientTransport(t Transport, opts ClientOptions) *Client {
 	logger := opts.Logger
 	if logger == nil {

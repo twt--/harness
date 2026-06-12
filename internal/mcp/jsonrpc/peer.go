@@ -14,6 +14,10 @@ import (
 // classify connection drops with errors.Is(err, ErrPeerClosed).
 var ErrPeerClosed = errors.New("jsonrpc: peer closed")
 
+// ErrPeerBlocked is returned by best-effort nonblocking sends when the peer's
+// outbound queue is full.
+var ErrPeerBlocked = errors.New("jsonrpc: peer output buffer full")
+
 // Handler handles an inbound request. Returning (result, nil) sends a success
 // response; returning (_, *Error) sends that error response. ctx is cancelled
 // when the peer shuts down.
@@ -72,7 +76,7 @@ type Peer struct {
 	out chan Message // sole path to the Encoder; drained by one writer goroutine
 
 	mu      sync.Mutex
-	waiters map[string]chan pending
+	waiters map[ID]chan pending
 
 	// ctx is cancelled when the peer shuts down, propagating to in-flight
 	// handler goroutines.
@@ -100,7 +104,7 @@ func NewPeer(rwc io.ReadWriteCloser, opts PeerOptions) *Peer {
 		opts:    opts,
 		logger:  logger,
 		out:     make(chan Message, outBufferSize),
-		waiters: make(map[string]chan pending),
+		waiters: make(map[ID]chan pending),
 		ctx:     ctx,
 		cancel:  cancel,
 		done:    make(chan struct{}),
@@ -120,7 +124,7 @@ func (p *Peer) Call(ctx context.Context, method string, params json.RawMessage) 
 // CallWith is Call with per-call options.
 func (p *Peer) CallWith(ctx context.Context, method string, params json.RawMessage, opts CallOpts) (json.RawMessage, error) {
 	id := IntID(p.idCounter.Add(1))
-	key := id.String()
+	key := id
 	ch := make(chan pending, 1)
 
 	p.mu.Lock()
@@ -174,6 +178,13 @@ func (p *Peer) Notify(method string, params json.RawMessage) error {
 	return p.send(NewNotification(method, params))
 }
 
+// TryNotify sends a notification without blocking on a full outbound queue.
+// It is intended for best-effort fan-out paths; ordinary request/response flow
+// should keep using the blocking send for backpressure.
+func (p *Peer) TryNotify(method string, params json.RawMessage) error {
+	return p.trySend(NewNotification(method, params))
+}
+
 // Done returns a channel closed when the read loop exits (EOF, error, or Close).
 func (p *Peer) Done() <-chan struct{} {
 	return p.done
@@ -209,7 +220,23 @@ func (p *Peer) send(m Message) error {
 	}
 }
 
-func (p *Peer) removeWaiter(key string) {
+func (p *Peer) trySend(m Message) error {
+	select {
+	case <-p.done:
+		return ErrPeerClosed
+	default:
+	}
+	select {
+	case p.out <- m:
+		return nil
+	case <-p.done:
+		return ErrPeerClosed
+	default:
+		return ErrPeerBlocked
+	}
+}
+
+func (p *Peer) removeWaiter(key ID) {
 	p.mu.Lock()
 	delete(p.waiters, key)
 	p.mu.Unlock()
@@ -262,7 +289,7 @@ func (p *Peer) route(m Message) {
 }
 
 func (p *Peer) deliverResponse(m Message) {
-	key := m.ID.String()
+	key := *m.ID
 	p.mu.Lock()
 	ch, ok := p.waiters[key]
 	if ok {
@@ -270,7 +297,7 @@ func (p *Peer) deliverResponse(m Message) {
 	}
 	p.mu.Unlock()
 	if !ok {
-		p.logger.Debug("jsonrpc: response with no waiter", "id", key)
+		p.logger.Debug("jsonrpc: response with no waiter", "id", key.String())
 		return
 	}
 	ch <- pending{result: m.Result, err: m.Error}
@@ -355,7 +382,7 @@ func (p *Peer) shutdown(cause error) {
 	p.once.Do(func() {
 		p.mu.Lock()
 		p.closeErr = cause
-		p.waiters = make(map[string]chan pending)
+		p.waiters = make(map[ID]chan pending)
 		p.mu.Unlock()
 
 		p.cancel()

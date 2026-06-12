@@ -294,9 +294,14 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		mcpEnableFile = fc.MCP.Enable
 		mcpGatewayFile = fc.MCP.Gateway
 		// Headers are config-file-only (no env layer); copy so a later mutation
-		// of fc cannot reach the resolved Config. Absent → nil.
+		// of fc cannot reach the resolved Config. Values support ${VAR} and
+		// ${VAR:-default} interpolation. Absent → nil.
 		if len(fc.MCP.Headers) > 0 {
-			c.MCP.Headers = maps.Clone(fc.MCP.Headers)
+			headers, err := expandMCPHeaders(fc.MCP.Headers, getenv)
+			if err != nil {
+				return Config{}, err
+			}
+			c.MCP.Headers = headers
 		}
 	}
 	c.MCP.Enable = resolveBool(false, false,
@@ -330,6 +335,96 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	c.APIKey = providerAPIKeyEnv(c.Provider, getenv)
 
 	return c, nil
+}
+
+func expandMCPHeaders(headers map[string]string, getenv func(string) string) (map[string]string, error) {
+	out := maps.Clone(headers)
+	for k, v := range out {
+		expanded, err := expandMCPHeaderValue(v, getenv)
+		if err != nil {
+			return nil, fmt.Errorf("mcp.headers.%s: %w", k, err)
+		}
+		out[k] = expanded
+	}
+	return out, nil
+}
+
+func expandMCPHeaderValue(s string, getenv func(string) string) (string, error) {
+	if !strings.ContainsRune(s, '$') {
+		return s, nil
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c != '$' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		ref, ok := parseMCPHeaderVarRef(s, i)
+		if !ok {
+			b.WriteByte('$')
+			i++
+			continue
+		}
+		if val := getenv(ref.name); val != "" {
+			b.WriteString(val)
+		} else if ref.hasDefault {
+			b.WriteString(ref.def)
+		} else {
+			return "", fmt.Errorf("references unset variable ${%s}", ref.name)
+		}
+		i = ref.end
+	}
+	return b.String(), nil
+}
+
+type mcpHeaderVarRef struct {
+	name       string
+	def        string
+	hasDefault bool
+	end        int
+}
+
+func parseMCPHeaderVarRef(s string, i int) (mcpHeaderVarRef, bool) {
+	if i+1 >= len(s) || s[i+1] != '{' {
+		return mcpHeaderVarRef{}, false
+	}
+	j := i + 2
+	start := j
+	for j < len(s) && s[j] != '}' {
+		j++
+	}
+	if j >= len(s) {
+		return mcpHeaderVarRef{}, false
+	}
+	body := s[start:j]
+	name, def, hasDefault := strings.Cut(body, ":-")
+	if !isMCPHeaderVarName(name) {
+		return mcpHeaderVarRef{}, false
+	}
+	return mcpHeaderVarRef{name: name, def: def, hasDefault: hasDefault, end: j + 1}, true
+}
+
+func isMCPHeaderVarName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c == '_':
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // flags holds the pointers returned by the FlagSet so the same flag definitions

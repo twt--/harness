@@ -1,8 +1,10 @@
 package mcpgateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,18 @@ import (
 	"harness/internal/mcp"
 	"harness/internal/mcp/jsonrpc"
 )
+
+type supervisorHTTPProvider struct{}
+
+func (p supervisorHTTPProvider) ListTools(context.Context, string) (mcp.ListToolsResult, error) {
+	return mcp.ListToolsResult{
+		Tools: []mcp.Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}, nil
+}
+
+func (p supervisorHTTPProvider) CallTool(_ context.Context, _ string, args json.RawMessage) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.ContentBlock{{Type: "text", Text: string(args)}}}, nil
+}
 
 // fakeHTTPMCP is a minimal streamable-HTTP MCP server for transport tests. It
 // answers initialize/tools/list/tools/call as single application/json
@@ -154,8 +168,8 @@ func TestSupervisorHTTPSessionExpiryRetried(t *testing.T) {
 	defer sup.Shutdown(context.Background())
 	waitFor(t, 5*time.Second, func() bool { return sup.State() == StateReady })
 
-	// First call expires the session once; the supervisor rebuilds a fresh client
-	// over the same transport, re-initializes, and retries the call, succeeding.
+	// First call expires the session once; the supervisor rebuilds a fresh
+	// transport/client pair, re-initializes, and retries the call, succeeding.
 	res, err := sup.CallTool(context.Background(), "echo", json.RawMessage(`{"x":1}`))
 	if err != nil {
 		t.Fatalf("CallTool with one expiry should retry and succeed: %v", err)
@@ -172,6 +186,124 @@ func TestSupervisorHTTPSessionExpiryRetried(t *testing.T) {
 	if inits < 2 {
 		t.Fatalf("expected a re-initialize after expiry, initCount=%d", inits)
 	}
+}
+
+func TestSupervisorHTTPSessionExpiryReconnectsWithRealHandler(t *testing.T) {
+	handler := mcp.NewHTTPHandler(mcp.HTTPHandlerOptions{
+		Info:     mcp.Implementation{Name: "real-http", Version: "1"},
+		Provider: supervisorHTTPProvider{},
+	})
+	var mu sync.Mutex
+	expireNextCall := true
+	var callSessions []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(r.Body)
+			if err == nil {
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				var msg jsonrpc.Message
+				if err := json.Unmarshal(body, &msg); err == nil && msg.Method == mcp.MethodCallTool {
+					mu.Lock()
+					callSessions = append(callSessions, r.Header.Get("Mcp-Session-Id"))
+					expire := expireNextCall
+					expireNextCall = false
+					mu.Unlock()
+					if expire {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+				}
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	sup := newHTTPSupervisor(t, srv.URL)
+	ctx := t.Context()
+	sup.Start(ctx)
+	defer sup.Shutdown(context.Background())
+	waitFor(t, 5*time.Second, func() bool { return sup.State() == StateReady })
+
+	res, err := sup.CallTool(context.Background(), "echo", json.RawMessage(`{"x":1}`))
+	if err != nil {
+		t.Fatalf("CallTool with one real-handler expiry should retry and succeed: %v", err)
+	}
+	if res.IsError || res.Content[0].Text != `{"x":1}` {
+		t.Fatalf("retry result wrong: %+v", res)
+	}
+
+	if _, err := sup.CallTool(context.Background(), "echo", json.RawMessage(`{"x":2}`)); err != nil {
+		t.Fatalf("later CallTool: %v", err)
+	}
+
+	mu.Lock()
+	sessions := append([]string(nil), callSessions...)
+	mu.Unlock()
+	if len(sessions) < 3 {
+		t.Fatalf("want original, retry, and later call sessions, got %v", sessions)
+	}
+	if sessions[0] == "" || sessions[1] == "" || sessions[2] == "" {
+		t.Fatalf("all calls should carry session ids, got %v", sessions)
+	}
+	if sessions[0] == sessions[1] {
+		t.Fatalf("retry should use a newly initialized session, got %v", sessions)
+	}
+	if sessions[2] != sessions[1] {
+		t.Fatalf("later call should keep the replacement session, got %v", sessions)
+	}
+}
+
+func TestSupervisorHTTPListFailureClosesSession(t *testing.T) {
+	var mu sync.Mutex
+	var session string
+	var deleted string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			mu.Lock()
+			deleted = r.Header.Get("Mcp-Session-Id")
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var msg jsonrpc.Message
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		switch msg.Method {
+		case mcp.MethodInitialize:
+			mu.Lock()
+			session = "partial-session"
+			mu.Unlock()
+			w.Header().Set("Mcp-Session-Id", "partial-session")
+			fake := &fakeHTTPMCP{}
+			fake.writeJSON(w, msg, mustJSON(mcp.InitializeResult{
+				ProtocolVersion: mcp.ProtocolVersion,
+				Capabilities:    mcp.ServerCapabilities{Tools: &mcp.ToolsCapability{}},
+				ServerInfo:      mcp.Implementation{Name: "partial", Version: "1"},
+			}))
+		case mcp.NotifInitialized:
+			w.WriteHeader(http.StatusAccepted)
+		case mcp.MethodListTools:
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer srv.Close()
+
+	sup := newHTTPSupervisor(t, srv.URL)
+	ctx := t.Context()
+	sup.Start(ctx)
+	defer sup.Shutdown(context.Background())
+
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return session != "" && deleted == session
+	})
 }
 
 func TestSupervisorHTTPSecondExpiryPropagates(t *testing.T) {

@@ -8,7 +8,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,7 +89,7 @@ func NewHTTPHandler(opts HTTPHandlerOptions) http.Handler {
 type httpSession struct {
 	mu       sync.Mutex
 	lastSeen time.Time
-	inflight map[string]context.CancelFunc
+	inflight map[jsonrpc.ID]context.CancelFunc
 }
 
 // httpHandler implements http.Handler for the streamable-HTTP server side.
@@ -101,6 +104,10 @@ type httpHandler struct {
 }
 
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !h.validOrigin(r) {
+		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
 	switch r.Method {
 	case http.MethodPost:
 		h.handlePost(w, r)
@@ -235,7 +242,7 @@ func (h *httpHandler) handleInitialize(w http.ResponseWriter, id jsonrpc.ID, par
 	h.mu.Lock()
 	h.sessions[sessionID] = &httpSession{
 		lastSeen: h.now(),
-		inflight: make(map[string]context.CancelFunc),
+		inflight: make(map[jsonrpc.ID]context.CancelFunc),
 	}
 	h.mu.Unlock()
 
@@ -288,7 +295,7 @@ func (h *httpHandler) handleCallTool(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	callCtx, cancel := context.WithCancel(r.Context())
-	key := id.String()
+	key := id
 	sess.mu.Lock()
 	sess.inflight[key] = cancel
 	sess.mu.Unlock()
@@ -321,12 +328,12 @@ func (h *httpHandler) cancelInflight(sess *httpSession, params json.RawMessage) 
 	if err := json.Unmarshal(params, &p); err != nil {
 		return
 	}
-	key, ok := canonicalIDKey(p.RequestID)
+	id, ok := canonicalID(p.RequestID)
 	if !ok {
 		return
 	}
 	sess.mu.Lock()
-	cancel := sess.inflight[key]
+	cancel := sess.inflight[id]
 	sess.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -342,8 +349,8 @@ func (h *httpHandler) cancelInflight(sess *httpSession, params json.RawMessage) 
 func (h *httpHandler) authorize(r *http.Request) (*httpSession, int) {
 	// An MCP-Protocol-Version header, when present, must be one we support;
 	// absent is tolerated (the spec lets the server assume a default).
-	if v := r.Header.Get(mcpProtocolHeader); v != "" && !Supports(v) {
-		return nil, http.StatusBadRequest
+	if status := validateProtocolVersionHeader(r); status != 0 {
+		return nil, status
 	}
 
 	id := r.Header.Get(mcpSessionHeader)
@@ -382,6 +389,10 @@ func (h *httpHandler) purgeStaleLocked(now time.Time) {
 // calls: each is still bound by its own POST request context, and explicit
 // cancellation is the notifications/cancelled path's job.
 func (h *httpHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if status := validateProtocolVersionHeader(r); status != 0 {
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
 	id := r.Header.Get(mcpSessionHeader)
 	if id == "" {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
@@ -399,6 +410,50 @@ func (h *httpHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func validateProtocolVersionHeader(r *http.Request) int {
+	if v := r.Header.Get(mcpProtocolHeader); v != "" && !Supports(v) {
+		return http.StatusBadRequest
+	}
+	return 0
+}
+
+func (h *httpHandler) validOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	if strings.EqualFold(u.Scheme, requestScheme(r)) && strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	return isLoopbackHost(u.Hostname()) && isLoopbackHost(hostnameFromHost(r.Host))
+}
+
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func hostnameFromHost(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return strings.Trim(h, "[]")
+	}
+	return strings.Trim(host, "[]")
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // writeProviderError maps a provider error onto a JSON-RPC error response with

@@ -1006,6 +1006,33 @@ func TestMCPHeadersFromFile(t *testing.T) {
 	}
 }
 
+func TestMCPHeadersExpandEnvRefs(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mcp":{"headers":{"Authorization":"Bearer ${TOKEN}","X-Default":"${MISSING:-fallback}","X-Literal":"price$5 $$ ${1BAD}"}}}`)
+	env := envFrom(map[string]string{"TOKEN": "secret"})
+	c, err := Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.MCP.Headers["Authorization"]; got != "Bearer secret" {
+		t.Fatalf("Authorization = %q, want Bearer secret", got)
+	}
+	if got := c.MCP.Headers["X-Default"]; got != "fallback" {
+		t.Fatalf("X-Default = %q, want fallback", got)
+	}
+	if got := c.MCP.Headers["X-Literal"]; got != "price$5 $$ ${1BAD}" {
+		t.Fatalf("X-Literal = %q, want literal dollar forms preserved", got)
+	}
+}
+
+func TestMCPHeadersUnsetEnvRefErrors(t *testing.T) {
+	cfgPath := writeConfig(t, `{"mcp":{"headers":{"Authorization":"Bearer ${TOKEN}"}}}`)
+	if _, err := Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath); err == nil {
+		t.Fatal("unset mcp header variable should error")
+	} else if !strings.Contains(err.Error(), "mcp.headers.Authorization") || !strings.Contains(err.Error(), "TOKEN") {
+		t.Fatalf("error should name header and variable, got %v", err)
+	}
+}
+
 // TestMCPHeadersAbsentIsNil confirms an mcp block without "headers" leaves
 // Headers nil (not an empty map), and that there is NO env var for headers: an
 // env that looks header-ish cannot leak into the resolved map.

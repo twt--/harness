@@ -264,3 +264,96 @@ func TestRegistryFanOutAndUnsubscribe(t *testing.T) {
 		t.Fatalf("unsubscribed session still received notifications: %d -> %d", before2, h2.changed.Load())
 	}
 }
+
+func TestRegistryBroadcastDropsBlockedSession(t *testing.T) {
+	s := newFixedSupervisor("s", []mcp.Tool{tool("a")})
+	reg := NewRegistry([]*Supervisor{s}, slog.New(slog.DiscardHandler))
+
+	blockClient, blockServer := net.Pipe()
+	blockSessionCh := make(chan *mcp.ServerSession, 1)
+	go func() {
+		_ = mcp.Serve(context.Background(), blockServer, mcp.ServerOptions{
+			Info:        mcp.Implementation{Name: "gw", Version: "1"},
+			Provider:    reg,
+			ListChanged: true,
+			OnSession: func(ss *mcp.ServerSession) {
+				reg.Subscribe(ss)
+				blockSessionCh <- ss
+			},
+		})
+	}()
+	blocked := <-blockSessionCh
+	defer blockClient.Close()
+	defer blocked.Close()
+
+	changed := make(chan struct{}, 1)
+	activeClient, activeServer := net.Pipe()
+	activeSessionCh := make(chan *mcp.ServerSession, 1)
+	go func() {
+		_ = mcp.Serve(context.Background(), activeServer, mcp.ServerOptions{
+			Info:        mcp.Implementation{Name: "gw", Version: "1"},
+			Provider:    reg,
+			ListChanged: true,
+			OnSession: func(ss *mcp.ServerSession) {
+				reg.Subscribe(ss)
+				activeSessionCh <- ss
+			},
+		})
+	}()
+	client := mcp.NewClient(activeClient, mcp.ClientOptions{
+		Info:           mcp.Implementation{Name: "c", Version: "1"},
+		OnToolsChanged: func() { changed <- struct{}{} },
+	})
+	defer client.Close()
+	active := <-activeSessionCh
+	defer reg.Unsubscribe(active)
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("active client init: %v", err)
+	}
+
+	fillBlocked := func() {
+		t.Helper()
+		for range 200 {
+			err := blocked.TryNotifyToolsListChanged()
+			if errors.Is(err, jsonrpc.ErrPeerBlocked) {
+				return
+			}
+			if err != nil {
+				t.Fatalf("fill blocked session: %v", err)
+			}
+		}
+		t.Fatal("blocked session outbound queue did not fill")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 5 {
+			fillBlocked()
+			reg.BroadcastListChanged()
+			reg.mu.RLock()
+			_, stillSubscribed := reg.sessions[blocked]
+			reg.mu.RUnlock()
+			if !stillSubscribed {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("BroadcastListChanged blocked on full session")
+	}
+	select {
+	case <-changed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("active session did not receive broadcast")
+	}
+
+	reg.mu.RLock()
+	_, stillSubscribed := reg.sessions[blocked]
+	reg.mu.RUnlock()
+	if stillSubscribed {
+		t.Fatal("blocked session should be unsubscribed after broadcast")
+	}
+}

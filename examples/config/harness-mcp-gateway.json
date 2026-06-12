@@ -6,9 +6,9 @@
       "env": { "LOG_LEVEL": "info" }
     },
     "search": {
-      "type": "http",
+      "type": "streamable-http",
       "url": "https://mcp.example.com/mcp",
-      "headers": { "Authorization": "Bearer ${SEARCH_TOKEN}" }
+      "headers": { "Authorization": "Bearer ${SEARCH_TOKEN:-dev-token}" }
     }
   },
   "gateway": {

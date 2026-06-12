@@ -8,10 +8,13 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"harness/internal/mcp"
 	"harness/internal/mcpgateway"
 )
+
+var toolsCommandTimeout = 10 * time.Second
 
 // runTools connects to a running gateway as an MCP client and prints the
 // aggregated tool table. It is a debug/status command: if it connects and
@@ -45,7 +48,8 @@ func runTools(env environment, args []string) int {
 	}
 	defer client.Close()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), toolsCommandTimeout)
+	defer cancel()
 	if _, err := client.Initialize(ctx); err != nil {
 		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
 		return exitRuntime

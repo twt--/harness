@@ -38,8 +38,8 @@ func StringID(s string) ID { return ID{str: s, isStr: true, set: true} }
 // IsZero reports whether the id is unset (an absent id, as on a notification).
 func (id ID) IsZero() bool { return !id.set }
 
-// String returns a stable map key. Integer ids are prefixed with '#' so an
-// integer 5 and the string "5" never collide as keys.
+// String returns a display form for diagnostics. Do not use it for request
+// correlation; ID values are comparable, so maps should key by ID directly.
 func (id ID) String() string {
 	if !id.set {
 		return ""
@@ -48,6 +48,11 @@ func (id ID) String() string {
 		return id.str
 	}
 	return "#" + strconv.FormatInt(id.num, 10)
+}
+
+// Equal reports whether id and other have the same JSON type and value.
+func (id ID) Equal(other ID) bool {
+	return id == other
 }
 
 // MarshalJSON emits the id as a JSON number or string. An unset id is an error:

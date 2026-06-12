@@ -1167,11 +1167,11 @@ hot import path — the harness side depends only on the thin `internal/mcptools
 adapter (§9.14).
 
 - **Gateway config** (`internal/mcpgateway`) is Claude Code-compatible:
-  `{"mcpServers": {name: {command,args,env} | {type:"http",url,headers}}, "gateway":
+  `{"mcpServers": {name: {command,args,env} | {type:"http"|"streamable-http",url,headers}}, "gateway":
   {socket,listen,logFile,logLevel}}`, at `$XDG_CONFIG_HOME/harness-mcp-gateway/config.json`
-  (else `~/.config/...`). `${NAME}` references are expanded strictly (only the
-  `${NAME}` form; a literal `$`, `$5`, `$$`, or unterminated `${` is preserved
-  verbatim; an unset var warns and expands to empty). Invalid servers are skipped
+  (else `~/.config/...`). `${NAME}` and `${NAME:-default}` references are expanded
+  strictly (literal `$`, `$5`, `$$`, or unterminated `${` is preserved verbatim;
+  an unset strict var warns and expands to empty). Invalid servers are skipped
   with a warning, never fatal. Library code returns warnings; the CLI logs them.
 - **Downstream supervision.** Each server gets a `Supervisor`. A **stdio** child is
   spawned in its own process group, initialized + `tools/list`ed under a 30 s
@@ -1220,8 +1220,9 @@ adapter (§9.14).
   it), mirroring the socket-bind contract, and the server is shut down gracefully
   alongside the socket. Harness reaches an HTTP gateway by setting `mcp.gateway` to
   the URL plus an optional config-file-only `mcp.headers` map (sent on every request,
-  for a proxied gateway's auth); the `tools` subcommand debugs one with
-  `tools -gateway <url>`.
+  for a proxied gateway's auth). Header values expand `${NAME}` and
+  `${NAME:-default}`; unset strict refs are config errors. The `tools` subcommand
+  debugs one with `tools -gateway <url>`.
 - **Refresh semantics.** A downstream `tools/list_changed` fans out to harness as a
   gateway `notifications/tools/list_changed`. Harness sets a dirty flag and applies
   it only at the **next REPL prompt boundary** (never mid-turn, which would race the

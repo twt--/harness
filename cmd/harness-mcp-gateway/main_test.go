@@ -385,6 +385,36 @@ func TestServeListenFlagAndToolsGateway(t *testing.T) {
 	<-codeCh
 }
 
+func TestServeListenEmptyFlagClearsConfiguredListener(t *testing.T) {
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "g.sock")
+	cfgDir := t.TempDir()
+	cfgPath := writeConfig(t, cfgDir, filepath.Join(dir, "srv.log"), "echo")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	body := strings.Replace(string(data), `"logLevel": "debug"`, `"logLevel": "debug", "listen": "not a valid listen address"`, 1)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+
+	serveEnv := environment{
+		args:   []string{"-config", cfgPath, "-socket", socket, "-listen", ""},
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+		getenv: func(string) string { return "" },
+		sigCh:  make(chan os.Signal, 1),
+	}
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- runServe(serveEnv, serveEnv.args) }()
+	dialReady(t, socket)
+
+	serveEnv.sigCh <- os.Interrupt
+	if code := <-codeCh; code != exitOK {
+		t.Fatalf("serve with -listen \"\" exit = %d, want %d", code, exitOK)
+	}
+}
+
 // TestToolsGatewayAndSocketMutuallyExclusive locks in the usage error when both
 // -gateway and -socket are supplied.
 func TestToolsGatewayAndSocketMutuallyExclusive(t *testing.T) {
@@ -411,6 +441,44 @@ func TestToolsConnectionFailureExit1(t *testing.T) {
 	wantPrefix := fmt.Sprintf("harness-mcp-gateway: cannot connect to gateway at %s:", socket)
 	if !strings.HasPrefix(errw.String(), wantPrefix) {
 		t.Errorf("connection-failure message wrong;\n got: %q\nwant prefix: %q", errw.String(), wantPrefix)
+	}
+}
+
+func TestToolsCommandTimesOutWhenGatewayHangs(t *testing.T) {
+	oldTimeout := toolsCommandTimeout
+	toolsCommandTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { toolsCommandTimeout = oldTimeout })
+
+	dir := shortSocketDir(t)
+	socket := filepath.Join(dir, "hang.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	env, out, errw := testEnv(t, []string{"tools", "-socket", socket})
+	code := run(env)
+	select {
+	case conn := <-accepted:
+		conn.Close()
+	default:
+	}
+	if code != exitRuntime {
+		t.Fatalf("tools hanging gateway exit = %d, want %d", code, exitRuntime)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("hanging gateway should not print table; stdout=%q", out.String())
+	}
+	if !strings.Contains(errw.String(), "context deadline exceeded") {
+		t.Fatalf("stderr should mention timeout, got %q", errw.String())
 	}
 }
 

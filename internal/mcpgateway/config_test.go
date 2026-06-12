@@ -161,6 +161,8 @@ func TestExpanderStrictSemantics(t *testing.T) {
 		{"home_style", "${HOME_LIKE}/bin", "/home/u/bin", nil},
 		{"ref_amid_literals", "p=$5;${CFG_SET};$x", "p=$5;value;$x", nil},
 		{"unset_ref", "${CFG_MISSING}", "", []string{"CFG_MISSING"}},
+		{"default_ref_unset", "${CFG_MISSING:-fallback}", "fallback", nil},
+		{"default_ref_set", "${CFG_SET:-fallback}", "value", nil},
 		{"unterminated_brace", "${CFG_SET", "${CFG_SET", nil},
 		{"empty_braces", "${}", "${}", nil},
 		{"invalid_name_leading_digit", "${1ABC}", "${1ABC}", nil},
@@ -212,6 +214,7 @@ func TestLoadConfigStdioHTTPExclusivity(t *testing.T) {
 	}{
 		{"stdio_ok", `{"mcpServers":{"s":{"command":"x"}}}`, true},
 		{"http_ok", `{"mcpServers":{"s":{"type":"http","url":"http://h/mcp"}}}`, true},
+		{"streamable_http_ok", `{"mcpServers":{"s":{"type":"streamable-http","url":"http://h/mcp"}}}`, true},
 		{"stdio_with_url", `{"mcpServers":{"s":{"command":"x","url":"http://h"}}}`, false},
 		{"http_with_command", `{"mcpServers":{"s":{"type":"http","url":"http://h","command":"x"}}}`, false},
 		{"stdio_no_command", `{"mcpServers":{"s":{"env":{"A":"b"}}}}`, false},

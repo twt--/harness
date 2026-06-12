@@ -44,6 +44,12 @@ func (s *ServerSession) NotifyToolsListChanged() error {
 	return s.peer.Notify(NotifToolsListChanged, json.RawMessage(`{}`))
 }
 
+// TryNotifyToolsListChanged sends a tools/list_changed notification without
+// blocking on a full peer queue.
+func (s *ServerSession) TryNotifyToolsListChanged() error {
+	return s.peer.TryNotify(NotifToolsListChanged, json.RawMessage(`{}`))
+}
+
 // Done returns a channel closed when the session ends.
 func (s *ServerSession) Done() <-chan struct{} { return s.peer.Done() }
 
@@ -58,7 +64,7 @@ type server struct {
 	mu          sync.Mutex
 	initialized bool
 	clientInfo  Implementation
-	inflight    map[string]context.CancelFunc
+	inflight    map[jsonrpc.ID]context.CancelFunc
 }
 
 // Serve runs one MCP session over rwc until EOF, error, or ctx cancellation. A
@@ -78,7 +84,7 @@ func Serve(ctx context.Context, rwc io.ReadWriteCloser, opts ServerOptions) erro
 	s := &server{
 		opts:     opts,
 		logger:   logger,
-		inflight: make(map[string]context.CancelFunc),
+		inflight: make(map[jsonrpc.ID]context.CancelFunc),
 	}
 
 	peerOpts := jsonrpc.PeerOptions{
@@ -193,9 +199,10 @@ func (s *server) handleCallTool(ctx context.Context, id jsonrpc.ID, params json.
 	}
 
 	// Register the call's context so a notifications/cancelled with this id can
-	// cancel it. Keyed by the id's stable string form.
+	// cancel it. Keyed by the full JSON-RPC id so string and numeric ids do not
+	// collide.
 	callCtx, cancel := context.WithCancel(ctx)
-	key := id.String()
+	key := id
 	s.mu.Lock()
 	s.inflight[key] = cancel
 	s.mu.Unlock()
@@ -228,7 +235,7 @@ func (s *server) handleCancelledNotif(ctx context.Context, params json.RawMessag
 	if err := json.Unmarshal(params, &p); err != nil {
 		return
 	}
-	key, ok := canonicalIDKey(p.RequestID)
+	id, ok := canonicalID(p.RequestID)
 	if !ok {
 		return
 	}
@@ -237,21 +244,20 @@ func (s *server) handleCancelledNotif(ctx context.Context, params json.RawMessag
 	// in-flight entry finds no match and is silently dropped. This is acceptable
 	// per the MCP spec (cancellation is advisory); it is not a guarantee.
 	s.mu.Lock()
-	cancel := s.inflight[key]
+	cancel := s.inflight[id]
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 }
 
-// canonicalIDKey parses a raw JSON id into the same stable key jsonrpc.ID.String
-// produces, so a cancelled requestId matches the inbound request id regardless
-// of incidental formatting (whitespace, number style). It returns false if raw
-// is not a valid non-null id.
-func canonicalIDKey(raw json.RawMessage) (string, bool) {
+// canonicalID parses a raw JSON id into a comparable jsonrpc.ID, so a cancelled
+// requestId matches the inbound request id regardless of incidental formatting
+// (whitespace, number style). It returns false if raw is not a valid non-null id.
+func canonicalID(raw json.RawMessage) (jsonrpc.ID, bool) {
 	var id jsonrpc.ID
 	if err := id.UnmarshalJSON(raw); err != nil {
-		return "", false
+		return jsonrpc.ID{}, false
 	}
-	return id.String(), true
+	return id, true
 }

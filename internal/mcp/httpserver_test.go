@@ -115,6 +115,60 @@ func TestHTTPServerInitialize(t *testing.T) {
 	}
 }
 
+func TestHTTPServerOriginValidation(t *testing.T) {
+	srv := newTestHandler(t, &stubProvider{})
+
+	sameOriginReq, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(initBody(ProtocolVersion)))
+	sameOriginReq.Header.Set("Content-Type", "application/json")
+	sameOriginReq.Header.Set("Origin", srv.URL)
+	sameOriginResp, err := http.DefaultClient.Do(sameOriginReq)
+	if err != nil {
+		t.Fatalf("same-origin POST: %v", err)
+	}
+	sameOriginResp.Body.Close()
+	if sameOriginResp.StatusCode != http.StatusOK {
+		t.Fatalf("same-origin POST status = %d, want 200", sameOriginResp.StatusCode)
+	}
+
+	crossPost, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(initBody(ProtocolVersion)))
+	crossPost.Header.Set("Content-Type", "application/json")
+	crossPost.Header.Set("Origin", "https://evil.example")
+	crossPostResp, err := http.DefaultClient.Do(crossPost)
+	if err != nil {
+		t.Fatalf("cross-origin POST: %v", err)
+	}
+	crossPostResp.Body.Close()
+	if crossPostResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin POST status = %d, want 403", crossPostResp.StatusCode)
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		req, _ := http.NewRequest(method, srv.URL, nil)
+		req.Header.Set("Origin", "https://evil.example")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("cross-origin %s status = %d, want 403", method, resp.StatusCode)
+		}
+	}
+
+	session, _ := initSession(t, srv)
+	del, _ := http.NewRequest(http.MethodDelete, srv.URL, nil)
+	del.Header.Set(mcpSessionHeader, session)
+	del.Header.Set("Origin", srv.URL)
+	delResp, err := http.DefaultClient.Do(del)
+	if err != nil {
+		t.Fatalf("same-origin DELETE: %v", err)
+	}
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("same-origin DELETE status = %d, want 204", delResp.StatusCode)
+	}
+}
+
 func TestHTTPServerInitializeVersionDowngrade(t *testing.T) {
 	srv := newTestHandler(t, &stubProvider{})
 	// Client asks for a future version we don't support: we offer ours, which the
@@ -226,6 +280,39 @@ func TestHTTPServerListToolsPagination(t *testing.T) {
 	}
 	if res.NextCursor != "next-page" {
 		t.Errorf("NextCursor = %q, want next-page", res.NextCursor)
+	}
+}
+
+func TestHTTPServerRequiredFieldsAreNonNull(t *testing.T) {
+	p := &stubProvider{
+		listFn: func(_ context.Context, _ string) (ListToolsResult, error) {
+			return ListToolsResult{Tools: []Tool{{Name: "nil-schema"}}}, nil
+		},
+		callFn: func(_ context.Context, _ string, _ json.RawMessage) (*CallToolResult, error) {
+			return &CallToolResult{}, nil
+		},
+	}
+	srv := newTestHandler(t, p)
+	session, _ := initSession(t, srv)
+
+	resp := postJSON(t, srv, `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`, session, ProtocolVersion)
+	msg := decodeMessage(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(string(msg.Result), `"tools":[`) {
+		t.Fatalf("tools/list result should contain tools array, got %s", msg.Result)
+	}
+	if strings.Contains(string(msg.Result), `"inputSchema":null`) {
+		t.Fatalf("tools/list result should not contain null inputSchema: %s", msg.Result)
+	}
+	if !strings.Contains(string(msg.Result), `"inputSchema":{"type":"object"}`) {
+		t.Fatalf("tools/list result should default inputSchema object: %s", msg.Result)
+	}
+
+	resp = postJSON(t, srv, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nil-schema"}}`, session, ProtocolVersion)
+	msg = decodeMessage(t, resp)
+	resp.Body.Close()
+	if string(msg.Result) != `{"content":[]}` {
+		t.Fatalf("tools/call result = %s, want content empty array", msg.Result)
 	}
 }
 
@@ -379,6 +466,29 @@ func TestHTTPServerDeleteUnknownSession404(t *testing.T) {
 	}
 }
 
+func TestHTTPServerDeleteBadProtocolVersionDoesNotDelete(t *testing.T) {
+	srv := newTestHandler(t, &stubProvider{})
+	session, _ := initSession(t, srv)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL, nil)
+	req.Header.Set(mcpSessionHeader, session)
+	req.Header.Set(mcpProtocolHeader, "1999-01-01")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("DELETE bad protocol status = %d, want 400", resp.StatusCode)
+	}
+
+	post := postJSON(t, srv, `{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}`, session, ProtocolVersion)
+	defer post.Body.Close()
+	if post.StatusCode != http.StatusOK {
+		t.Fatalf("session should survive bad DELETE; ping status = %d, want 200", post.StatusCode)
+	}
+}
+
 func TestHTTPServerBatchArrayRejected(t *testing.T) {
 	srv := newTestHandler(t, &stubProvider{})
 	resp := postJSON(t, srv, ` [{"jsonrpc":"2.0","id":1,"method":"ping"}]`, "", "")
@@ -527,6 +637,19 @@ func TestHTTPServerCancellationAcrossPosts(t *testing.T) {
 	}()
 
 	<-started
+	// A string id with the same display form must not cancel numeric request id
+	// 100.
+	wrongCancel := postJSON(t, srv, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"#100"}}`, session, ProtocolVersion)
+	if wrongCancel.StatusCode != http.StatusAccepted {
+		t.Fatalf("wrong cancel notification status = %d, want 202", wrongCancel.StatusCode)
+	}
+	wrongCancel.Body.Close()
+	select {
+	case <-observed:
+		t.Fatal("string requestId cancelled numeric in-flight call")
+	case <-time.After(50 * time.Millisecond):
+	}
+
 	// A second POST cancels request id 100.
 	cancelResp := postJSON(t, srv, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":100}}`, session, ProtocolVersion)
 	if cancelResp.StatusCode != http.StatusAccepted {

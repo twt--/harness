@@ -19,7 +19,7 @@ import (
 )
 
 // ErrAlreadyRunning is returned by Run when another live gateway already owns the
-// socket. The CLI wrapper (Task 5) treats it as a quiet success (exit 0).
+// socket. The CLI wrapper treats it as a quiet success (exit 0).
 var ErrAlreadyRunning = errors.New("mcpgateway: gateway already running")
 
 const (
@@ -69,7 +69,7 @@ func NewDaemon(cfg Config, logger *slog.Logger) *Daemon {
 
 // Run binds the socket and serves until ctx is cancelled. It returns nil on a
 // clean shutdown, ErrAlreadyRunning if a live gateway owns the socket, or a bind
-// error otherwise. Task 5 wires signals into ctx.
+// error otherwise. The CLI wires signals into ctx.
 func (d *Daemon) Run(ctx context.Context) error {
 	listener, err := d.listen()
 	if err != nil {

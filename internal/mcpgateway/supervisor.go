@@ -93,10 +93,10 @@ type Supervisor struct {
 	tools  []mcp.Tool
 	client *mcp.Client
 	cmd    *exec.Cmd          // stdio only
-	http   *mcp.HTTPTransport // http only; persists across client rebuilds
+	http   *mcp.HTTPTransport // http only; owned with client
 
-	// childDone is closed by the run loop after the live stdio child's cmd.Wait
-	// returns and s.cmd is cleared. Shutdown selects on it instead of polling.
+	// childDone is closed after the live stdio child's cmd.Wait returns and
+	// s.cmd is cleared. Shutdown selects on it instead of polling.
 	childDone chan struct{}
 
 	// starts counts successful initializes (initial + each restart). Exposed via
@@ -155,7 +155,7 @@ func (s *Supervisor) runStdio(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		cmd, client, conn, err := s.startChild()
+		cmd, client, conn, done, waitErr, err := s.startChild()
 		if err != nil {
 			if !s.afterFailedStart(ctx, &attempt, "spawn", err) {
 				return
@@ -167,15 +167,14 @@ func (s *Supervisor) runStdio(ctx context.Context) {
 		fatal, initErr := s.initChild(ctx, cmd, client)
 		if fatal {
 			// Version error: terminal, do not retry.
-			client.Close()
-			_ = conn.Close()
-			s.waitChild(cmd)
+			s.cleanupChild(ctx, client, conn, cmd, done)
 			return
 		}
 		if initErr != nil {
-			client.Close()
-			_ = conn.Close()
-			s.waitChild(cmd)
+			s.cleanupChild(ctx, client, conn, cmd, done)
+			if ctx.Err() != nil {
+				return
+			}
 			if !s.afterFailedStart(ctx, &attempt, "initialize", initErr) {
 				return
 			}
@@ -186,27 +185,17 @@ func (s *Supervisor) runStdio(ctx context.Context) {
 		attempt = 0
 
 		// Block until the child dies or the supervisor is stopped.
-		waitErr := s.waitChild(cmd)
+		<-done
+		childErr := <-waitErr
 		client.Close()
-
-		s.mu.Lock()
-		s.client = nil
-		s.cmd = nil
-		done := s.childDone
-		s.childDone = nil
-		s.mu.Unlock()
-		// Signal any waiter in Shutdown that the child has been reaped.
-		if done != nil {
-			close(done)
-		}
 
 		if ctx.Err() != nil {
 			return
 		}
 		// Crash: restart with backoff.
 		s.setState(StateRestarting)
-		s.logger.Warn("downstream server exited; restarting", logging.Category(categoryServer), "err", waitErr)
-		if !s.afterFailedStart(ctx, &attempt, "restart", waitErr) {
+		s.logger.Warn("downstream server exited; restarting", logging.Category(categoryServer), "err", childErr)
+		if !s.afterFailedStart(ctx, &attempt, "restart", childErr) {
 			return
 		}
 	}
@@ -216,23 +205,23 @@ func (s *Supervisor) runStdio(ctx context.Context) {
 // error nothing is left running. It takes no ctx: the child's lifetime is owned
 // by the supervisor (newCmd uses exec.Command, not CommandContext), so no
 // request ctx may govern it.
-func (s *Supervisor) startChild() (*exec.Cmd, *mcp.Client, io.ReadWriteCloser, error) {
+func (s *Supervisor) startChild() (*exec.Cmd, *mcp.Client, io.ReadWriteCloser, <-chan struct{}, <-chan error, error) {
 	cmd := s.newCmd()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("stderr pipe: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, nil, nil, fmt.Errorf("start: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("start: %w", err)
 	}
 
 	// Drain stderr line-by-line into the gateway log. stderr is logging, not a
@@ -245,7 +234,22 @@ func (s *Supervisor) startChild() (*exec.Cmd, *mcp.Client, io.ReadWriteCloser, e
 		OnToolsChanged: s.handleDownstreamListChanged,
 		Logger:         s.logger,
 	})
-	return cmd, client, conn, nil
+	done := make(chan struct{})
+	waitErr := make(chan error, 1)
+
+	s.mu.Lock()
+	s.cmd = cmd
+	s.client = client
+	s.childDone = done
+	s.mu.Unlock()
+
+	go func() {
+		waitErr <- cmd.Wait()
+		s.clearPublishedChild(cmd, client, done)
+		close(done)
+	}()
+
+	return cmd, client, conn, done, waitErr, nil
 }
 
 // newCmd builds the child *exec.Cmd, using the injected spawn func when set
@@ -292,9 +296,6 @@ func (s *Supervisor) initChild(ctx context.Context, cmd *exec.Cmd, client *mcp.C
 	}
 
 	s.mu.Lock()
-	s.cmd = cmd
-	s.client = client
-	s.childDone = make(chan struct{})
 	changed := !sameTools(s.tools, tools)
 	s.tools = tools
 	s.state = StateReady
@@ -306,6 +307,28 @@ func (s *Supervisor) initChild(ctx context.Context, cmd *exec.Cmd, client *mcp.C
 		s.onToolsChanged()
 	}
 	return false, nil
+}
+
+func (s *Supervisor) cleanupChild(ctx context.Context, client *mcp.Client, conn io.Closer, cmd *exec.Cmd, done <-chan struct{}) {
+	client.Close()
+	_ = conn.Close()
+	if cmd != nil && cmd.Process != nil && done != nil {
+		s.reapChild(ctx, cmd, done)
+	}
+}
+
+func (s *Supervisor) clearPublishedChild(cmd *exec.Cmd, client *mcp.Client, done chan struct{}) {
+	s.mu.Lock()
+	if s.cmd == cmd {
+		s.cmd = nil
+	}
+	if s.client == client {
+		s.client = nil
+	}
+	if s.childDone == done {
+		s.childDone = nil
+	}
+	s.mu.Unlock()
 }
 
 // afterFailedStart records a failed (re)start, logs it, and either backs off for
@@ -324,12 +347,6 @@ func (s *Supervisor) afterFailedStart(ctx context.Context, attempt *int, phase s
 	s.logger.Warn("downstream server start failed; backing off", logging.Category(categoryServer), "phase", phase, "attempt", *attempt, "err", cause)
 	s.sleep(ctx, retry.Next(*attempt, 0))
 	return ctx.Err() == nil
-}
-
-// waitChild blocks on cmd.Wait, the authoritative death signal. It returns the
-// wait error (nil on a clean exit).
-func (s *Supervisor) waitChild(cmd *exec.Cmd) error {
-	return cmd.Wait()
 }
 
 // drainStderr copies the child's stderr line-by-line into the gateway log at
@@ -361,20 +378,11 @@ func (s *Supervisor) drainStderr(r io.Reader) {
 // ---- http lifecycle ----
 
 func (s *Supervisor) runHTTP(ctx context.Context) {
-	transport := mcp.NewHTTPTransport(mcp.HTTPOptions{
-		Endpoint: s.cfg.URL,
-		Headers:  s.cfg.Headers,
-		Logger:   s.logger,
-	})
-	s.mu.Lock()
-	s.http = transport
-	s.mu.Unlock()
-
 	// Lazy connect: attempt once now. A version error is terminal (connectHTTP
 	// already set StateFailed); any other failure is retried on next use, so mark
 	// the server restarting and move on. There is no restart loop because the
 	// process is not ours.
-	if err := s.connectHTTP(ctx, transport); err != nil {
+	if err := s.connectHTTP(ctx); err != nil {
 		var ve *mcp.VersionError
 		if !errors.As(err, &ve) {
 			s.setState(StateRestarting)
@@ -385,16 +393,21 @@ func (s *Supervisor) runHTTP(ctx context.Context) {
 	<-ctx.Done()
 	s.mu.Lock()
 	client := s.client
+	transport := s.http
+	s.client = nil
+	s.http = nil
 	s.mu.Unlock()
 	if client != nil {
 		client.Close()
 	}
+	if transport != nil {
+		_ = transport.Close()
+	}
 }
 
-// connectHTTP builds a fresh client over the persistent transport, initializes,
-// and caches tools. It is reused for the initial connect and for session-expiry
-// recovery.
-func (s *Supervisor) connectHTTP(ctx context.Context, transport *mcp.HTTPTransport) error {
+// connectHTTP builds a fresh transport/client pair, initializes, and caches
+// tools. It is reused for the initial connect and for session-expiry recovery.
+func (s *Supervisor) connectHTTP(ctx context.Context) error {
 	initCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
 
@@ -402,10 +415,21 @@ func (s *Supervisor) connectHTTP(ctx context.Context, transport *mcp.HTTPTranspo
 	// notification channel, so a downstream tools/list_changed never reaches us.
 	// An HTTP server's tool set is refreshed only when a session-expiry reconnect
 	// re-runs tools/list (accepted v1 limitation; opening a GET stream is YAGNI).
+	transport := mcp.NewHTTPTransport(mcp.HTTPOptions{
+		Endpoint: s.cfg.URL,
+		Headers:  s.cfg.Headers,
+		Logger:   s.logger,
+	})
 	client := mcp.NewClientTransport(transport, mcp.ClientOptions{
 		Info:   gatewayClientInfo(),
 		Logger: s.logger,
 	})
+	installed := false
+	defer func() {
+		if !installed {
+			client.Close()
+		}
+	}()
 	if _, err := client.Initialize(initCtx); err != nil {
 		var ve *mcp.VersionError
 		if errors.As(err, &ve) {
@@ -421,13 +445,18 @@ func (s *Supervisor) connectHTTP(ctx context.Context, transport *mcp.HTTPTranspo
 
 	s.mu.Lock()
 	prev := s.client
+	prevTransport := s.http
 	s.client = client
+	s.http = transport
 	changed := !sameTools(s.tools, tools)
 	s.tools = tools
 	s.state = StateReady
 	s.mu.Unlock()
+	installed = true
 	if prev != nil {
 		prev.Close()
+	} else if prevTransport != nil {
+		_ = prevTransport.Close()
 	}
 
 	if changed && s.onToolsChanged != nil {
@@ -518,15 +547,14 @@ func (s *Supervisor) CallTool(ctx context.Context, name string, args json.RawMes
 	s.mu.Lock()
 	client := s.client
 	state := s.state
-	transport := s.http
 	s.mu.Unlock()
 
 	// HTTP lazy reconnect: an initial-connect failure leaves no client; a call
 	// attempts to connect on demand (the process is not ours, so there is no
 	// restart loop to do it eagerly). A terminal StateFailed (e.g. a version
 	// error that will never change) skips the attempt — it would just fail again.
-	if client == nil && state != StateFailed && s.cfg.Transport == TransportHTTP && transport != nil {
-		if err := s.connectHTTP(ctx, transport); err != nil {
+	if client == nil && state != StateFailed && s.cfg.Transport == TransportHTTP {
+		if err := s.connectHTTP(ctx); err != nil {
 			s.logger.Warn("http lazy connect failed", logging.Category(categoryServer), "err", err)
 			return unavailableResult(s.cfg.Name, s.State()), nil
 		}
@@ -548,24 +576,19 @@ func (s *Supervisor) CallTool(ctx context.Context, name string, args json.RawMes
 		return res, nil
 	}
 
-	// HTTP session expiry: rebuild a fresh client over the same transport,
-	// re-initialize, and retry the call once.
+	// HTTP session expiry: rebuild a fresh transport/client pair, re-initialize,
+	// and retry the call once.
 	if s.cfg.Transport == TransportHTTP && errors.Is(err, mcp.ErrSessionExpired) {
-		s.mu.Lock()
-		transport := s.http
-		s.mu.Unlock()
-		if transport != nil {
-			if rerr := s.connectHTTP(ctx, transport); rerr != nil {
-				s.logger.Warn("http reconnect after session expiry failed", logging.Category(categoryServer), "err", rerr)
-				return unavailableResult(s.cfg.Name, s.State()), nil
-			}
-			s.mu.Lock()
-			client = s.client
-			s.mu.Unlock()
-			retryCtx, rcancel := context.WithTimeout(ctx, callTimeout)
-			defer rcancel()
-			return client.CallTool(retryCtx, name, args)
+		if rerr := s.connectHTTP(ctx); rerr != nil {
+			s.logger.Warn("http reconnect after session expiry failed", logging.Category(categoryServer), "err", rerr)
+			return unavailableResult(s.cfg.Name, s.State()), nil
 		}
+		s.mu.Lock()
+		client = s.client
+		s.mu.Unlock()
+		retryCtx, rcancel := context.WithTimeout(ctx, callTimeout)
+		defer rcancel()
+		return client.CallTool(retryCtx, name, args)
 	}
 
 	return nil, err

@@ -30,7 +30,7 @@ type Summary struct {
 // *mcptools.Tool backed by conn. Names are validated against the provider
 // charset and the required mcp__ prefix; invalid names are skipped and recorded.
 // A later Register replaces same-named tools in place (Registry.Register
-// semantics), so Task 7 can re-run it on refresh; the returned Names let the
+// semantics), so refresh can re-run it; the returned Names let the
 // caller compute removals against a previous set.
 func Register(ctx context.Context, reg *tools.Registry, conn *Conn) (Summary, error) {
 	defs, err := conn.ListTools(ctx)

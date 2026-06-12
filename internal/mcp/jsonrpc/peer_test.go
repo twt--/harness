@@ -160,6 +160,44 @@ func TestInvalidInboundMessagesDropped(t *testing.T) {
 	}
 }
 
+func TestResponseIDStringAndNumberDoNotCollide(t *testing.T) {
+	ca, cb := net.Pipe()
+	a := NewPeer(ca, PeerOptions{})
+	t.Cleanup(func() { a.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		dec := NewDecoder(cb)
+		enc := NewEncoder(cb)
+		req, err := dec.Decode()
+		if err != nil {
+			done <- err
+			return
+		}
+		if req.ID == nil {
+			done <- fmt.Errorf("request missing id")
+			return
+		}
+		wrong := StringID(req.ID.String())
+		if err := enc.Encode(NewResponse(wrong, json.RawMessage(`"wrong"`))); err != nil {
+			done <- err
+			return
+		}
+		done <- enc.Encode(NewResponse(*req.ID, json.RawMessage(`"right"`)))
+	}()
+
+	res, err := a.Call(context.Background(), "m", nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if string(res) != `"right"` {
+		t.Fatalf("response id collision delivered %s, want \"right\"", res)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("far end: %v", err)
+	}
+}
+
 func TestHandlerPanicBecomesInternalError(t *testing.T) {
 	handlers := map[string]Handler{
 		"boom": func(ctx context.Context, params json.RawMessage) (json.RawMessage, *Error) {

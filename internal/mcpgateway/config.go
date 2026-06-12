@@ -153,19 +153,6 @@ func resolve(fc FileConfig) Config {
 		cfg.Servers = append(cfg.Servers, rs)
 	}
 
-	// Servers are already appended in name order (names is sorted), but sort
-	// defensively so the contract holds regardless of append order.
-	slices.SortFunc(cfg.Servers, func(a, b ResolvedServer) int {
-		switch {
-		case a.Name < b.Name:
-			return -1
-		case a.Name > b.Name:
-			return 1
-		default:
-			return 0
-		}
-	})
-
 	// Emit one warning per distinct unset var, in sorted order for determinism.
 	unsetNames := exp.unsetNames()
 	for _, v := range unsetNames {
@@ -214,7 +201,7 @@ func resolveServer(name string, sc ServerConfig, expand func(string) string) (Re
 			Args:      args,
 			Env:       env,
 		}, ""
-	case "http":
+	case "http", "streamable-http":
 		if rawURL == "" {
 			return ResolvedServer{}, fmt.Sprintf("server %q skipped: http server requires a url", name)
 		}
@@ -232,7 +219,7 @@ func resolveServer(name string, sc ServerConfig, expand func(string) string) (Re
 			Headers:   headers,
 		}, ""
 	default:
-		return ResolvedServer{}, fmt.Sprintf("server %q skipped: unknown type %q (want \"\", \"stdio\", or \"http\")", name, sc.Type)
+		return ResolvedServer{}, fmt.Sprintf("server %q skipped: unknown type %q (want \"\", \"stdio\", \"http\", or \"streamable-http\")", name, sc.Type)
 	}
 }
 
@@ -248,12 +235,13 @@ func expandMap(m map[string]string, expand func(string) string) map[string]strin
 	return out
 }
 
-// expander substitutes ${NAME} references in config strings, tracking which
-// referenced vars were unset in the process environment so the loader can warn
-// once per distinct name. An unset var expands to the empty string.
+// expander substitutes ${NAME} and ${NAME:-default} references in config
+// strings, tracking which strict referenced vars were unset in the process
+// environment so the loader can warn once per distinct name. An unset strict
+// var expands to the empty string; an unset defaulted var expands to its
+// provided default.
 //
-// Only the strict ${NAME} form (NAME matching [A-Za-z_][A-Za-z0-9_]*) is
-// recognized, matching Claude Code's ${VAR} semantics. Every other '$' is
+// Only NAME matching [A-Za-z_][A-Za-z0-9_]* is recognized. Every other '$' is
 // passed through literally: a bare "$5", "price$5", "$$", or an unterminated
 // "${" are all left exactly as written. This avoids os.Expand's behavior of
 // eating "$$" and "$<digit>" tokens, which would corrupt secrets that contain
@@ -278,25 +266,31 @@ func (e *expander) expand(s string) string {
 		}
 		// Try to parse a ${NAME} reference starting at i. Anything that is not a
 		// well-formed reference is emitted as a literal '$'.
-		name, end, ok := parseVarRef(s, i)
+		ref, ok := parseVarRef(s, i)
 		if !ok {
 			b.WriteByte('$')
 			i++
 			continue
 		}
-		b.WriteString(e.lookup(name))
-		i = end
+		b.WriteString(e.lookup(ref))
+		i = ref.end
 	}
 	return b.String()
 }
 
-// parseVarRef parses a ${NAME} reference at s[i] (s[i] is '$'). On success it
-// returns the variable name, the index just past the closing brace, and true.
-// A malformed reference (no brace, empty/invalid name, unterminated) returns
-// ok=false so the caller emits a literal '$'.
-func parseVarRef(s string, i int) (name string, end int, ok bool) {
+type varRef struct {
+	name       string
+	def        string
+	hasDefault bool
+	end        int
+}
+
+// parseVarRef parses a ${NAME} or ${NAME:-default} reference at s[i] (s[i] is
+// '$'). A malformed reference (no brace, empty/invalid name, unterminated)
+// returns ok=false so the caller emits a literal '$'.
+func parseVarRef(s string, i int) (varRef, bool) {
 	if i+1 >= len(s) || s[i+1] != '{' {
-		return "", 0, false
+		return varRef{}, false
 	}
 	j := i + 2
 	start := j
@@ -304,13 +298,14 @@ func parseVarRef(s string, i int) (name string, end int, ok bool) {
 		j++
 	}
 	if j >= len(s) {
-		return "", 0, false // unterminated "${..."
+		return varRef{}, false // unterminated "${..."
 	}
-	name = s[start:j]
+	body := s[start:j]
+	name, def, hasDefault := strings.Cut(body, ":-")
 	if !isVarName(name) {
-		return "", 0, false
+		return varRef{}, false
 	}
-	return name, j + 1, true
+	return varRef{name: name, def: def, hasDefault: hasDefault, end: j + 1}, true
 }
 
 // isVarName reports whether name matches [A-Za-z_][A-Za-z0-9_]*.
@@ -334,18 +329,21 @@ func isVarName(name string) bool {
 	return true
 }
 
-// lookup resolves a variable, recording an unset reference once per distinct
-// name.
-func (e *expander) lookup(name string) string {
-	if val, ok := os.LookupEnv(name); ok {
+// lookup resolves a variable, recording an unset strict reference once per
+// distinct name.
+func (e *expander) lookup(ref varRef) string {
+	if val, ok := os.LookupEnv(ref.name); ok {
 		return val
+	}
+	if ref.hasDefault {
+		return ref.def
 	}
 	if e.seen == nil {
 		e.seen = make(map[string]bool)
 	}
-	if !e.seen[name] {
-		e.seen[name] = true
-		e.names = append(e.names, name)
+	if !e.seen[ref.name] {
+		e.seen[ref.name] = true
+		e.names = append(e.names, ref.name)
 	}
 	return ""
 }

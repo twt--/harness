@@ -342,3 +342,58 @@ func TestSupervisorShutdownReapsChild(t *testing.T) {
 		return proc.Signal(syscallZero) != nil
 	})
 }
+
+func TestSupervisorShutdownReapsChildBeforeReady(t *testing.T) {
+	rs := ResolvedServer{Name: "h", Transport: TransportStdio, Command: "helper"}
+	sup := newStdioSupervisor(t, rs, map[string]string{"HELPER_HANG_NO_INIT": "1"}, slog.New(slog.DiscardHandler), nil)
+	ctx := t.Context()
+	sup.Start(ctx)
+
+	waitFor(t, 5*time.Second, func() bool { return sup.childPID() > 0 })
+	pid := sup.childPID()
+	if pid <= 0 {
+		t.Fatalf("expected a live child pid, got %d", pid)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sup.Shutdown(context.Background())
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return for pre-ready child")
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return true
+		}
+		return proc.Signal(syscallZero) != nil
+	})
+}
+
+func TestSupervisorInitListFailureReapsChild(t *testing.T) {
+	rs := ResolvedServer{Name: "h", Transport: TransportStdio, Command: "helper"}
+	sup := newStdioSupervisor(t, rs, map[string]string{"HELPER_FAIL_LIST": "1"}, slog.New(slog.DiscardHandler), nil)
+	sup.sleep = func(ctx context.Context, _ time.Duration) { <-ctx.Done() }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	sup.Start(ctx)
+	defer sup.Shutdown(context.Background())
+
+	waitFor(t, 5*time.Second, func() bool { return sup.childPID() > 0 })
+	pid := sup.childPID()
+	waitFor(t, 5*time.Second, func() bool { return sup.State() == StateRestarting })
+
+	waitFor(t, 5*time.Second, func() bool {
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return true
+		}
+		return proc.Signal(syscallZero) != nil
+	})
+}

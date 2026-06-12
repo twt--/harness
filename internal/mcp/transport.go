@@ -22,7 +22,7 @@ type Transport interface {
 
 // cancelTransport is an optional interface a Transport may implement to support
 // emitting notifications/cancelled when a Call's context is cancelled. The
-// peer-backed transport implements it; the HTTP transport (Task 3) does not have
+// peer-backed transport implements it; the HTTP transport does not have
 // to, since its Call is one POST per request and has no in-flight id to cancel.
 // CallCancelable reports the cancelled request's raw id to onCancel exactly once
 // if ctx is cancelled before the response arrives, so the Client can emit the

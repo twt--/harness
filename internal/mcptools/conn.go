@@ -272,7 +272,7 @@ func (c *Conn) drop(cl *mcp.Client) {
 }
 
 // Dirty reports whether the gateway has signalled tools/list_changed since the
-// last ClearDirty. The prompt-boundary refresh (Task 7) consumes it.
+// last ClearDirty. The prompt-boundary refresh consumes it.
 func (c *Conn) Dirty() bool { return c.dirty.Load() }
 
 // ClearDirty resets the dirty flag.

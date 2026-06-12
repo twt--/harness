@@ -58,7 +58,7 @@ func runServe(env environment, args []string) int {
 	if *socket != "" {
 		cfg.Socket = *socket
 	}
-	if *listen != "" {
+	if flagWasSet(fs, "listen") {
 		cfg.Listen = *listen
 	}
 

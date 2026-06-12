@@ -1,6 +1,9 @@
 package mcp
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // Method and notification names used on the wire. Typed constants avoid
 // stringly-typed routing drift across client and server.
@@ -73,6 +76,15 @@ type Tool struct {
 	Annotations  json.RawMessage `json:"annotations,omitempty"`
 }
 
+// MarshalJSON guarantees the required inputSchema object is never null.
+func (t Tool) MarshalJSON() ([]byte, error) {
+	type alias Tool
+	if len(t.InputSchema) == 0 || bytes.Equal(bytes.TrimSpace(t.InputSchema), []byte("null")) {
+		t.InputSchema = defaultInputSchema()
+	}
+	return json.Marshal(alias(t))
+}
+
 // ListToolsParams is the tools/list request payload. Cursor is omitted on the
 // first page.
 type ListToolsParams struct {
@@ -84,6 +96,15 @@ type ListToolsParams struct {
 type ListToolsResult struct {
 	Tools      []Tool `json:"tools"`
 	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+// MarshalJSON guarantees the required tools array is never null.
+func (r ListToolsResult) MarshalJSON() ([]byte, error) {
+	type alias ListToolsResult
+	if r.Tools == nil {
+		r.Tools = []Tool{}
+	}
+	return json.Marshal(alias(r))
 }
 
 // CallToolParams is the tools/call request payload. Arguments is passthrough raw
@@ -100,6 +121,19 @@ type CallToolResult struct {
 	Content           []ContentBlock  `json:"content"`
 	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 	IsError           bool            `json:"isError,omitempty"`
+}
+
+// MarshalJSON guarantees the required content array is never null.
+func (r CallToolResult) MarshalJSON() ([]byte, error) {
+	type alias CallToolResult
+	if r.Content == nil {
+		r.Content = []ContentBlock{}
+	}
+	return json.Marshal(alias(r))
+}
+
+func defaultInputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
 }
 
 // ContentBlock is a single flat struct covering every content type

@@ -31,6 +31,8 @@ import (
 //	HELPER_STDERR_BURST=n    write n newline-free bytes to stderr at startup (to
 //	                         overflow the gateway's 1 MB scanner buffer)
 //	HELPER_BAD_VERSION       respond to initialize with an unsupported version
+//	HELPER_HANG_NO_INIT      start and never answer initialize; ignores stdin
+//	HELPER_FAIL_LIST         return a JSON-RPC error for tools/list
 //	HELPER_NO_TOOLS_CAP      omit the tools capability from initialize
 //	HELPER_SPAWN_COUNTER=path increment a counter file at startup (spawn count)
 func TestHelperProcess(t *testing.T) {
@@ -68,6 +70,9 @@ func runHelperServer() {
 	}
 	if cf := os.Getenv("HELPER_SPAWN_COUNTER"); cf != "" {
 		bumpCounter(cf)
+	}
+	if os.Getenv("HELPER_HANG_NO_INIT") != "" {
+		select {}
 	}
 
 	s := &helperServer{
@@ -125,6 +130,10 @@ func (s *helperServer) handleInitialize(msg jsonrpc.Message) {
 }
 
 func (s *helperServer) handleList(msg jsonrpc.Message) {
+	if os.Getenv("HELPER_FAIL_LIST") != "" {
+		s.replyErr(msg, jsonrpc.Errorf(jsonrpc.CodeInternal, "forced tools/list failure"))
+		return
+	}
 	res := mcp.ListToolsResult{Tools: s.tools}
 	s.reply(msg, mustJSON(res))
 }

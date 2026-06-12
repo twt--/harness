@@ -419,7 +419,7 @@ func resultFor(msg jsonrpc.Message, id jsonrpc.ID) (json.RawMessage, error) {
 
 // idEqual reports whether a non-nil message id equals id.
 func idEqual(got *jsonrpc.ID, want jsonrpc.ID) bool {
-	return got != nil && got.String() == want.String()
+	return got != nil && got.Equal(want)
 }
 
 // mediaTypeOf extracts the lowercased media type from a Content-Type header,

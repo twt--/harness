@@ -693,6 +693,22 @@ func TestHTTPCallWrongIDInJSONResponse(t *testing.T) {
 	}
 }
 
+func TestHTTPCallStringIDDoesNotMatchNumericID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = decodeReq(t, r)
+		wrongID := jsonrpc.StringID("#1")
+		writeJSONResponse(w, &wrongID, json.RawMessage(`{}`))
+	}))
+	defer srv.Close()
+
+	tr := NewHTTPTransport(HTTPOptions{Endpoint: srv.URL})
+	defer tr.Close()
+
+	if _, err := tr.Call(context.Background(), "tools/list", json.RawMessage(`{}`)); err == nil {
+		t.Fatalf("Call: want error on string/numeric id mismatch, got nil")
+	}
+}
+
 func TestHTTPCallJSONRPCErrorResult(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m := decodeReq(t, r)

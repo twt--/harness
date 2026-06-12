@@ -5,7 +5,8 @@ MODELSDEV_FALLBACK := internal/modelsdev/fallback_api.json
 MODELSDEV_FALLBACK_ABS := $(CURDIR)/$(MODELSDEV_FALLBACK)
 
 build:
-	go build ./cmd/...
+	go build -o harness ./cmd/harness
+	go build -o harness-mcp-gateway ./cmd/harness-mcp-gateway
 
 test:
 	go test ./...

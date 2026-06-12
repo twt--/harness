@@ -165,6 +165,40 @@ func TestCallToolResultGolden(t *testing.T) {
 	}
 }
 
+func TestRequiredFieldsMarshalAsEmptyArraysAndObjects(t *testing.T) {
+	body, err := json.Marshal(ListToolsResult{})
+	if err != nil {
+		t.Fatalf("marshal ListToolsResult: %v", err)
+	}
+	if string(body) != `{"tools":[]}` {
+		t.Fatalf("ListToolsResult marshal = %s, want tools empty array", body)
+	}
+
+	body, err = json.Marshal(CallToolResult{})
+	if err != nil {
+		t.Fatalf("marshal CallToolResult: %v", err)
+	}
+	if string(body) != `{"content":[]}` {
+		t.Fatalf("CallToolResult marshal = %s, want content empty array", body)
+	}
+
+	body, err = json.Marshal(Tool{Name: "t"})
+	if err != nil {
+		t.Fatalf("marshal Tool: %v", err)
+	}
+	if string(body) != `{"name":"t","inputSchema":{"type":"object"}}` {
+		t.Fatalf("Tool marshal = %s, want default inputSchema object", body)
+	}
+
+	body, err = json.Marshal(Tool{Name: "t", InputSchema: json.RawMessage(`null`)})
+	if err != nil {
+		t.Fatalf("marshal Tool with null schema: %v", err)
+	}
+	if string(body) != `{"name":"t","inputSchema":{"type":"object"}}` {
+		t.Fatalf("Tool null schema marshal = %s, want default inputSchema object", body)
+	}
+}
+
 func TestInitializeParamsRoundTrip(t *testing.T) {
 	p := InitializeParams{
 		ProtocolVersion: ProtocolVersion,

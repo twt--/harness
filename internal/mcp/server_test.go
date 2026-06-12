@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"harness/internal/mcp/jsonrpc"
 )
@@ -237,6 +239,69 @@ func TestServerCancellationPropagates(t *testing.T) {
 	cancel() // client emits notifications/cancelled; server cancels provider ctx
 	<-providerCtxDone
 	<-callDone
+}
+
+func TestServerCancellationIDTypeMismatchDoesNotCancel(t *testing.T) {
+	entered := make(chan struct{})
+	providerCtxDone := make(chan struct{})
+	opts := ServerOptions{
+		Provider: &stubProvider{
+			callFn: func(ctx context.Context, name string, args json.RawMessage) (*CallToolResult, error) {
+				close(entered)
+				<-ctx.Done()
+				close(providerCtxDone)
+				return &CallToolResult{}, nil
+			},
+		},
+	}
+	cc, sc := net.Pipe()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- Serve(context.Background(), sc, opts) }()
+	t.Cleanup(func() { cc.Close() })
+	enc := jsonrpc.NewEncoder(cc)
+	dec := jsonrpc.NewDecoder(cc)
+
+	initID := jsonrpc.IntID(0)
+	if err := enc.Encode(jsonrpc.NewRequest(initID, MethodInitialize, json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}`))); err != nil {
+		t.Fatalf("initialize encode: %v", err)
+	}
+	if _, err := dec.Decode(); err != nil {
+		t.Fatalf("initialize response: %v", err)
+	}
+	if err := enc.Encode(jsonrpc.NewNotification(NotifInitialized, nil)); err != nil {
+		t.Fatalf("initialized notification: %v", err)
+	}
+
+	callID := jsonrpc.IntID(1)
+	if err := enc.Encode(jsonrpc.NewRequest(callID, MethodCallTool, json.RawMessage(`{"name":"slow"}`))); err != nil {
+		t.Fatalf("call encode: %v", err)
+	}
+	<-entered
+
+	if err := enc.Encode(jsonrpc.NewNotification(NotifCancelled, json.RawMessage(`{"requestId":"#1"}`))); err != nil {
+		t.Fatalf("wrong cancel encode: %v", err)
+	}
+	select {
+	case <-providerCtxDone:
+		t.Fatal("string requestId cancelled numeric call id")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := enc.Encode(jsonrpc.NewNotification(NotifCancelled, json.RawMessage(`{"requestId":1}`))); err != nil {
+		t.Fatalf("right cancel encode: %v", err)
+	}
+	select {
+	case <-providerCtxDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("numeric requestId did not cancel numeric call id")
+	}
+	if _, err := dec.Decode(); err != nil {
+		t.Fatalf("call response: %v", err)
+	}
+	_ = cc.Close()
+	if err := <-serveErr; err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("Serve returned %v", err)
+	}
 }
 
 func TestServerCleanCloseReturnsNil(t *testing.T) {

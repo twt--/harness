@@ -192,7 +192,6 @@ func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, modes map[str
 		if !conn.Dirty() {
 			return nil, ""
 		}
-		conn.ClearDirty()
 
 		if _, ok := modes[modeName]; !ok {
 			return nil, ""
@@ -211,6 +210,7 @@ func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, modes map[str
 			logger.Warn(fmt.Sprintf("mcp: tool list refresh failed: %v; keeping current tools", err), logging.Category("mcp"))
 			return nil, ""
 		}
+		conn.ClearDirty()
 
 		// Drop tools that were registered before but are gone now. Register
 		// replaces survivors in place; only departures need explicit removal.
@@ -243,6 +243,9 @@ func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, modes map[str
 			// The whitelist named a removed tool: drop the gone names so Subset
 			// does not error on a name the catalog no longer has.
 			allowed = withoutNames(allowed, removed)
+			m := modes[modeName]
+			m.AllowedTools = allowed
+			modes[modeName] = m
 		}
 
 		sel, err := catalog.Subset(allowed)

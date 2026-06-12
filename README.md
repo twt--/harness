@@ -28,12 +28,13 @@ The end-to-end verification matrix is in [`docs/smoke.md`](docs/smoke.md).
 ## Build
 
 ```sh
-go build ./cmd/...     # produces ./harness and ./harness-mcp-gateway
+go build -o harness ./cmd/harness
+go build -o harness-mcp-gateway ./cmd/harness-mcp-gateway
 ```
 
 `make build` builds the same two binaries. `harness-mcp-gateway` is only needed
-for the optional [MCP servers](#mcp-servers-optional) integration; `go build
-./cmd/harness` alone produces just the main binary.
+for the optional [MCP servers](#mcp-servers-optional) integration; `go build -o
+harness ./cmd/harness` alone produces just the main binary.
 
 Requires Go 1.24+ (the toolchain uses range-over-func). Verify a checkout with:
 
@@ -500,7 +501,9 @@ wants auth) add a config-file-only `mcp.headers` map sent on **every** request:
 ```
 
 `headers` has no environment variable — it lives in the config file alongside the
-URL it authenticates to. Harness does **not** probe an `http(s)` gateway (it
+URL it authenticates to. Header values expand `${VAR}` and `${VAR:-default}`;
+literal dollar forms such as `$5` and `$$` are preserved. An unset `${VAR}` is a
+config error. Harness does **not** probe an `http(s)` gateway (it
 connects directly, bounded by the 5 s registration timeout). Because HTTP has no
 notifications channel, the tool list is **fixed at startup over HTTP**: the
 `[mcp: tool list updated]` notice never fires for an HTTP gateway.

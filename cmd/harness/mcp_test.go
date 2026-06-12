@@ -53,6 +53,38 @@ func (p *echoProvider) setTools(t []mcp.Tool) {
 	p.tools = t
 }
 
+type flakyListProvider struct {
+	mu       sync.Mutex
+	tools    []mcp.Tool
+	failNext bool
+}
+
+func (p *flakyListProvider) ListTools(ctx context.Context, cursor string) (mcp.ListToolsResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failNext {
+		p.failNext = false
+		return mcp.ListToolsResult{}, errors.New("temporary list failure")
+	}
+	return mcp.ListToolsResult{Tools: append([]mcp.Tool(nil), p.tools...)}, nil
+}
+
+func (p *flakyListProvider) CallTool(ctx context.Context, name string, args json.RawMessage) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.ContentBlock{{Type: "text", Text: string(args)}}}, nil
+}
+
+func (p *flakyListProvider) setTools(tools []mcp.Tool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tools = tools
+}
+
+func (p *flakyListProvider) failOnce() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.failNext = true
+}
+
 func echoTool() mcp.Tool {
 	return mcp.Tool{
 		Name:        "mcp__test__echo",
@@ -554,8 +586,55 @@ func TestMCPRefresherSwapsWhitelistModeLosingTool(t *testing.T) {
 	if slices.Contains(sel.Names(), "mcp__test__beta") {
 		t.Errorf("removed beta still in subset: %v", sel.Names())
 	}
+	if slices.Contains(modes["locked"].AllowedTools, "mcp__test__beta") {
+		t.Errorf("removed beta still persisted in whitelist mode: %v", modes["locked"].AllowedTools)
+	}
 	if !strings.Contains(notice, "tool list updated") {
 		t.Errorf("notice = %q, want refresh notice", notice)
+	}
+}
+
+func TestMCPRefresherFailedRefreshKeepsDirtyForRetry(t *testing.T) {
+	provider := &flakyListProvider{tools: []mcp.Tool{mcpTool("mcp__test__alpha")}}
+	g := startFakeGateway(t, provider)
+
+	catalog := tools.Catalog()
+	conn := mcptools.NewConn(mcptools.Options{Socket: g.path, Info: mcp.Implementation{Name: "harness", Version: "test"}})
+	defer conn.Close()
+	initial, err := mcptools.Register(context.Background(), catalog, conn)
+	if err != nil {
+		t.Fatalf("initial register: %v", err)
+	}
+
+	modes := map[string]mode.Mode{
+		"auto": {Name: "auto", AllowedTools: []string{"read_file", "mcp__test__alpha"}},
+	}
+	bases := mcpModeBases{"auto": {"read_file"}}
+	refresh := newMCPRefresher(conn, catalog, modes, bases, initial, slog.New(slog.DiscardHandler))
+
+	provider.setTools([]mcp.Tool{mcpTool("mcp__test__beta")})
+	provider.failOnce()
+	g.notifyListChanged(t, conn)
+
+	if sel, notice := refresh("auto"); sel != nil || notice != "" {
+		t.Fatalf("failed refresh should keep existing registry, got sel=%v notice=%q", sel != nil, notice)
+	}
+	if !conn.Dirty() {
+		t.Fatalf("dirty flag should remain set after failed refresh")
+	}
+
+	sel, notice := refresh("auto")
+	if sel == nil {
+		t.Fatalf("second refresh should retry and succeed")
+	}
+	if !slices.Contains(sel.Names(), "mcp__test__beta") {
+		t.Fatalf("retried refresh missing beta: %v", sel.Names())
+	}
+	if !strings.Contains(notice, "tool list updated") {
+		t.Fatalf("notice = %q, want update notice", notice)
+	}
+	if conn.Dirty() {
+		t.Fatalf("dirty flag should clear after successful refresh")
 	}
 }
 
