@@ -16,7 +16,7 @@ func TestRunSetupWritesOnlySelectedModelsAndNoProxyDefault(t *testing.T) {
 	home := t.TempDir()
 	var out, errw bytes.Buffer
 	env := environment{
-		stdin:  strings.NewReader("1\n\nnone\n2\ndone\n"),
+		stdin:  strings.NewReader("1\n\nsave\n2\nsave\n"),
 		stdout: &out,
 		stderr: &errw,
 		getenv: func(k string) string {
@@ -33,6 +33,12 @@ func TestRunSetupWritesOnlySelectedModelsAndNoProxyDefault(t *testing.T) {
 
 	if err := runSetup(env, false); err != nil {
 		t.Fatalf("runSetup: %v; stderr=%q", err, errw.String())
+	}
+	if !strings.Contains(out.String(), "(0 enabled)") {
+		t.Fatalf("model selector should start with no enabled models, output=%q", out.String())
+	}
+	if !strings.Contains(out.String(), "Select at least one model before continuing.") {
+		t.Fatalf("saving without a selected model should explain the required selection, output=%q", out.String())
 	}
 	if !strings.Contains(out.String(), "*") || !strings.Contains(out.String(), "\x1b[1m") {
 		t.Fatalf("model selector should mark enabled rows with star and bold, output=%q", out.String())
@@ -64,6 +70,37 @@ func TestRunSetupWritesOnlySelectedModelsAndNoProxyDefault(t *testing.T) {
 	}
 	if len(provider.Models) != 1 || provider.Models[0].Name != "alpha" {
 		t.Fatalf("provider models = %+v, want only alpha", provider.Models)
+	}
+}
+
+func TestRunSetupModelSelectorCancelDoesNotWriteConfig(t *testing.T) {
+	home := t.TempDir()
+	var out, errw bytes.Buffer
+	env := environment{
+		stdin:  strings.NewReader("1\n\ncancel\n"),
+		stdout: &out,
+		stderr: &errw,
+		getenv: func(k string) string {
+			if k == "HOME" {
+				return home
+			}
+			return ""
+		},
+		modelsDevCatalog: func(context.Context) (*modelsdev.Catalog, error) {
+			return testSetupCatalog(), nil
+		},
+		terminalRows: func() int { return 12 },
+	}
+
+	if err := runSetup(env, false); err == nil || err.Error() != "setup cancelled" {
+		t.Fatalf("runSetup error = %v, want setup cancelled; stderr=%q", err, errw.String())
+	}
+	dir := filepath.Join(home, ".config", "harness-model-proxy")
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("config.json stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "testai.json")); !os.IsNotExist(err) {
+		t.Fatalf("testai.json stat error = %v, want not exist", err)
 	}
 }
 

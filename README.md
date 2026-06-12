@@ -148,13 +148,14 @@ Precedence is **flags > environment > config file > built-in defaults**.
   config from models.dev, or append a new provider config to an existing proxy config
   without configuring a proxy default model. Setup lists harness-supported providers,
   prompts for the API key, then lets you choose which provider models are available
-  locally. The model selector marks enabled rows with bold text and `*`; enter a
+  locally. The model selector starts with no models enabled and marks enabled rows
+  with bold text and `*`; enter a
   number or id to toggle a model, `all` or `none` to bulk-select the model list,
-  and `done` to write the allowlist. The provider file includes only enabled models,
-  with URL, API type, key env vars, context windows, prices, and reasoning metadata
-  from models.dev. If the live catalog is unreachable, setup uses a vendored
-  models.dev snapshot. Existing provider config files are not overwritten unless
-  `--force` is set.
+  `save` to write the allowlist, or `cancel` to quit without saving. The provider
+  file includes only enabled models, with URL, API type, key env vars, context
+  windows, prices, and reasoning metadata from models.dev. If the live catalog is
+  unreachable, setup uses a vendored models.dev snapshot. Existing provider config
+  files are not overwritten unless `--force` is set.
 - Run `./harness-model-proxy --refresh-models` to fetch the latest live
   `models.dev` catalog and refresh metadata for the currently configured model
   allowlists, preserving stored API keys. Unlike setup, refresh fails if models.dev

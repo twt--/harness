@@ -308,7 +308,7 @@ func promptModelSelection(r *bufio.Reader, w io.Writer, provider modelsdev.Provi
 	}
 	entries := make([]setupModelPick, 0, len(models))
 	for _, model := range models {
-		entries = append(entries, setupModelPick{Model: model, Enabled: true})
+		entries = append(entries, setupModelPick{Model: model})
 	}
 	selected, err := pickSetupModels(func(label string) (string, error) {
 		return promptLine(r, w, label)
@@ -361,7 +361,7 @@ func pickSetupModels(readLine func(string) (string, error), w io.Writer, provide
 		}
 		page = ui.ClampPickerPage(page, len(filteredIndexes), pageSize)
 		printSetupModelSelectionPage(w, providerID, items, filteredIndexes, page, pageSize, filter)
-		input, err := readLine("Models (number/id toggles, all, none, done, /search, n/p, q): ")
+		input, err := readLine("Models (number/id toggles, all, none, save, /search, n/p, cancel): ")
 		if err != nil {
 			return nil, err
 		}
@@ -377,7 +377,7 @@ func pickSetupModels(readLine func(string) (string, error), w io.Writer, provide
 				page--
 			}
 			continue
-		case strings.EqualFold(input, "q"):
+		case strings.EqualFold(input, "cancel"):
 			return nil, fmt.Errorf("setup cancelled")
 		case strings.EqualFold(input, "all"):
 			for i := range items {
@@ -389,7 +389,7 @@ func pickSetupModels(readLine func(string) (string, error), w io.Writer, provide
 				items[i].Enabled = false
 			}
 			continue
-		case strings.EqualFold(input, "done"):
+		case strings.EqualFold(input, "save"):
 			selected := selectedSetupModels(items)
 			if len(selected) == 0 {
 				fmt.Fprintln(w, "Select at least one model before continuing.")
