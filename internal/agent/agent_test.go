@@ -74,6 +74,16 @@ func (t *recordTool) Run(ctx context.Context, input json.RawMessage) (string, er
 	return t.run(ctx, input)
 }
 
+type meteredRecordTool struct {
+	*recordTool
+	usage llm.Usage
+}
+
+func (t *meteredRecordTool) RunMetered(ctx context.Context, input json.RawMessage) (tools.MeteredResult, error) {
+	out, err := t.recordTool.Run(ctx, input)
+	return tools.MeteredResult{Text: out, Usage: t.usage}, err
+}
+
 func textDelta(s string) llm.StreamEvent {
 	return llm.StreamEvent{Kind: llm.EventTextDelta, Text: s}
 }
@@ -224,6 +234,43 @@ func TestParallelToolCallsSequentialInOrder(t *testing.T) {
 	}
 	if len(sink.starts) != 2 || len(sink.results) != 2 {
 		t.Errorf("sink saw %d starts and %d results, want 2 each", len(sink.starts), len(sink.results))
+	}
+}
+
+func TestToolUsageIncludedInTurnUsage(t *testing.T) {
+	tool := &meteredRecordTool{
+		recordTool: &recordTool{name: "delegate", run: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "delegate report", nil
+		}},
+		usage: llm.Usage{InputTokens: 70, OutputTokens: 30},
+	}
+	reg := &tools.Registry{}
+	reg.Register(tool)
+
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{toolDone(0, "call_d", "delegate", `{"task":"inspect"}`)},
+			Stop:   llm.StopToolUse,
+			Usage:  llm.Usage{InputTokens: 10, OutputTokens: 2},
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("done")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 20, OutputTokens: 4},
+		},
+	)
+	a := newAgent(fp, reg, Options{})
+	sink := &recordSink{}
+
+	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(sink.turnUsage) != 1 {
+		t.Fatalf("turn usage events = %d, want 1", len(sink.turnUsage))
+	}
+	got := sink.turnUsage[0].Usage
+	if got.InputTokens != 100 || got.OutputTokens != 36 {
+		t.Fatalf("turn usage = %+v, want provider 30/6 + delegate 70/30", got)
 	}
 }
 

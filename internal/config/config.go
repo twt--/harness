@@ -61,6 +61,7 @@ type Config struct {
 	CompactKeepTurns          int    // config-only; 0 = agent default
 	CompactSummaryMaxTokens   int    // config-only; 0 = agent default
 	CompactToolResultMaxBytes int    // config-only; 0 = agent default, negative disables
+	DelegateMaxSteps          int    // config-only; default 20, per delegate call cap
 
 	// Run mode. Empty means "not specified" so main can let a resumed
 	// session supply the mode before falling back to the default.
@@ -84,8 +85,9 @@ type Config struct {
 }
 
 const (
-	defaultMaxSteps      = 50
-	defaultContextWindow = 256_000
+	defaultMaxSteps         = 50
+	defaultContextWindow    = 256_000
+	defaultDelegateMaxSteps = 20
 )
 
 // FileModeConfig is one entry of the config file's "modes" object. It mirrors
@@ -117,6 +119,7 @@ type fileConfig struct {
 	CompactKeepTurns          *int     `json:"compact_keep_turns"`
 	CompactSummaryMaxTokens   *int     `json:"compact_summary_max_tokens"`
 	CompactToolResultMaxBytes *int     `json:"compact_tool_result_max_bytes"`
+	DelegateMaxSteps          *int     `json:"delegate_max_steps"`
 	Verbose                   *bool    `json:"verbose"`
 	ToolStream                *bool    `json:"tool_stream"`
 	LogLevel                  string   `json:"log_level"`
@@ -221,6 +224,10 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	c.CompactKeepTurns = intValue(fc.CompactKeepTurns, 0)
 	c.CompactSummaryMaxTokens = intValue(fc.CompactSummaryMaxTokens, 0)
 	c.CompactToolResultMaxBytes = intValue(fc.CompactToolResultMaxBytes, 0)
+	c.DelegateMaxSteps = intValue(fc.DelegateMaxSteps, defaultDelegateMaxSteps)
+	if c.DelegateMaxSteps <= 0 {
+		return Config{}, fmt.Errorf("delegate_max_steps must be positive")
+	}
 	c.Mode = strings.ToLower(strings.TrimSpace(resolveString(set["mode"], *f.mode,
 		getenv("HARNESS_MODE"), fc.Mode, "")))
 	c.Modes = fc.Modes

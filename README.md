@@ -159,7 +159,8 @@ Precedence is **flags > environment > config file > built-in defaults**.
   (default `8192`, warning only; `AGENTS.md` is still included in full),
   `tool_result_max_bytes`, `tool_result_max_lines`, `read_file_default_limit`,
   `compact_keep_turns`, `compact_summary_max_tokens`, and
-  `compact_tool_result_max_bytes`.
+  `compact_tool_result_max_bytes`. The read-only delegate tool also has
+  `delegate_max_steps` (default `20`) as a config-file-only cap.
 - If `reasoning_effort` / `HARNESS_REASONING_EFFORT` / `-reasoning-effort` is set,
   harness sends the provider-specific effort field only when requested. Known
   models.dev metadata is used to reject unsupported models or effort values; unknown
@@ -222,9 +223,9 @@ Three modes are built in:
 
 | mode | tools | behavior |
 |---|---|---|
-| `auto` | all available tools | the default — the model decides what to do (unchanged behavior) |
-| `plan` | read-only (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, optional `git_readonly`, `write_tmp_file`) | collaborate on a plan without modifying the project |
-| `independent` | all available tools | complete the task end-to-end without pausing for input; stop only on a hard blocker or the step limit |
+| `auto` | all available tools, including `delegate` | the default — the model decides what to do |
+| `plan` | inspection tools (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, optional `git_readonly`), `write_tmp_file`, and `delegate` | collaborate on a plan without modifying the project |
+| `independent` | all available tools, including `delegate` | complete the task end-to-end without pausing for input; stop only on a hard blocker or the step limit |
 
 Define new modes or override built-ins in the config file under `modes`. Entries
 **field-level merge** onto a built-in of the same name — an omitted field keeps
@@ -312,10 +313,13 @@ Turn summaries include an approximate context footprint, for example:
 
 `read_file`, `list_dir`, `grep`, optional `rg` when ripgrep is installed,
 `edit`, `write_file`, `apply_patch`, `run_command`, `exec`, optional `git`
-when git is installed, `web_fetch`, plus two used by restricted modes: optional
+when git is installed, `web_fetch`, `delegate`, plus two used by restricted modes: optional
 `git_readonly` (read-only git
 subcommands — `status`, `log`, `diff`, `show`, `grep`, `blame`, `bisect`) and
 `write_tmp_file` (write scratch files under a private per-run temp directory).
+`delegate` starts a child read-only agent with inspection tools only and returns
+its final report as a normal tool result; the child transcript is not persisted
+into the parent session, but child token usage is included in turn/session usage.
 Missing optional CLI-backed tools are reported on stderr at startup, e.g.
 `[warn] [cli_tools] Tool "rg" is disabled. Reason: "rg" binary not found.`
 unless `-q`/`--quiet` or `--log-level error` suppresses the warning. `grep`,

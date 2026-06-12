@@ -30,6 +30,20 @@ type Tool interface {
 	Run(ctx context.Context, input json.RawMessage) (string, error)
 }
 
+// MeteredResult is returned by tools that consume model tokens internally.
+// Dispatch preserves Usage so the agent can include it in turn/session totals.
+type MeteredResult struct {
+	Text  string
+	Usage llm.Usage
+}
+
+// MeteredTool is an optional extension for tools whose Run implementation can
+// report additional token usage. Tools still implement Tool.Run for ordinary
+// callers; Dispatch prefers RunMetered when present.
+type MeteredTool interface {
+	RunMetered(ctx context.Context, input json.RawMessage) (MeteredResult, error)
+}
+
 // Registry is an ordered set of tools. Order is preserved so Specs and the
 // model-facing tool list are stable across runs.
 type Registry struct {
@@ -269,8 +283,9 @@ func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.
 	defer cancel()
 
 	type outcome struct {
-		out string
-		err error
+		out   string
+		usage llm.Usage
+		err   error
 	}
 	done := make(chan outcome, 1) // buffered: an abandoned Run can still send and exit
 	go func() {
@@ -280,15 +295,21 @@ func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.
 				done <- outcome{err: fmt.Errorf("tool panicked: %v", rec)}
 			}
 		}()
+		if mt, ok := t.(MeteredTool); ok {
+			result, err := mt.RunMetered(ctx, input)
+			done <- outcome{out: result.Text, usage: result.Usage, err: err}
+			return
+		}
 		out, err := t.Run(ctx, input)
 		done <- outcome{out: out, err: err}
 	}()
 
 	var out string
+	var usage llm.Usage
 	var err error
 	select {
 	case o := <-done:
-		out, err = o.out, o.err
+		out, usage, err = o.out, o.usage, o.err
 	case <-ctx.Done():
 		// The Run goroutine is abandoned (standard cost of a timeout shim);
 		// its eventual send lands in the buffered channel and is dropped. The
@@ -305,6 +326,7 @@ func (r *Registry) Dispatch(parent context.Context, call llm.ToolCall) (res llm.
 		return res
 	}
 
+	res.Usage = usage
 	if err != nil {
 		// Report a timeout only when the ceiling itself expired (the derived
 		// context's deadline fired) and it was not an outer cancellation. A

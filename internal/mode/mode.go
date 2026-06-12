@@ -44,11 +44,11 @@ func Builtins() map[string]Mode {
 	return map[string]Mode{
 		"auto": {
 			Name:         "auto",
-			AllowedTools: tools.DefaultNames(),
+			AllowedTools: defaultTools(),
 		},
 		"independent": {
 			Name:         "independent",
-			AllowedTools: tools.DefaultNames(),
+			AllowedTools: defaultTools(),
 			Prompt:       independentPrompt,
 		},
 		"plan": {
@@ -68,7 +68,11 @@ func planTools() []string {
 	if tools.GitAvailable() {
 		names = append(names, "git_readonly")
 	}
-	return append(names, "write_tmp_file")
+	return append(names, "write_tmp_file", "delegate")
+}
+
+func defaultTools() []string {
+	return append(tools.DefaultNames(), "delegate")
 }
 
 // Resolve merges config-file mode entries onto the built-ins and returns the
@@ -80,7 +84,7 @@ func Resolve(file map[string]FileMode) map[string]Mode {
 	for name, fm := range file {
 		m, ok := modes[name]
 		if !ok {
-			m = Mode{Name: name, AllowedTools: tools.DefaultNames()}
+			m = Mode{Name: name, AllowedTools: defaultTools()}
 		}
 		if len(fm.AllowedTools) > 0 {
 			m.AllowedTools = slices.Clone(fm.AllowedTools)

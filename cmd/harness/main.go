@@ -20,6 +20,7 @@ import (
 
 	"harness/internal/agent"
 	"harness/internal/config"
+	"harness/internal/delegate"
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
 	"harness/internal/logging"
@@ -234,6 +235,23 @@ func run(env environment) int {
 	for _, disabled := range disabledTools {
 		logger.Warn(disabled.Message(), logging.Category("cli_tools"))
 	}
+	delegateTools, err := toolCatalog.Subset(delegateReadOnlyToolNames())
+	if err != nil {
+		fmt.Fprintf(stderr, "harness: delegate tools: %v\n", err)
+		return ui.ExitUsage
+	}
+	delegateState := delegate.NewState(delegate.Runtime{
+		Model:         cfg.Model,
+		ContextWindow: cfg.ContextWindow,
+		Registry:      modelRegistry,
+		Reasoning:     reasoning,
+	})
+	toolCatalog.Register(delegate.New(delegateState.Snapshot, delegateTools, delegate.Options{
+		MaxSteps:                  cfg.DelegateMaxSteps,
+		CompactKeepTurns:          cfg.CompactKeepTurns,
+		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
+		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,
+	}))
 	fileModes := make(map[string]mode.FileMode, len(cfg.Modes))
 	for name, fm := range cfg.Modes {
 		fileModes[name] = mode.FileMode{AllowedTools: fm.AllowedTools, Prompt: fm.Prompt}
@@ -296,7 +314,11 @@ func run(env environment) int {
 		if err != nil {
 			return ui.ModeSelection{}, err
 		}
-		return ui.ModeSelection{Name: m.Name, Tools: reg, System: buildSystem(m.Prompt)}, nil
+		system := buildSystem(m.Prompt)
+		snap := delegateState.Snapshot()
+		snap.System = system
+		delegateState.Set(snap)
+		return ui.ModeSelection{Name: m.Name, Tools: reg, System: system}, nil
 	}
 
 	newProvider := env.newProvider
@@ -352,6 +374,11 @@ func run(env environment) int {
 		if err != nil {
 			return ui.ModelSelection{}, err
 		}
+		snap := delegateState.Snapshot()
+		snap.Provider = runtime
+		snap.Model = model
+		snap.ContextWindow = cfg.ContextWindow
+		delegateState.Set(snap)
 		return ui.ModelSelection{
 			Provider:      providerName,
 			Model:         model,
@@ -399,6 +426,14 @@ func run(env environment) int {
 		}
 	}
 	ag.SetSystem(systemPrompt)
+	delegateState.Set(delegate.Runtime{
+		Provider:      provider,
+		Model:         cfg.Model,
+		ContextWindow: cfg.ContextWindow,
+		Registry:      modelRegistry,
+		Reasoning:     reasoning,
+		System:        systemPrompt,
+	})
 
 	sessionPath := cfg.Session
 	if sessionPath == "" {
@@ -502,6 +537,18 @@ func configDir(path string) string {
 		return "."
 	}
 	return filepath.Dir(path)
+}
+
+func delegateReadOnlyToolNames() []string {
+	names := []string{"read_file", "list_dir", "grep"}
+	if tools.RipgrepAvailable() {
+		names = append(names, "rg")
+	}
+	names = append(names, "web_fetch")
+	if tools.GitAvailable() {
+		names = append(names, "git_readonly")
+	}
+	return names
 }
 
 func runSessionCommand(args []string, stdout, stderr io.Writer) int {

@@ -7,6 +7,7 @@ package llmtest
 import (
 	"context"
 	"iter"
+	"sync"
 
 	"harness/internal/llm"
 )
@@ -25,11 +26,11 @@ type Step struct {
 	Block  func(ctx context.Context)
 }
 
-// FakeProvider replays Steps and records the Requests it received. It is not safe
-// for concurrent use; the agent loop calls Stream sequentially.
+// FakeProvider replays Steps and records the Requests it received.
 type FakeProvider struct {
 	name     string
 	steps    []Step
+	mu       sync.Mutex
 	next     int
 	Requests []llm.Request
 }
@@ -49,6 +50,7 @@ func (p *FakeProvider) Name() string { return p.name }
 // script yields an EventDone at end_turn with zero usage, so a loop that calls
 // more often than scripted terminates rather than panicking.
 func (p *FakeProvider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.StreamEvent, error] {
+	p.mu.Lock()
 	p.Requests = append(p.Requests, req)
 
 	var step Step
@@ -59,6 +61,7 @@ func (p *FakeProvider) Stream(ctx context.Context, req llm.Request) iter.Seq2[ll
 	} else {
 		step = Step{Stop: llm.StopEndTurn}
 	}
+	p.mu.Unlock()
 
 	return func(yield func(llm.StreamEvent, error) bool) {
 		for _, ev := range step.Events {

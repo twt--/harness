@@ -1,7 +1,10 @@
-# harness — design
+# harness — architecture and design
 
 A minimal agentic coding harness in Go: a plain-text, line-oriented CLI that drives a
 tool-using LLM loop against local files, shell commands, and git.
+
+This is a living architecture document for the current system. It records how the
+codebase works today and evolves as harness gains capabilities.
 
 ## 1. Goals
 
@@ -20,15 +23,6 @@ tool-using LLM loop against local files, shell commands, and git.
 - **No sandboxing or permission prompts.** The harness assumes it is launched inside an
   already-sandboxed environment. Tools run with the process's privileges, immediately.
 - **First-class git.** A dedicated `git` tool plus git context in the system prompt.
-
-### Non-goals (v1)
-
-- CLI-subprocess backends (`codex`, `claude -p`) — cut from scope; they run their own
-  agent loops and are fundamentally different from a model API.
-- Markdown rendering, MCP, sub-agents.
-- Adopted in v1.1 (no longer a non-goal; see
-  `docs/superpowers/specs/2026-06-11-roadmap-items-design.md`): parallel
-  dispatch of read-only tool calls.
 
 ## 2. Constraints
 
@@ -77,6 +71,7 @@ internal/sse             generic SSE frame reader
 internal/retry           backoff + jitter + Retry-After parsing
 internal/agent           turn loop, interrupt state machine, compaction
 internal/tools           Tool interface, registry, dispatch (recover + central truncation), built-in tools
+internal/delegate        read-only sub-agent tool; starts child agents without an import cycle
 internal/session         session state, replay log, compaction archives, tool artifacts
 internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for setup/pricing metadata
@@ -447,8 +442,9 @@ Precedence: **flags > environment > config file > built-in defaults.**
   provider_configs, run modes, flag defaults, and config-only context-efficiency knobs:
   `agents_md_warn_bytes`, `tool_result_max_bytes`, `tool_result_max_lines`,
   `read_file_default_limit`, `compact_keep_turns`, `compact_summary_max_tokens`, and
-  `compact_tool_result_max_bytes`. Provider config paths are resolved relative to the
-  config file and may define api_type, base_url, api_key, api_key_env, models, context
+  `compact_tool_result_max_bytes`, plus `delegate_max_steps` (default `20`) for the
+  read-only delegate tool. Provider config paths are resolved relative to the config
+  file and may define api_type, base_url, api_key, api_key_env, models, context
   windows, reasoning metadata, and pricing.
 - `--setup` creates a config in the default directory, or appends a new provider config
   to an existing default config. It fetches models.dev provider metadata, falls back to a
@@ -509,6 +505,9 @@ print turn usage line; save session
   sink events, and transcript blocks stay in emission order. Mixed steps stay sequential.
 - **One result per call, always.** Required by both APIs (§4 invariant). `Dispatch`
   produces a result even on panic.
+- **Metered tools:** tools may optionally report token usage (currently `delegate`).
+  The agent adds that usage to the turn/session total, while the normal tool result
+  remains the only child output added to the parent transcript.
 - **Max-steps guard:** on hit, print
   `[stopped: reached max steps (50); say "continue" to keep going]`, keep the
   transcript (it is valid — the last step's results are appended), return to the prompt.
@@ -586,6 +585,15 @@ type Tool interface {
     Run(ctx context.Context, input json.RawMessage) (string, error)
 }
 
+type MeteredTool interface {
+    RunMetered(ctx context.Context, input json.RawMessage) (MeteredResult, error)
+}
+
+type MeteredResult struct {
+    Text  string
+    Usage llm.Usage
+}
+
 type Registry struct{ /* ordered map */ }
 func (r *Registry) Register(t Tool)
 func (r *Registry) Specs() []llm.ToolSchema
@@ -597,6 +605,8 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
   fights you on exactly those fields.
 - **Tools self-validate args** after `json.Unmarshal` into a private struct (no stdlib
   JSON Schema validator; unknown extra keys are tolerated — models hallucinate them).
+- **Metered tools** optionally implement `RunMetered`; `Dispatch` prefers it and
+  preserves the reported `llm.Usage` on `ToolResult`.
 - Relative paths resolve against the process cwd. No path restrictions — the harness is
   honest about its no-sandbox assumption.
 
@@ -849,6 +859,29 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 - `name` must be relative and stay inside the temp directory: absolute paths and any
   `..` escape (after `filepath.Clean`) are rejected. Returns the absolute path written.
 
+### 9.13 `delegate`
+
+> Run a read-only delegate sub-agent on a self-contained research or inspection task and return its final report.
+
+| param | type | notes |
+|---|---|---|
+| `task` | string, required | complete task for the child agent |
+| `max_steps` | int | optional per-call model round-trip cap; capped at `delegate_max_steps` |
+
+- Implemented in `internal/delegate`, not `internal/tools`, to avoid an import cycle:
+  the delegate tool starts a child `agent.Agent`, while `internal/agent` already
+  depends on `internal/tools` for dispatch.
+- Child agents start with an empty transcript, inherit the current provider, model,
+  reasoning settings, context-window override, and fully composed system prompt, then
+  receive an extra read-only delegate instruction.
+- Child tools are intentionally narrower than the parent mode: `read_file`, `list_dir`,
+  `grep`, optional `rg`, `web_fetch`, and optional `git_readonly`. `delegate`,
+  `write_tmp_file`, and all project-writing tools are excluded, so v1 cannot recurse or
+  mutate the workspace through child agents.
+- The parent transcript records only the normal `delegate` tool call and compact result.
+  Child transcripts are not persisted into the parent session. Child token usage is
+  reported through `MeteredTool` and folded into the parent turn/session usage totals.
+
 ## 10. CLI / REPL (`internal/ui`)
 
 ### Rendering
@@ -1037,6 +1070,7 @@ injectable), the retry clock, and `ValidateTranscript`.
 | `internal/retry` | `Next`: jitter bounds, 30s cap, Retry-After floor |
 | tools | table-driven against `t.TempDir()`; `grep` wrapper against the host CLI; optional `rg` registration with a fake executable on PATH; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` table: exact/offset/whitespace fuzz, create, delete, rename, multi-file with one rejected file (rejected file untouched) |
 | agent loop | `FakeProvider` scripts: multi-tool batches, error-result feedback (next request carries the error), max-steps stop, cancellation → transcript still re-sendable |
+| delegate | child-agent request shape, read-only child tools, no recursive delegate exposure, metered usage folded into parent turn totals |
 | session | save→load→save round-trip; atomic rename leaves no `.tmp`; resume repair; cross-provider resume |
 | compaction | canned summary via FakeProvider; old messages collapse, last 4 turns kept; invariant holds |
 | ui | scripted REPL input (`/help`, prompt, `/exit`); rendering goldens with fake clock/usage |
@@ -1054,10 +1088,10 @@ worker, or the wide-open default without separate binaries.
   > `mode` in the config file > the built-in default `auto`. An empty value means
   "unspecified", so a resumed session's saved mode (§11) can supply it before the
   `auto` fallback. `/mode <name>` switches at runtime; `/mode` lists.
-- **Built-ins:** `auto` (all available tools, no extra prompt — current behavior),
-  `plan` (read-only tools including optional `rg` when installed, plus optional
-  `git_readonly` when git is installed and `write_tmp_file`, a planning prompt), and
-  `independent` (all available tools, a
+- **Built-ins:** `auto` (all available tools including `delegate`, no extra prompt),
+  `plan` (inspection tools including optional `rg` when installed, optional
+  `git_readonly` when git is installed, `write_tmp_file`, and `delegate`, plus a
+  planning prompt), and `independent` (all available tools including `delegate`, a
   complete-without-asking prompt).
 - **Config `modes`** entries **field-level merge** onto a built-in of the same name:
   a non-empty `allowed_tools` or `prompt` replaces, an omitted field inherits. A new
@@ -1075,8 +1109,9 @@ worker, or the wide-open default without separate binaries.
 
 ## 15. Future work
 
-- CLI-subprocess backends (codex / claude) behind a separate "delegate" abstraction.
+- CLI-subprocess backends (codex / claude) behind a separate process-worker abstraction.
+- Read/write delegate agents with explicit workspace isolation or conflict control.
 - Markdown rendering.
-- MCP client support; sub-agent spawning.
+- MCP client support.
 - Smarter prompt-cache breakpoint placement (the fourth allowed breakpoint is still
   unused; dynamic placement could help compaction-heavy sessions).

@@ -1525,21 +1525,114 @@ func toolNames(req llm.Request) []string {
 	return names
 }
 
-// Default (auto) mode must advertise the current default tool set and carry no
-// mode section — a regression guard that run modes don't change the default.
-func TestRunDefaultModeUnchanged(t *testing.T) {
+// Default (auto) mode advertises the default tool set plus delegate and carries
+// no mode section.
+func TestRunDefaultModeTools(t *testing.T) {
 	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
-	want := tools.DefaultNames()
+	want := expectedDefaultToolNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
 		t.Errorf("default mode tools = %v, want %v", got, want)
 	}
 	if strings.Contains(fp.Requests[0].System, "plan mode") || strings.Contains(fp.Requests[0].System, "independent mode") {
 		t.Errorf("default mode should carry no mode section; system=%q", fp.Requests[0].System)
+	}
+}
+
+func TestRunDelegateToolUsesReadOnlyChildAgent(t *testing.T) {
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{{
+				Kind:      llm.EventToolCallDone,
+				ToolID:    "call_delegate",
+				ToolName:  "delegate",
+				ToolInput: json.RawMessage(`{"task":"inspect only"}`),
+			}},
+			Stop:  llm.StopToolUse,
+			Usage: llm.Usage{InputTokens: 10, OutputTokens: 2},
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "child report"}},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 30, OutputTokens: 7},
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "parent done"}},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 20, OutputTokens: 4},
+		},
+	)
+	env, out, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(out.String(), "parent done") {
+		t.Fatalf("parent final text missing from stdout: %q", out.String())
+	}
+	if len(fp.Requests) != 3 {
+		t.Fatalf("provider requests = %d, want parent/tool, child, parent/final", len(fp.Requests))
+	}
+	if !slices.Contains(toolNames(fp.Requests[0]), "delegate") {
+		t.Fatalf("parent request did not advertise delegate: %v", toolNames(fp.Requests[0]))
+	}
+	childTools := toolNames(fp.Requests[1])
+	if slices.Contains(childTools, "delegate") || slices.Contains(childTools, "write_tmp_file") || slices.Contains(childTools, "edit") {
+		t.Fatalf("child request advertised non-read-only or recursive tools: %v", childTools)
+	}
+	if got := fp.Requests[1].Messages[0].Content[0].Text; got != "inspect only" {
+		t.Fatalf("child task = %q", got)
+	}
+	if !strings.Contains(errw.String(), "[delegate]") {
+		t.Fatalf("delegate tool result was not rendered: %q", errw.String())
+	}
+	if !strings.Contains(errw.String(), "60 in / 13 out") {
+		t.Fatalf("turn usage should include parent and child model calls, stderr=%q", errw.String())
+	}
+}
+
+func TestRunDelegateUsesSwitchedModelAndMode(t *testing.T) {
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{{
+				Kind:      llm.EventToolCallDone,
+				ToolID:    "call_delegate",
+				ToolName:  "delegate",
+				ToolInput: json.RawMessage(`{"task":"inspect after switches"}`),
+			}},
+			Stop: llm.StopToolUse,
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "child report"}},
+			Stop:   llm.StopEndTurn,
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "parent done"}},
+			Stop:   llm.StopEndTurn,
+		},
+	)
+	env, _, errw, _ := fakeProviderEnv(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
+		"/model gpt-5.5\n/mode plan\nhi\n/exit\n",
+	)
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 3 {
+		t.Fatalf("provider requests = %d, want 3", len(fp.Requests))
+	}
+	child := fp.Requests[1]
+	if child.Model != "gpt-5.5" {
+		t.Fatalf("delegate child model = %q, want switched model", child.Model)
+	}
+	if !strings.Contains(child.System, "plan mode") {
+		t.Fatalf("delegate child system should include switched mode prompt, system=%q", child.System)
 	}
 }
 
@@ -1714,5 +1807,9 @@ func expectedPlanToolNames() []string {
 	if tools.GitAvailable() {
 		names = append(names, "git_readonly")
 	}
-	return append(names, "write_tmp_file")
+	return append(names, "write_tmp_file", "delegate")
+}
+
+func expectedDefaultToolNames() []string {
+	return append(tools.DefaultNames(), "delegate")
 }

@@ -281,7 +281,8 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			break
 		}
 
-		results := a.dispatchCalls(ctx, res.toolCalls, sink)
+		results, toolUsage := a.dispatchCalls(ctx, res.toolCalls, sink)
+		total = add(total, toolUsage)
 		a.transcript = append(a.transcript, llm.Message{
 			Role:    llm.RoleUser,
 			Content: results,
@@ -317,8 +318,9 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 // all-read-only with 2+ calls, sequentially otherwise. Sink events and the
 // returned blocks are in emission order either way, and the sink is only
 // ever called from this goroutine (spec §8).
-func (a *Agent) dispatchCalls(ctx context.Context, calls []llm.ToolCall, sink EventSink) []llm.ContentBlock {
+func (a *Agent) dispatchCalls(ctx context.Context, calls []llm.ToolCall, sink EventSink) ([]llm.ContentBlock, llm.Usage) {
 	blocks := make([]llm.ContentBlock, len(calls))
+	var total llm.Usage
 
 	if len(calls) >= 2 && a.tools.AllReadOnly(calls) {
 		for _, call := range calls {
@@ -340,8 +342,9 @@ func (a *Agent) dispatchCalls(ctx context.Context, calls []llm.ToolCall, sink Ev
 		for i, r := range results {
 			sink.ToolResult(r)
 			blocks[i] = resultBlock(r)
+			total = add(total, r.Usage)
 		}
-		return blocks
+		return blocks, total
 	}
 
 	for i, call := range calls {
@@ -349,8 +352,9 @@ func (a *Agent) dispatchCalls(ctx context.Context, calls []llm.ToolCall, sink Ev
 		r := a.tools.Dispatch(ctx, call)
 		sink.ToolResult(r)
 		blocks[i] = resultBlock(r)
+		total = add(total, r.Usage)
 	}
-	return blocks
+	return blocks, total
 }
 
 func resultBlock(r llm.ToolResult) llm.ContentBlock {

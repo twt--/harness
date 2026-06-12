@@ -71,4 +71,5 @@ type ToolResult struct {
 	OriginalText  string
 	OriginalBytes int
 	ShownBytes    int
+	Usage         Usage
 }

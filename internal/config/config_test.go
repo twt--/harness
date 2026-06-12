@@ -575,6 +575,32 @@ func TestMaxStepsFlagBeatsFile(t *testing.T) {
 	}
 }
 
+func TestDelegateMaxStepsConfigOnly(t *testing.T) {
+	c, err := Load(nil, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DelegateMaxSteps != 20 {
+		t.Fatalf("default delegate max steps = %d, want 20", c.DelegateMaxSteps)
+	}
+
+	cfgPath := writeConfig(t, `{"delegate_max_steps":5}`)
+	c, err = Load(nil, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DelegateMaxSteps != 5 {
+		t.Fatalf("file delegate max steps = %d, want 5", c.DelegateMaxSteps)
+	}
+}
+
+func TestDelegateMaxStepsMustBePositive(t *testing.T) {
+	cfgPath := writeConfig(t, `{"delegate_max_steps":0}`)
+	if _, err := Load(nil, noEnv, cfgPath); err == nil {
+		t.Fatal("delegate_max_steps=0 should be invalid")
+	}
+}
+
 func TestBoolFlagsParsed(t *testing.T) {
 	c, err := Load([]string{"-model", "gpt-5.5", "-no-env", "-no-color", "-v", "-q"}, noEnv, "")
 	if err != nil {

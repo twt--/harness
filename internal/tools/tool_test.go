@@ -38,6 +38,16 @@ func newOK(name, out string) fakeTool {
 	}
 }
 
+type meteredFakeTool struct {
+	fakeTool
+	result MeteredResult
+	err    error
+}
+
+func (m meteredFakeTool) RunMetered(context.Context, json.RawMessage) (MeteredResult, error) {
+	return m.result, m.err
+}
+
 func TestRegistrySpecsOrdered(t *testing.T) {
 	r := &Registry{}
 	r.Register(newOK("alpha", "a"))
@@ -60,6 +70,22 @@ func TestRegistrySpecsOrdered(t *testing.T) {
 	}
 	if specs[0].Description != "ok tool" {
 		t.Errorf("Description not passed through: %q", specs[0].Description)
+	}
+}
+
+func TestDispatchPreservesMeteredToolUsage(t *testing.T) {
+	r := &Registry{}
+	r.Register(meteredFakeTool{
+		fakeTool: newOK("metered", "ordinary path should not run"),
+		result:   MeteredResult{Text: "metered output", Usage: llm.Usage{InputTokens: 7, OutputTokens: 3}},
+	})
+
+	res := r.Dispatch(context.Background(), llm.ToolCall{ID: "m1", Name: "metered", Input: json.RawMessage(`{}`)})
+	if res.Text != "metered output" || res.IsError {
+		t.Fatalf("dispatch result = %+v", res)
+	}
+	if res.Usage.InputTokens != 7 || res.Usage.OutputTokens != 3 {
+		t.Fatalf("usage = %+v, want 7 input / 3 output", res.Usage)
 	}
 }
 

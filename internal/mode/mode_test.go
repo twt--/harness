@@ -3,8 +3,6 @@ package mode
 import (
 	"slices"
 	"testing"
-
-	"harness/internal/tools"
 )
 
 func TestDefaultIsAuto(t *testing.T) {
@@ -28,7 +26,7 @@ func TestBuiltins(t *testing.T) {
 	if auto.Prompt != "" {
 		t.Errorf("auto must have no extra prompt (current behavior), got %q", auto.Prompt)
 	}
-	if !slices.Equal(auto.AllowedTools, tools.DefaultNames()) {
+	if !slices.Equal(auto.AllowedTools, defaultTools()) {
 		t.Errorf("auto tools = %v, want default set", auto.AllowedTools)
 	}
 
@@ -36,7 +34,7 @@ func TestBuiltins(t *testing.T) {
 	if ind.Prompt == "" {
 		t.Error("independent must carry a prompt")
 	}
-	if !slices.Equal(ind.AllowedTools, tools.DefaultNames()) {
+	if !slices.Equal(ind.AllowedTools, defaultTools()) {
 		t.Errorf("independent tools = %v, want default set", ind.AllowedTools)
 	}
 
@@ -100,7 +98,7 @@ func TestResolveNewModeInheritsDefaultTools(t *testing.T) {
 	if rev.Name != "review" || rev.Prompt != "review the diff" {
 		t.Errorf("rev = %+v", rev)
 	}
-	if !slices.Equal(rev.AllowedTools, tools.DefaultNames()) {
+	if !slices.Equal(rev.AllowedTools, defaultTools()) {
 		t.Errorf("tools = %v, want default set", rev.AllowedTools)
 	}
 }
