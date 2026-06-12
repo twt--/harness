@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"harness/internal/mcp"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -27,14 +25,14 @@ func TestLoadConfigCamelCaseDecode(t *testing.T) {
 			"alpha": {"command": "alpha-bin", "args": ["--flag", "x"], "env": {"K": "v"}},
 			"beta": {"type": "http", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer t"}}
 		},
-		"gateway": {"socket": "/tmp/g.sock", "logFile": "/tmp/g.log", "logLevel": "debug"}
+		"gateway": {"listen": "127.0.0.1:8089", "socket": "/tmp/ignored.sock", "logFile": "/tmp/g.log", "logLevel": "debug"}
 	}`)
 
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Socket != "/tmp/g.sock" || cfg.LogFile != "/tmp/g.log" || cfg.LogLevel != "debug" {
+	if cfg.Listen != "127.0.0.1:8089" || cfg.LogFile != "/tmp/g.log" || cfg.LogLevel != "debug" {
 		t.Fatalf("gateway settings not decoded: %+v", cfg)
 	}
 	if len(cfg.Servers) != 2 {
@@ -62,7 +60,7 @@ func TestLoadConfigCamelCaseDecode(t *testing.T) {
 
 func TestLoadConfigListenField(t *testing.T) {
 	withListen := writeConfig(t, `{
-		"gateway": {"socket": "/tmp/g.sock", "listen": "127.0.0.1:8089"}
+		"gateway": {"listen": "127.0.0.1:8089"}
 	}`)
 	cfg, err := LoadConfig(withListen)
 	if err != nil {
@@ -72,14 +70,14 @@ func TestLoadConfigListenField(t *testing.T) {
 		t.Fatalf("Listen = %q, want 127.0.0.1:8089", cfg.Listen)
 	}
 
-	// Absent listen defaults to empty (no HTTP listener), unlike socket.
-	noListen := writeConfig(t, `{"gateway": {"socket": "/tmp/g.sock"}}`)
+	// Absent listen defaults to the local HTTP listener.
+	noListen := writeConfig(t, `{"gateway": {}}`)
 	cfg, err = LoadConfig(noListen)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Listen != "" {
-		t.Fatalf("Listen = %q, want empty when unset", cfg.Listen)
+	if cfg.Listen != DefaultListen {
+		t.Fatalf("Listen = %q, want %q when unset", cfg.Listen, DefaultListen)
 	}
 }
 
@@ -280,15 +278,14 @@ func TestLoadConfigMalformedIsError(t *testing.T) {
 	}
 }
 
-func TestLoadConfigSocketFallback(t *testing.T) {
+func TestLoadConfigListenFallback(t *testing.T) {
 	path := writeConfig(t, `{"mcpServers":{}}`)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	want := mcp.DefaultSocketPath(os.Getenv)
-	if cfg.Socket != want {
-		t.Fatalf("socket fallback = %q, want %q", cfg.Socket, want)
+	if cfg.Listen != DefaultListen {
+		t.Fatalf("listen fallback = %q, want %q", cfg.Listen, DefaultListen)
 	}
 }
 
@@ -336,5 +333,26 @@ func TestDefaultConfigPath(t *testing.T) {
 	})
 	if got != "/home/u/.config/harness-mcp-gateway/config.json" {
 		t.Fatalf("HOME path = %q", got)
+	}
+}
+
+func TestURLForListen(t *testing.T) {
+	tests := []struct {
+		addr string
+		want string
+	}{
+		{"127.0.0.1:8766", "http://127.0.0.1:8766"},
+		{":8766", "http://127.0.0.1:8766"},
+		{"0.0.0.0:8766", "http://127.0.0.1:8766"},
+		{"[::]:8766", "http://127.0.0.1:8766"},
+		{"[::1]:8766", "http://[::1]:8766"},
+	}
+	for _, tt := range tests {
+		if got := URLForListen(tt.addr); got != tt.want {
+			t.Errorf("URLForListen(%q) = %q, want %q", tt.addr, got, tt.want)
+		}
+	}
+	if got := DefaultURL(); got != "http://"+DefaultListen {
+		t.Errorf("DefaultURL() = %q, want http://%s", got, DefaultListen)
 	}
 }

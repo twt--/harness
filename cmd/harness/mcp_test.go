@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"harness/internal/llm/llmtest"
 	"harness/internal/logging"
 	"harness/internal/mcp"
+	"harness/internal/mcpgateway"
 	"harness/internal/mcptools"
 	"harness/internal/mode"
 	"harness/internal/tools"
@@ -97,9 +99,9 @@ func mcpTool(name string) mcp.Tool {
 	return mcp.Tool{Name: name, InputSchema: json.RawMessage(`{"type":"object"}`)}
 }
 
-// fakeGateway is a unix-socket MCP server backed by provider, already accepting
-// connections and serving one mcp.Serve session each. It captures the most
-// recent session so a test can fire tools/list_changed.
+// fakeGateway is a stream MCP server backed by provider, already accepting
+// local test connections and serving one mcp.Serve session each. It captures the
+// most recent session so a test can fire tools/list_changed.
 type fakeGateway struct {
 	path     string
 	provider mcp.ToolProvider
@@ -142,6 +144,11 @@ func (g *fakeGateway) close() {
 	if g.ln != nil {
 		_ = g.ln.Close()
 	}
+}
+
+func (g *fakeGateway) dial(ctx context.Context) (io.ReadWriteCloser, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, "unix", g.path)
 }
 
 // startFakeGateway returns a gateway already accepting connections on a unix
@@ -197,10 +204,11 @@ func mcpToolCallStep(id, name, args string) llmtest.Step {
 }
 
 // TestSetupMCPRegistersToolsAndOneShotCalls drives a full one-shot run with MCP
-// enabled against a fake gateway: the scripted model calls mcp__test__echo, and
-// the echoed result must flow back into the next request's transcript.
+// enabled against a real HTTP MCP gateway handler: the scripted model calls
+// mcp__test__echo, and the echoed result must flow back into the next request's
+// transcript.
 func TestSetupMCPRegistersToolsAndOneShotCalls(t *testing.T) {
-	g := startFakeGateway(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
+	url, _ := startHTTPGateway(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
 
 	fp := llmtest.New("fake",
 		mcpToolCallStep("call_1", "mcp__test__echo", `{"text":"hi"}`),
@@ -211,7 +219,7 @@ func TestSetupMCPRegistersToolsAndOneShotCalls(t *testing.T) {
 	)
 
 	env, out, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "echo it"}, fp, "")
-	env.getenv = withMCPEnv(env.getenv, g.path)
+	env.getenv = withMCPEnv(env.getenv, url)
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("run exit = %d, want 0; errw=%q", code, errw.String())
@@ -230,11 +238,10 @@ func TestSetupMCPRegistersToolsAndOneShotCalls(t *testing.T) {
 	}
 }
 
-// TestSetupMCPWarnsAndContinuesWhenUnreachable enables MCP with a bogus socket
-// whose dial is refused. Startup must proceed, emit a single [warn] [mcp] line
-// naming the socket and dial error, register zero mcp__ tools, and return a
-// no-op cleanup. The harness never spawns the gateway.
-func TestSetupMCPWarnsAndContinuesWhenUnreachable(t *testing.T) {
+// TestSetupMCPRejectsNonHTTPGatewayAndContinues enables MCP with a non-HTTP
+// gateway value. Startup must proceed, emit a single [warn] [mcp] line naming
+// the bad gateway, register zero mcp__ tools, and return a no-op cleanup.
+func TestSetupMCPRejectsNonHTTPGatewayAndContinues(t *testing.T) {
 	catalog := tools.Catalog()
 	before := len(catalog.Names())
 
@@ -243,10 +250,7 @@ func TestSetupMCPWarnsAndContinuesWhenUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deps := mcpDeps{
-		dial: func(string, string, time.Duration) (net.Conn, error) { return nil, errors.New("refused") },
-	}
-	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Gateway: "/no/such.sock"}, catalog, logger, deps)
+	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Gateway: "/no/such.sock"}, catalog, logger)
 	defer cleanup()
 
 	if ok || conn != nil {
@@ -258,8 +262,8 @@ func TestSetupMCPWarnsAndContinuesWhenUnreachable(t *testing.T) {
 	if !strings.Contains(errw.String(), "[warn]") || !strings.Contains(errw.String(), "[mcp]") {
 		t.Errorf("expected [warn] [mcp] line, got %q", errw.String())
 	}
-	if !strings.Contains(errw.String(), "/no/such.sock") || !strings.Contains(errw.String(), "refused") {
-		t.Errorf("warning should name the socket and dial error, got %q", errw.String())
+	if !strings.Contains(errw.String(), "/no/such.sock") || !strings.Contains(errw.String(), "http(s) URL") {
+		t.Errorf("warning should name the invalid gateway, got %q", errw.String())
 	}
 	if strings.Count(errw.String(), "[warn]") != 1 {
 		t.Errorf("expected exactly one warning, got %q", errw.String())
@@ -375,9 +379,8 @@ func TestSetupMCPHTTPGatewayRoundTrip(t *testing.T) {
 }
 
 // TestSetupMCPHTTPUnreachableWarnsAndContinues points the gateway URL at a
-// closed port: setup must skip the unix probe (it is an http URL), fail soft on
-// the Register attempt, emit a single MCP-unavailable warning naming the URL,
-// and let the run continue.
+// closed port: setup must fail soft on the Register attempt, emit a single
+// MCP-unavailable warning naming the URL, and let the run continue.
 func TestSetupMCPHTTPUnreachableWarnsAndContinues(t *testing.T) {
 	// Bind then immediately close a listener to obtain a definitely-dead URL.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -395,15 +398,7 @@ func TestSetupMCPHTTPUnreachableWarnsAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// deps.dial must never be called for an http gateway (the probe is skipped);
-	// fail loudly if it is.
-	deps := mcpDeps{
-		dial: func(string, string, time.Duration) (net.Conn, error) {
-			t.Error("unix probe dialed for an http gateway")
-			return nil, errors.New("should not dial")
-		},
-	}
-	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Gateway: deadURL}, catalog, logger, deps)
+	conn, _, cleanup, ok := setupMCP(context.Background(), config.MCPConfig{Enable: true, Gateway: deadURL}, catalog, logger)
 	defer cleanup()
 
 	if ok || conn != nil {
@@ -420,17 +415,11 @@ func TestSetupMCPHTTPUnreachableWarnsAndContinues(t *testing.T) {
 	}
 }
 
-// TestResolveMCPGateway verifies the unix:// prefix is stripped, an empty value
-// resolves to the shared default, and an http(s) URL passes through verbatim.
+// TestResolveMCPGateway verifies an empty value resolves to the shared default
+// HTTP URL and an http(s) URL passes through verbatim.
 func TestResolveMCPGateway(t *testing.T) {
-	if got := resolveMCPGateway("unix:///tmp/gw.sock"); got != "/tmp/gw.sock" {
-		t.Errorf("resolveMCPGateway(unix://...) = %q, want /tmp/gw.sock", got)
-	}
-	if got := resolveMCPGateway("/tmp/plain.sock"); got != "/tmp/plain.sock" {
-		t.Errorf("resolveMCPGateway plain = %q", got)
-	}
-	if got := resolveMCPGateway(""); got == "" {
-		t.Errorf("resolveMCPGateway(\"\") should resolve to the shared default, got empty")
+	if got := resolveMCPGateway(""); got != mcpgateway.DefaultURL() {
+		t.Errorf("resolveMCPGateway(\"\") = %q, want %q", got, mcpgateway.DefaultURL())
 	}
 	for _, url := range []string{"http://127.0.0.1:8080/mcp", "https://gw.example/mcp", "HTTP://up.example"} {
 		if got := resolveMCPGateway(url); got != url {
@@ -458,7 +447,7 @@ func TestMCPRefresherAddsAndRemovesTools(t *testing.T) {
 	g := startFakeGateway(t, provider)
 
 	catalog := tools.Catalog()
-	conn := mcptools.NewConn(mcptools.Options{Socket: g.path, Info: mcp.Implementation{Name: "harness", Version: "test"}})
+	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
 	defer conn.Close()
 
 	initial, err := mcptools.Register(context.Background(), catalog, conn)
@@ -522,7 +511,7 @@ func TestMCPRefresherSkipsUnaffectedWhitelistMode(t *testing.T) {
 	g := startFakeGateway(t, provider)
 
 	catalog := tools.Catalog()
-	conn := mcptools.NewConn(mcptools.Options{Socket: g.path, Info: mcp.Implementation{Name: "harness", Version: "test"}})
+	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
 	defer conn.Close()
 	initial, err := mcptools.Register(context.Background(), catalog, conn)
 	if err != nil {
@@ -563,7 +552,7 @@ func TestMCPRefresherSwapsWhitelistModeLosingTool(t *testing.T) {
 	g := startFakeGateway(t, provider)
 
 	catalog := tools.Catalog()
-	conn := mcptools.NewConn(mcptools.Options{Socket: g.path, Info: mcp.Implementation{Name: "harness", Version: "test"}})
+	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
 	defer conn.Close()
 	initial, err := mcptools.Register(context.Background(), catalog, conn)
 	if err != nil {
@@ -599,7 +588,7 @@ func TestMCPRefresherFailedRefreshKeepsDirtyForRetry(t *testing.T) {
 	g := startFakeGateway(t, provider)
 
 	catalog := tools.Catalog()
-	conn := mcptools.NewConn(mcptools.Options{Socket: g.path, Info: mcp.Implementation{Name: "harness", Version: "test"}})
+	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
 	defer conn.Close()
 	initial, err := mcptools.Register(context.Background(), catalog, conn)
 	if err != nil {
@@ -643,7 +632,7 @@ func TestMCPRefresherFailedRefreshKeepsDirtyForRetry(t *testing.T) {
 func TestMCPRefresherNotDirtyFastPath(t *testing.T) {
 	g := startFakeGateway(t, &echoProvider{tools: []mcp.Tool{echoTool()}})
 	catalog := tools.Catalog()
-	conn := mcptools.NewConn(mcptools.Options{Socket: g.path, Info: mcp.Implementation{Name: "harness", Version: "test"}})
+	conn := mcptools.NewConn(mcptools.Options{Dial: g.dial, Info: mcp.Implementation{Name: "harness", Version: "test"}})
 	defer conn.Close()
 	sum, err := mcptools.Register(context.Background(), catalog, conn)
 	if err != nil {
@@ -683,13 +672,13 @@ func TestAugmentModesWithMCP(t *testing.T) {
 
 // --- helpers ---
 
-func withMCPEnv(base func(string) string, socket string) func(string) string {
+func withMCPEnv(base func(string) string, gateway string) func(string) string {
 	return func(k string) string {
 		switch k {
 		case "HARNESS_MCP_ENABLE":
 			return "true"
 		case "HARNESS_MCP_GATEWAY":
-			return socket
+			return gateway
 		default:
 			return base(k)
 		}

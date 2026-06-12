@@ -7,19 +7,17 @@ import (
 	"testing"
 )
 
-// TestOpenLogSinkPrecedence covers the resolution order flag > config >
-// tty-stderr > default file, with the isTTY decision injected via stderrIsTTY.
+// TestOpenLogSinkPrecedence covers the resolution order flag > config > stderr.
 func TestOpenLogSinkPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	flagPath := filepath.Join(dir, "flag.log")
 	configPath := filepath.Join(dir, "config.log")
-	socket := filepath.Join(dir, "sub", "g.sock")
 	stderr := &bytes.Buffer{}
 
-	t.Run("flag wins over config and tty", func(t *testing.T) {
+	t.Run("flag wins over config", func(t *testing.T) {
 		sink, closeFn, err := openLogSink(logSinkParams{
 			flagPath: flagPath, configPath: configPath,
-			socket: socket, stderr: stderr, stderrIsTTY: true,
+			stderr: stderr,
 		})
 		if err != nil {
 			t.Fatalf("openLogSink: %v", err)
@@ -28,9 +26,9 @@ func TestOpenLogSinkPrecedence(t *testing.T) {
 		mustBeFile(t, sink, flagPath)
 	})
 
-	t.Run("config wins over tty when no flag", func(t *testing.T) {
+	t.Run("config wins when no flag", func(t *testing.T) {
 		sink, closeFn, err := openLogSink(logSinkParams{
-			configPath: configPath, socket: socket, stderr: stderr, stderrIsTTY: true,
+			configPath: configPath, stderr: stderr,
 		})
 		if err != nil {
 			t.Fatalf("openLogSink: %v", err)
@@ -39,33 +37,16 @@ func TestOpenLogSinkPrecedence(t *testing.T) {
 		mustBeFile(t, sink, configPath)
 	})
 
-	t.Run("stderr when a tty and no flag or config", func(t *testing.T) {
+	t.Run("stderr when no flag or config", func(t *testing.T) {
 		sink, closeFn, err := openLogSink(logSinkParams{
-			socket: socket, stderr: stderr, stderrIsTTY: true,
+			stderr: stderr,
 		})
 		if err != nil {
 			t.Fatalf("openLogSink: %v", err)
 		}
 		defer closeFn()
 		if sink != stderr {
-			t.Fatalf("tty stderr sink = %T, want the injected stderr buffer", sink)
-		}
-	})
-
-	t.Run("default file when not a tty (detached spawn)", func(t *testing.T) {
-		sink, closeFn, err := openLogSink(logSinkParams{
-			socket: socket, stderr: stderr, stderrIsTTY: false,
-		})
-		if err != nil {
-			t.Fatalf("openLogSink: %v", err)
-		}
-		defer closeFn()
-		wantPath := filepath.Join(filepath.Dir(socket), gatewayLogName)
-		mustBeFile(t, sink, wantPath)
-		// The default-file path must be created next to the socket, so a detached
-		// gateway never loses logs.
-		if _, err := os.Stat(wantPath); err != nil {
-			t.Fatalf("default log file not created: %v", err)
+			t.Fatalf("stderr sink = %T, want the injected stderr buffer", sink)
 		}
 	})
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,27 +18,19 @@ const (
 	configCategory = "mcp_config"
 )
 
-// gatewayLogName is the basename of the fallback log file, written next to the
-// socket so a detached spawn (no TTY, no configured log file) still records.
-const gatewayLogName = "gateway.log"
-
 // runServe parses serve flags, loads config, resolves the log sink, wires
-// signals into a cancellable context, and runs the daemon. ErrAlreadyRunning is
-// a quiet success (exit 0) so a concurrent operator start — two `serve`
-// invocations racing for the same socket — resolves to one daemon without a
-// spurious failure.
+// signals into a cancellable context, and runs the daemon.
 func runServe(env environment, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors are returned, printed once below (cmd/harness convention)
 	// -config defaults to "" so we can distinguish "unset" (a missing default
 	// path is non-fatal) from an explicit value (a typo is a hard error).
 	configPath := fs.String("config", "", "config file path")
-	socket := fs.String("socket", "", "unix socket path (overrides config and default)")
-	listen := fs.String("listen", "", "HTTP listen address (overrides config; empty = no HTTP listener)")
+	listen := fs.String("listen", "", "HTTP listen address (overrides config and default)")
 	logPath := fs.String("log", "", "log file path (overrides config logFile)")
 	logLevel := fs.String("log-level", "", "log level: debug|info|warn|error (overrides config)")
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if err == flag.ErrHelp {
 			usage(env.stdout, env.getenv)
 			return exitOK
 		}
@@ -53,12 +44,8 @@ func runServe(env environment, args []string) int {
 		return exitRuntime
 	}
 
-	// Flags override config for socket and listen; defaults already filled by
-	// LoadConfig (Listen has no default, so an unset flag leaves config's value).
-	if *socket != "" {
-		cfg.Socket = *socket
-	}
-	if flagWasSet(fs, "listen") {
+	// Flags override config; LoadConfig fills the default listener.
+	if *listen != "" {
 		cfg.Listen = *listen
 	}
 
@@ -75,11 +62,9 @@ func runServe(env environment, args []string) int {
 
 	// Resolve and open the log sink (flag > config > stderr-if-TTY > file).
 	sink, closeSink, err := openLogSink(logSinkParams{
-		flagPath:    *logPath,
-		configPath:  cfg.LogFile,
-		socket:      cfg.Socket,
-		stderr:      env.stderr,
-		stderrIsTTY: env.stderrIsTTY,
+		flagPath:   *logPath,
+		configPath: cfg.LogFile,
+		stderr:     env.stderr,
 	})
 	if err != nil {
 		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
@@ -115,13 +100,6 @@ func runServe(env environment, args []string) int {
 
 	d := mcpgateway.NewDaemon(cfg, logger)
 	err = d.Run(ctx)
-	if errors.Is(err, mcpgateway.ErrAlreadyRunning) {
-		// Another live gateway already owns the socket: a quiet success so a
-		// concurrent operator start (two `serve` invocations racing for the same
-		// socket) does not surface as an error.
-		logger.Info("gateway already running; exiting", logging.Category(serveCategory), "socket", cfg.Socket)
-		return exitOK
-	}
 	if err != nil {
 		logger.Error("gateway exited", logging.Category(serveCategory), "err", err)
 		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
@@ -133,47 +111,30 @@ func runServe(env environment, args []string) int {
 // logSinkParams carries the inputs to log-sink resolution so the precedence
 // rules are unit-testable without opening real files or process state.
 type logSinkParams struct {
-	flagPath    string
-	configPath  string
-	socket      string
-	stderr      io.Writer
-	stderrIsTTY bool
+	flagPath   string
+	configPath string
+	stderr     io.Writer
 }
 
 // openLogSink resolves and opens the log sink in precedence order:
 //
-//	-log flag > config logFile > stderr (when stderr is a TTY) > default file
-//	<socket-dir>/gateway.log
+//	-log flag > config logFile > stderr
 //
-// The default-file fallback guarantees a detached start (no TTY, no configured
-// file) never loses logs. File sinks open append-only; the
-// returned close func is a no-op for the stderr sink (we must not close the
-// process's stderr). Parent directories for an explicit/config path are not
-// created — only the socket dir's gateway.log path is created on demand, since
-// the daemon owns that directory.
+// File sinks open append-only; the returned close func is a no-op for the stderr
+// sink (we must not close the process's stderr).
 func openLogSink(p logSinkParams) (sink io.Writer, closeFn func(), err error) {
 	switch {
 	case p.flagPath != "":
 		return openLogFile(p.flagPath)
 	case p.configPath != "":
 		return openLogFile(p.configPath)
-	case p.stderrIsTTY:
-		return p.stderr, func() {}, nil
 	default:
-		// Detached spawn: log next to the socket so output is never lost.
-		dir := filepath.Dir(p.socket)
-		if dir == "" || dir == "." {
-			// No socket dir to anchor to: fall back to stderr rather than writing
-			// a gateway.log into the current working directory.
-			return p.stderr, func() {}, nil
-		}
-		return openLogFile(filepath.Join(dir, gatewayLogName))
+		return p.stderr, func() {}, nil
 	}
 }
 
-// openLogFile opens path append-only, creating it if absent. For the
-// gateway.log fallback the socket dir may not exist yet when we open, so create
-// it best-effort first.
+// openLogFile opens path append-only, creating it if absent. Parent directories
+// are created best-effort first so an explicit nested log path works.
 func openLogFile(path string) (io.Writer, func(), error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		// Best-effort: a creation failure is reported by the OpenFile below with a

@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,29 +23,27 @@ import (
 	"harness/internal/retry"
 )
 
-// dialTimeout bounds a single unix-socket dial; a hung gateway must not stall a
-// tool call beyond this.
-const dialTimeout = 2 * time.Second
-
 // initTimeout bounds the MCP initialize handshake on a fresh connection.
 const initTimeout = 10 * time.Second
 
 // Options configures a Conn.
 type Options struct {
-	// Socket is the gateway address. It accepts EITHER a unix socket path (the
-	// default family) OR an http(s) gateway URL (case-insensitive http:// or
-	// https:// prefix). The transport family is decided once in NewConn from this
-	// value; everything that is not an http(s) URL is treated as a unix path.
-	Socket string
+	// Endpoint is the HTTP gateway URL.
+	Endpoint string
 	// Headers are static request headers (e.g. Authorization) sent on every
-	// request to an http(s) gateway. Ignored for the unix-socket family.
+	// request to the gateway.
 	Headers map[string]string
 	Info    mcp.Implementation // clientInfo (harness name/version)
 	Logger  *slog.Logger
 
+	// Dial is an internal test seam for stream transports that can deliver
+	// tools/list_changed notifications. Production callers should leave it nil
+	// and use Endpoint.
+	Dial func(ctx context.Context) (io.ReadWriteCloser, error)
+
 	// dial and now are unexported test seams. dial returns the raw transport for
-	// a fresh stream connection; the Conn wraps it in a real *mcp.Client. Setting
-	// dial forces the unix/stream family regardless of Socket. now supplies the
+	// a fresh stream connection; the Conn wraps it in a real *mcp.Client. It is
+	// used only by tests that need server-push notifications. now supplies the
 	// clock for backoff gating. Both default to production behavior.
 	dial func(ctx context.Context) (io.ReadWriteCloser, error)
 	now  func() time.Time
@@ -61,9 +58,8 @@ type Conn struct {
 	info   mcp.Implementation
 	logger *slog.Logger
 
-	// dial is the stream/unix transport seam (nil for the http family). endpoint
-	// and headers configure the http family (endpoint == "" for the unix family).
-	// Exactly one family is active, decided once in NewConn.
+	// dial is the stream transport seam used only by tests (nil for production).
+	// endpoint and headers configure the production HTTP family.
 	dial     func(ctx context.Context) (io.ReadWriteCloser, error)
 	endpoint string
 	headers  map[string]string
@@ -73,11 +69,11 @@ type Conn struct {
 
 	mu     sync.Mutex
 	client *mcp.Client // nil when disconnected
-	// http is the persistent streamable-HTTP transport for the http family,
-	// created lazily on first connect and REUSED across reconnects (matching the
-	// gateway supervisor's connectHTTP): after a session expiry the transport has
-	// cleared its session, so a fresh Client over the SAME transport re-runs
-	// Initialize and establishes a new session. nil for the unix family.
+	// http is the persistent streamable-HTTP transport, created lazily on first
+	// connect and REUSED across reconnects (matching the gateway supervisor's
+	// connectHTTP): after a session expiry the transport has cleared its session,
+	// so a fresh Client over the SAME transport re-runs Initialize and
+	// establishes a new session. nil only when tests inject dial.
 	http     *mcp.HTTPTransport
 	lastErr  error
 	nextTry  time.Time // backoff gate; before this, ensure fast-fails
@@ -101,36 +97,17 @@ func NewConn(opts Options) *Conn {
 		now:    now,
 	}
 
-	// Decide the transport family once. An explicit dial seam (tests) always
-	// forces the stream/unix family. Otherwise an http(s) URL selects the http
-	// family; everything else is a unix socket path.
-	switch {
-	case opts.dial != nil:
-		c.dial = opts.dial
-	case isHTTPURL(opts.Socket):
-		c.endpoint = opts.Socket
+	dial := opts.dial
+	if dial == nil {
+		dial = opts.Dial
+	}
+	if dial != nil {
+		c.dial = dial
+	} else {
+		c.endpoint = opts.Endpoint
 		c.headers = opts.Headers
-	default:
-		socket := opts.Socket
-		c.dial = func(ctx context.Context) (io.ReadWriteCloser, error) {
-			d := net.Dialer{Timeout: dialTimeout}
-			return d.DialContext(ctx, "unix", socket)
-		}
 	}
 	return c
-}
-
-// isHTTPURL reports whether socket is an http(s) gateway URL. Only the leading
-// scheme is lowercased for the comparison (the rest of the URL is case-
-// sensitive), matching the spec's case-insensitive-scheme rule. It must agree
-// with cmd/harness's isHTTPGateway (which decides whether to skip the unix
-// probe); the import direction forbids a shared helper, so keep the two in sync.
-func isHTTPURL(socket string) bool {
-	// Lowercase at most the longest scheme prefix ("https://") so the rest of the
-	// URL keeps its case; a shorter string is bounded by its own length.
-	n := min(len(socket), len("https://"))
-	lower := strings.ToLower(socket[:n])
-	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 // ListTools returns the gateway's tools, reconnecting lazily if needed.
@@ -194,11 +171,10 @@ func (c *Conn) ensure(ctx context.Context) (*mcp.Client, error) {
 }
 
 // connect builds a fresh client and runs the MCP initialize handshake under a
-// bounded timeout. The http family is dispatched separately; the stream/unix
-// family dials a fresh transport. On any failure it closes the client so no
-// goroutine or fd leaks. Both the dial and the initialize derive from the
-// caller's ctx, so an interrupt aborts an in-flight connect. ensure holds c.mu
-// across this call.
+// bounded timeout. Production uses the HTTP transport; tests may inject a stream
+// dialer. On any failure it closes the client so no goroutine or fd leaks. The
+// initialize derives from the caller's ctx, so an interrupt aborts an in-flight
+// connect. ensure holds c.mu across this call.
 func (c *Conn) connect(ctx context.Context) (*mcp.Client, error) {
 	if c.endpoint != "" {
 		return c.connectHTTP(ctx)
@@ -210,9 +186,9 @@ func (c *Conn) connect(ctx context.Context) (*mcp.Client, error) {
 	}
 	cl := mcp.NewClient(rwc, mcp.ClientOptions{
 		Info: c.info,
-		// Stream transports deliver tools/list_changed; the dirty flag drives the
-		// REPL refresh hook. (The http family never delivers this notification, so
-		// connectHTTP omits the hook — see there.)
+		// Injected stream transports deliver tools/list_changed; the dirty flag
+		// drives refresh tests. HTTP never delivers this notification, so
+		// connectHTTP omits the hook.
 		OnToolsChanged: func() { c.dirty.Store(true) },
 		Logger:         c.logger,
 	})
@@ -240,9 +216,9 @@ func (c *Conn) connectHTTP(ctx context.Context) (*mcp.Client, error) {
 }
 
 // initialize runs the MCP handshake on cl under a bounded timeout, closing cl on
-// failure. For the http family closing cl closes the shared transport too; that
-// is fine because a failed connect leaves no live client and the transport is
-// rebuilt lazily on the next connect.
+// failure. For HTTP, closing cl closes the shared transport too; that is fine
+// because a failed connect leaves no live client and the transport is rebuilt
+// lazily on the next connect.
 func (c *Conn) initialize(ctx context.Context, cl *mcp.Client) (*mcp.Client, error) {
 	initCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
@@ -278,8 +254,8 @@ func (c *Conn) Dirty() bool { return c.dirty.Load() }
 // ClearDirty resets the dirty flag.
 func (c *Conn) ClearDirty() { c.dirty.Store(false) }
 
-// Close closes the current client if any, and (http family) the persistent
-// transport (best-effort DELETE of any live session). It is safe to call when
+// Close closes the current client if any, and the persistent HTTP transport
+// (best-effort DELETE of any live session). It is safe to call when
 // disconnected. Closing the client already closes the transport, but a
 // disconnected conn (client nil) may still hold a transport with a live session
 // — e.g. after a drop on a non-session error — so the transport is closed
@@ -309,12 +285,10 @@ func (c *Conn) Close() error {
 // must be dropped and re-dialed/rebuilt), as opposed to an ordinary
 // JSON-RPC/tool error or a context cancellation (which leave the link healthy).
 //
-// mcp.ErrSessionExpired (http family, HTTP 404) counts as a drop: the transport
-// has cleared its session, so the next call rebuilds a fresh Client over the
-// same transport and re-runs Initialize, establishing a new session. The tool
-// set is assumed stable across the re-initialize (Register runs only at startup
-// over http; the unix-reconnect semantics are the same — a reconnect just needs
-// a working client again, not a re-list).
+// mcp.ErrSessionExpired (HTTP 404) counts as a drop: the transport has cleared
+// its session, so the next call rebuilds a fresh Client over the same transport
+// and re-runs Initialize, establishing a new session. The tool set is assumed
+// stable across the re-initialize (Register runs only at startup over HTTP).
 func isConnError(err error) bool {
 	if err == nil {
 		return false

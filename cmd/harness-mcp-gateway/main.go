@@ -50,24 +50,19 @@ func main() {
 		stderr: os.Stderr,
 		getenv: os.Getenv,
 		sigCh:  sigCh,
-		// stderrIsTTY gates the "log to stderr" default: an interactive serve
-		// logs to the terminal, a detached one falls back to a file so logs are
-		// never lost.
-		stderrIsTTY: isTTY(os.Stderr),
 	}))
 }
 
 // environment carries everything run depends on, so the dispatch is testable
-// with injected writers, env, signal channel, and TTY flag. A nil sigCh
-// disables signal-driven cancellation (tests drive ctx directly or inject their
-// own channel).
+// with injected writers, env, and signal channel. A nil sigCh disables
+// signal-driven cancellation (tests drive ctx directly or inject their own
+// channel).
 type environment struct {
-	args        []string
-	stdout      io.Writer
-	stderr      io.Writer
-	getenv      func(string) string
-	sigCh       chan os.Signal
-	stderrIsTTY bool
+	args   []string
+	stdout io.Writer
+	stderr io.Writer
+	getenv func(string) string
+	sigCh  chan os.Signal
 }
 
 // run dispatches on the first non-flag argument (the subcommand) and returns the
@@ -99,49 +94,32 @@ func run(env environment) int {
 }
 
 // usage prints the command summary to w. It lists the three subcommands, the
-// serve flags, and the live default config/socket paths so users can find them.
+// serve flags, and the live default config/listen values so users can find them.
 func usage(w io.Writer, getenv func(string) string) {
 	fmt.Fprint(w, `harness-mcp-gateway - MCP gateway daemon and debug client
 
 Usage:
-  harness-mcp-gateway serve   [-config path] [-socket path] [-listen addr] [-log path] [-log-level level]
-  harness-mcp-gateway tools   [-config path] [-socket path] | [-gateway url]
+  harness-mcp-gateway serve   [-config path] [-listen addr] [-log path] [-log-level level]
+  harness-mcp-gateway tools   [-config path] [-gateway url]
   harness-mcp-gateway version
 
 Subcommands:
-  serve     Run the gateway daemon: load config, bind the socket, supervise
-            downstream MCP servers, and serve their merged tools over the socket
-            (and, when -listen is set, over a streamable-HTTP listener).
+  serve     Run the gateway daemon: load config, supervise downstream MCP
+            servers, and serve their merged tools over streamable HTTP.
   tools     Connect to a running gateway and print the aggregated tool table,
-            over its unix socket or (with -gateway) an HTTP listener.
+            over HTTP.
   version   Print the binary's MCP protocol revision.
 
 serve flags:
   -config path      config file (default: `+mcpgateway.DefaultConfigPath(getenv)+`)
-  -socket path      unix socket to bind (overrides config; default: `+mcp.DefaultSocketPath(getenv)+`)
-  -listen addr      HTTP listen address, e.g. 127.0.0.1:8089 (overrides config;
-                    empty = no HTTP listener)
-  -log path         log file (overrides config; default: stderr if a TTY, else a
-                    gateway.log next to the socket)
+  -listen addr      HTTP listen address (overrides config; default: `+mcpgateway.DefaultListen+`)
+  -log path         log file (overrides config; default: stderr)
   -log-level level  debug|info|warn|error (overrides config; default: info)
 
 tools flags:
   -config path      config file (default: `+mcpgateway.DefaultConfigPath(getenv)+`)
-  -socket path      gateway socket (overrides config; default: `+mcp.DefaultSocketPath(getenv)+`)
-  -gateway url      query an HTTP gateway, e.g. http://127.0.0.1:8089 (mutually
-                    exclusive with -socket)
+  -gateway url      gateway URL (default: `+mcpgateway.DefaultURL()+`)
 `)
-}
-
-// isTTY reports whether f is a terminal, mirroring cmd/harness's helper. It
-// gates the serve default of logging to stderr (interactive) versus a file
-// (detached spawn), so a backgrounded gateway never loses its logs.
-func isTTY(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // resolveConfigPath turns the parsed -config flag into the path passed to

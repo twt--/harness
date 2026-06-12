@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"harness/internal/mcp"
+	"harness/internal/mcpgateway"
 )
 
 // testEnv builds an environment with captured stdout/stderr and a getenv that
@@ -35,19 +39,6 @@ func testEnv(t *testing.T, args []string) (environment, *bytes.Buffer, *bytes.Bu
 		getenv: getenv,
 		sigCh:  nil,
 	}, &out, &errw
-}
-
-// shortSocketDir returns a short-lived temp dir well under the unix sun_path
-// limit (~104 bytes on macOS), mirroring internal/mcpgateway's daemon tests:
-// t.TempDir() nests under a long /var/folders path that can overflow sun_path.
-func shortSocketDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "hmg-cmd")
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
 }
 
 func TestRunNoArgsUsageExit2(t *testing.T) {
@@ -116,7 +107,16 @@ func TestRunVersionExit0(t *testing.T) {
 // is set as gateway.logFile so the test can read the captured log output.
 func writeConfig(t *testing.T, dir, logFile string, tools string) string {
 	t.Helper()
+	return writeConfigWithListen(t, dir, logFile, tools, "")
+}
+
+func writeConfigWithListen(t *testing.T, dir, logFile, tools, listen string) string {
+	t.Helper()
 	cfgPath := filepath.Join(dir, "config.json")
+	listenField := ""
+	if listen != "" {
+		listenField = fmt.Sprintf(",\n    \"listen\": %q", listen)
+	}
 	body := fmt.Sprintf(`{
   "mcpServers": {
     "fake": {
@@ -127,48 +127,32 @@ func writeConfig(t *testing.T, dir, logFile string, tools string) string {
   },
   "gateway": {
     "logFile": %q,
-    "logLevel": "debug"
+    "logLevel": "debug"%s
   }
-}`, os.Args[0], tools, logFile)
+}`, os.Args[0], tools, logFile, listenField)
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	return cfgPath
 }
 
-// dialReady polls until the socket accepts a connection or the deadline passes.
-func dialReady(t *testing.T, socket string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := net.Dial("unix", socket)
-		if err == nil {
-			conn.Close()
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("socket %s never became ready", socket)
-}
-
 func TestServeSigintCleanShutdown(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+	dir := t.TempDir()
+	addr := freeAddr(t)
 	logFile := filepath.Join(dir, "out.log")
 	cfgPath := writeConfig(t, t.TempDir(), logFile, "echo")
 
 	env := environment{
-		args:        []string{"-config", cfgPath, "-socket", socket},
-		stdout:      &bytes.Buffer{},
-		stderr:      &bytes.Buffer{},
-		getenv:      func(string) string { return "" },
-		sigCh:       make(chan os.Signal, 1),
-		stderrIsTTY: false,
+		args:   []string{"-config", cfgPath, "-listen", addr},
+		stdout: &bytes.Buffer{},
+		stderr: &bytes.Buffer{},
+		getenv: func(string) string { return "" },
+		sigCh:  make(chan os.Signal, 1),
 	}
 	codeCh := make(chan int, 1)
 	go func() { codeCh <- runServe(env, env.args) }()
 
-	dialReady(t, socket)
+	waitForToolCount(t, "http://"+addr, 1, 5*time.Second)
 
 	// Inject SIGINT; the daemon's ctx cancels and it shuts down cleanly.
 	env.sigCh <- os.Interrupt
@@ -182,38 +166,42 @@ func TestServeSigintCleanShutdown(t *testing.T) {
 		t.Fatal("serve did not shut down after SIGINT")
 	}
 
-	// The socket must be removed on clean shutdown.
-	if _, err := os.Stat(socket); !os.IsNotExist(err) {
-		t.Errorf("socket not removed on shutdown: err=%v", err)
+	if conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond); err == nil {
+		conn.Close()
+		t.Errorf("listener still accepting after shutdown")
 	}
 }
 
-func TestServeAlreadyRunningExit0(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+func TestServeAddressInUseExit1(t *testing.T) {
+	dir := t.TempDir()
+	addr := freeAddr(t)
 	cfgDir := t.TempDir()
 	cfgPath := writeConfig(t, cfgDir, filepath.Join(dir, "first.log"), "echo")
 
-	// First daemon owns the socket.
+	// First daemon owns the address.
 	env1 := environment{
-		args:   []string{"-config", cfgPath, "-socket", socket},
+		args:   []string{"-config", cfgPath, "-listen", addr},
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 		getenv: func(string) string { return "" },
 		sigCh:  make(chan os.Signal, 1),
 	}
 	code1 := make(chan int, 1)
 	go func() { code1 <- runServe(env1, env1.args) }()
-	dialReady(t, socket)
+	waitForToolCount(t, "http://"+addr, 1, 5*time.Second)
 
-	// Second serve against the same live socket must exit 0 (quiet success).
+	// Second serve against the same live address fails like the model proxy.
+	var err2 bytes.Buffer
 	env2 := environment{
-		args:   []string{"-config", cfgPath, "-socket", socket},
-		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+		args:   []string{"-config", cfgPath, "-listen", addr},
+		stdout: &bytes.Buffer{}, stderr: &err2,
 		getenv: func(string) string { return "" },
 		sigCh:  nil,
 	}
-	if code := runServe(env2, env2.args); code != exitOK {
-		t.Fatalf("second serve (already running): exit = %d, want %d", code, exitOK)
+	if code := runServe(env2, env2.args); code != exitRuntime {
+		t.Fatalf("second serve (address in use): exit = %d, want %d", code, exitRuntime)
+	}
+	if !strings.Contains(err2.String(), addr) {
+		t.Fatalf("address-in-use error should name %s; stderr=%q", addr, err2.String())
 	}
 
 	// Shut down the first daemon.
@@ -222,8 +210,8 @@ func TestServeAlreadyRunningExit0(t *testing.T) {
 }
 
 func TestServeConfigWarningsSurfaceInLog(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+	dir := t.TempDir()
+	addr := freeAddr(t)
 	cfgDir := t.TempDir()
 	logFile := filepath.Join(dir, "warn.log")
 
@@ -246,14 +234,14 @@ func TestServeConfigWarningsSurfaceInLog(t *testing.T) {
 	}
 
 	env := environment{
-		args:   []string{"-config", cfgPath, "-socket", socket},
+		args:   []string{"-config", cfgPath, "-listen", addr},
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 		getenv: func(string) string { return "" },
 		sigCh:  make(chan os.Signal, 1),
 	}
 	codeCh := make(chan int, 1)
 	go func() { codeCh <- runServe(env, env.args) }()
-	dialReady(t, socket)
+	waitForToolCount(t, "http://"+addr, 1, 5*time.Second)
 
 	// Poll the log file for the warning (the daemon writes it at startup).
 	waitForFileContains(t, logFile, "broken", 5*time.Second)
@@ -266,46 +254,40 @@ func TestServeConfigWarningsSurfaceInLog(t *testing.T) {
 }
 
 // TestServeBadLogLevelExit2 locks in the usage-error branch: an invalid
-// -log-level is rejected before any sink is opened or socket bound, so serve
+// -log-level is rejected before any sink is opened or listener bound, so serve
 // returns exitUsage with the error on stderr.
 func TestServeBadLogLevelExit2(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
 	env, _, errw := testEnv(t, nil)
 
-	code := runServe(env, []string{"-socket", socket, "-log-level", "loud"})
+	code := runServe(env, []string{"-log-level", "loud"})
 	if code != exitUsage {
 		t.Fatalf("bad log level: exit = %d, want %d; stderr=%q", code, exitUsage, errw.String())
 	}
 	if !strings.Contains(errw.String(), "loud") {
 		t.Errorf("error should name the invalid level; stderr=%q", errw.String())
 	}
-	// The level is rejected before binding, so no socket is left behind.
-	if _, err := os.Stat(socket); !os.IsNotExist(err) {
-		t.Errorf("no socket should be bound on a usage error: err=%v", err)
-	}
 }
 
 func TestToolsListsAggregatedTools(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+	dir := t.TempDir()
+	addr := freeAddr(t)
 	cfgDir := t.TempDir()
 	cfgPath := writeConfig(t, cfgDir, filepath.Join(dir, "srv.log"), "echo,ping")
 
 	serveEnv := environment{
-		args:   []string{"-config", cfgPath, "-socket", socket},
+		args:   []string{"-config", cfgPath, "-listen", addr},
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 		getenv: func(string) string { return "" },
 		sigCh:  make(chan os.Signal, 1),
 	}
 	codeCh := make(chan int, 1)
 	go func() { codeCh <- runServe(serveEnv, serveEnv.args) }()
-	dialReady(t, socket)
 
 	// Wait until the downstream child's tools are aggregated and served.
-	waitForToolCount(t, socket, 2, 5*time.Second)
+	url := "http://" + addr
+	waitForToolCount(t, url, 2, 5*time.Second)
 
-	env, out, errw := testEnv(t, []string{"tools", "-socket", socket})
+	env, out, errw := testEnv(t, []string{"tools", "-gateway", url})
 	if code := run(env); code != exitOK {
 		t.Fatalf("tools: exit = %d, want %d; stderr=%q", code, exitOK, errw.String())
 	}
@@ -341,23 +323,20 @@ func freeAddr(t *testing.T) string {
 }
 
 // TestServeListenFlagAndToolsGateway drives the serve -listen flag end to end:
-// the daemon binds an HTTP listener, and `tools -gateway` queries it, proving
-// both new CLI surfaces interoperate over the HTTP transport.
+// the daemon binds an HTTP listener, and `tools -gateway` queries it.
 func TestServeListenFlagAndToolsGateway(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+	dir := t.TempDir()
 	addr := freeAddr(t)
 	cfgPath := writeConfig(t, t.TempDir(), filepath.Join(dir, "srv.log"), "echo,ping")
 
 	serveEnv := environment{
-		args:   []string{"-config", cfgPath, "-socket", socket, "-listen", addr},
+		args:   []string{"-config", cfgPath, "-listen", addr},
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 		getenv: func(string) string { return "" },
 		sigCh:  make(chan os.Signal, 1),
 	}
 	codeCh := make(chan int, 1)
 	go func() { codeCh <- runServe(serveEnv, serveEnv.args) }()
-	dialReady(t, socket)
 
 	// Poll the HTTP listener (via tools -gateway) until the downstream tools are
 	// aggregated and served.
@@ -385,60 +364,52 @@ func TestServeListenFlagAndToolsGateway(t *testing.T) {
 	<-codeCh
 }
 
-func TestServeListenEmptyFlagClearsConfiguredListener(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+func TestToolsUsesConfiguredListener(t *testing.T) {
+	dir := t.TempDir()
+	addr := freeAddr(t)
 	cfgDir := t.TempDir()
-	cfgPath := writeConfig(t, cfgDir, filepath.Join(dir, "srv.log"), "echo")
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	body := strings.Replace(string(data), `"logLevel": "debug"`, `"logLevel": "debug", "listen": "not a valid listen address"`, 1)
-	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
-		t.Fatalf("rewrite config: %v", err)
-	}
+	cfgPath := writeConfigWithListen(t, cfgDir, filepath.Join(dir, "srv.log"), "echo", addr)
 
 	serveEnv := environment{
-		args:   []string{"-config", cfgPath, "-socket", socket, "-listen", ""},
+		args:   []string{"-config", cfgPath},
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 		getenv: func(string) string { return "" },
 		sigCh:  make(chan os.Signal, 1),
 	}
 	codeCh := make(chan int, 1)
 	go func() { codeCh <- runServe(serveEnv, serveEnv.args) }()
-	dialReady(t, socket)
+	waitForToolCount(t, "http://"+addr, 1, 5*time.Second)
+
+	env, out, errw := testEnv(t, []string{"tools", "-config", cfgPath})
+	if code := run(env); code != exitOK {
+		t.Fatalf("tools from configured listener: exit = %d, want %d; stderr=%q", code, exitOK, errw.String())
+	}
+	if !strings.HasPrefix(out.String(), "1 tool\n") || !strings.Contains(out.String(), "mcp__fake__echo") {
+		t.Fatalf("tools output = %q, want configured listener tools", out.String())
+	}
 
 	serveEnv.sigCh <- os.Interrupt
 	if code := <-codeCh; code != exitOK {
-		t.Fatalf("serve with -listen \"\" exit = %d, want %d", code, exitOK)
-	}
-}
-
-// TestToolsGatewayAndSocketMutuallyExclusive locks in the usage error when both
-// -gateway and -socket are supplied.
-func TestToolsGatewayAndSocketMutuallyExclusive(t *testing.T) {
-	env, _, errw := testEnv(t, []string{"tools", "-gateway", "http://x", "-socket", "/tmp/s.sock"})
-	if code := run(env); code != exitUsage {
-		t.Fatalf("both -gateway and -socket: exit = %d, want %d", code, exitUsage)
-	}
-	if !strings.Contains(errw.String(), "mutually exclusive") {
-		t.Errorf("error should mention mutual exclusivity; stderr=%q", errw.String())
+		t.Fatalf("serve exit = %d, want %d", code, exitOK)
 	}
 }
 
 func TestToolsConnectionFailureExit1(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "absent.sock")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	url := "http://" + ln.Addr().String()
+	_ = ln.Close()
 
-	env, out, errw := testEnv(t, []string{"tools", "-socket", socket})
+	env, out, errw := testEnv(t, []string{"tools", "-gateway", url})
 	if code := run(env); code != exitRuntime {
 		t.Fatalf("tools (no gateway): exit = %d, want %d", code, exitRuntime)
 	}
 	if out.Len() != 0 {
 		t.Errorf("connection failure should not print a table; stdout=%q", out.String())
 	}
-	wantPrefix := fmt.Sprintf("harness-mcp-gateway: cannot connect to gateway at %s:", socket)
+	wantPrefix := fmt.Sprintf("harness-mcp-gateway: cannot connect to gateway at %s:", url)
 	if !strings.HasPrefix(errw.String(), wantPrefix) {
 		t.Errorf("connection-failure message wrong;\n got: %q\nwant prefix: %q", errw.String(), wantPrefix)
 	}
@@ -449,28 +420,15 @@ func TestToolsCommandTimesOutWhenGatewayHangs(t *testing.T) {
 	toolsCommandTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { toolsCommandTimeout = oldTimeout })
 
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "hang.sock")
-	ln, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer ln.Close()
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, err := ln.Accept()
-		if err == nil {
-			accepted <- conn
-		}
-	}()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
 
-	env, out, errw := testEnv(t, []string{"tools", "-socket", socket})
+	env, out, errw := testEnv(t, []string{"tools", "-gateway", srv.URL})
 	code := run(env)
-	select {
-	case conn := <-accepted:
-		conn.Close()
-	default:
-	}
+	close(release)
+	srv.Close()
 	if code != exitRuntime {
 		t.Fatalf("tools hanging gateway exit = %d, want %d", code, exitRuntime)
 	}
@@ -482,11 +440,11 @@ func TestToolsCommandTimesOutWhenGatewayHangs(t *testing.T) {
 	}
 }
 
-// TestToolsMissingDefaultConfigFallsBackToDefaultSocket guards that a fresh
+// TestToolsMissingDefaultConfigFallsBackToDefaultGateway guards that a fresh
 // user with no config file and no -config flag does not hit a "config not
-// found" error: the missing DEFAULT path resolves to an empty config (and thus
-// the default socket), so the only failure is the connect attempt itself.
-func TestToolsMissingDefaultConfigFallsBackToDefaultSocket(t *testing.T) {
+// found" error: the missing DEFAULT path resolves to an empty config and the
+// default HTTP gateway URL.
+func TestToolsMissingDefaultConfigFallsBackToDefaultGateway(t *testing.T) {
 	// HOME points at an empty temp dir, so the default config path does not exist.
 	home := t.TempDir()
 	getenv := func(k string) string {
@@ -495,21 +453,16 @@ func TestToolsMissingDefaultConfigFallsBackToDefaultSocket(t *testing.T) {
 		}
 		return ""
 	}
-	var out, errw bytes.Buffer
 	env := environment{
-		args:   []string{"tools"}, // no -config, no -socket
-		stdout: &out, stderr: &errw,
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 		getenv: getenv,
 	}
-	// Expect a connection failure to the DEFAULT socket, not a config error.
-	if code := run(env); code != exitRuntime {
-		t.Fatalf("tools with no config: exit = %d, want %d; stderr=%q", code, exitRuntime, errw.String())
+	got, code := resolveToolsGateway(env, flag.NewFlagSet("tools", flag.ContinueOnError), "", "")
+	if code != exitOK {
+		t.Fatalf("resolveToolsGateway exit = %d, want %d", code, exitOK)
 	}
-	if strings.Contains(errw.String(), "config") {
-		t.Errorf("missing default config must not error; stderr=%q", errw.String())
-	}
-	if !strings.Contains(errw.String(), "cannot connect to gateway at "+mcp.DefaultSocketPath(getenv)) {
-		t.Errorf("tools should target the default socket; stderr=%q", errw.String())
+	if got != "http://"+mcpgateway.DefaultListen {
+		t.Errorf("default gateway = %q, want http://%s", got, mcpgateway.DefaultListen)
 	}
 }
 
@@ -519,7 +472,7 @@ func TestToolsMissingDefaultConfigFallsBackToDefaultSocket(t *testing.T) {
 func TestServeExplicitMissingConfigErrors(t *testing.T) {
 	env, _, errw := testEnv(t, nil)
 	missing := filepath.Join(t.TempDir(), "nope.json")
-	code := runServe(env, []string{"-config", missing, "-socket", filepath.Join(t.TempDir(), "g.sock")})
+	code := runServe(env, []string{"-config", missing, "-listen", freeAddr(t)})
 	if code != exitRuntime {
 		t.Fatalf("explicit missing config: exit = %d, want %d", code, exitRuntime)
 	}
@@ -528,29 +481,31 @@ func TestServeExplicitMissingConfigErrors(t *testing.T) {
 	}
 }
 
-// waitForToolCount dials the gateway and polls ListTools until it reports n
-// tools or the deadline passes.
-func waitForToolCount(t *testing.T, socket string, n int, d time.Duration) {
+// waitForToolCount connects to the HTTP gateway and polls ListTools until it
+// reports n tools or the deadline passes.
+func waitForToolCount(t *testing.T, url string, n int, d time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(d)
+	tr := mcp.NewHTTPTransport(mcp.HTTPOptions{Endpoint: url})
+	client := mcp.NewClientTransport(tr, mcp.ClientOptions{Info: mcp.Implementation{Name: "probe", Version: "1"}})
+	defer client.Close()
+
+	initialized := false
 	for time.Now().Before(deadline) {
-		conn, err := net.Dial("unix", socket)
-		if err != nil {
-			time.Sleep(2 * time.Millisecond)
-			continue
-		}
-		client := mcp.NewClient(conn, mcp.ClientOptions{Info: mcp.Implementation{Name: "probe", Version: "1"}})
-		if _, err := client.Initialize(context.Background()); err == nil {
-			tools, err := client.ListTools(context.Background())
-			if err == nil && len(tools) == n {
-				client.Close()
-				return
+		if !initialized {
+			if _, err := client.Initialize(context.Background()); err != nil {
+				time.Sleep(2 * time.Millisecond)
+				continue
 			}
+			initialized = true
 		}
-		client.Close()
+		tools, err := client.ListTools(context.Background())
+		if err == nil && len(tools) == n {
+			return
+		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("gateway did not reach %d tools within %s", n, d)
+	t.Fatalf("gateway %s did not reach %d tools within %s", url, n, d)
 }
 
 func waitForFileContains(t *testing.T, path, substr string, d time.Duration) {

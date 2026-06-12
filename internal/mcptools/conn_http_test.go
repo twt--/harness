@@ -15,33 +15,6 @@ import (
 	"harness/internal/mcp"
 )
 
-// TestIsHTTPURL is the URL-detection table for the transport-family decision.
-func TestIsHTTPURL(t *testing.T) {
-	tests := []struct {
-		in   string
-		want bool
-	}{
-		{"http://127.0.0.1:8080/mcp", true},
-		{"https://gw.example/mcp", true},
-		{"HTTP://up.example", true},  // case-insensitive scheme
-		{"HtTpS://up.example", true}, // mixed case scheme
-		{"http://", true},            // bare scheme still counts (URL, not a path)
-		{"https://", true},
-		{"/var/run/harness/gw.sock", false},
-		{"unix:///tmp/gw.sock", false}, // unix:// is stripped elsewhere, not http
-		{"", false},
-		{"http", false},    // too short, no ://
-		{"http:/x", false}, // missing second slash
-		{"httpx://y", false},
-		{"ftp://h/x", false},
-	}
-	for _, tt := range tests {
-		if got := isHTTPURL(tt.in); got != tt.want {
-			t.Errorf("isHTTPURL(%q) = %v, want %v", tt.in, got, tt.want)
-		}
-	}
-}
-
 // httpEchoProvider is a minimal mcp.ToolProvider for the HTTP server side: it
 // advertises one tool and echoes its arguments.
 type httpEchoProvider struct {
@@ -96,9 +69,9 @@ func TestConnHTTPConnectAndCall(t *testing.T) {
 	defer srv.Close()
 
 	conn := NewConn(Options{
-		Socket:  srv.URL,
-		Headers: map[string]string{"Authorization": "Bearer tok"},
-		Info:    mcp.Implementation{Name: "harness", Version: "test"},
+		Endpoint: srv.URL,
+		Headers:  map[string]string{"Authorization": "Bearer tok"},
+		Info:     mcp.Implementation{Name: "harness", Version: "test"},
 	})
 	defer conn.Close()
 
@@ -203,8 +176,8 @@ func TestConnHTTPSessionExpiryReconnects(t *testing.T) {
 	defer srv.Close()
 
 	conn := NewConn(Options{
-		Socket: srv.URL,
-		Info:   mcp.Implementation{Name: "harness", Version: "test"},
+		Endpoint: srv.URL,
+		Info:     mcp.Implementation{Name: "harness", Version: "test"},
 	})
 	defer conn.Close()
 
@@ -268,8 +241,8 @@ func TestConnHTTPCloseDeletesSessionOnce(t *testing.T) {
 	defer srv.Close()
 
 	conn := NewConn(Options{
-		Socket: srv.URL,
-		Info:   mcp.Implementation{Name: "harness", Version: "test"},
+		Endpoint: srv.URL,
+		Info:     mcp.Implementation{Name: "harness", Version: "test"},
 	})
 
 	// Connect so the transport captures a live session.

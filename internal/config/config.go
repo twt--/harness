@@ -71,10 +71,9 @@ type Config struct {
 	NoColor    bool   // -no-color or NO_COLOR
 	ReplPrompt string // -prompt: REPL input prompt (default "> ")
 
-	// MCP gateway integration (opt-in). Gateway is the unix socket path; an
-	// empty Gateway means "use the shared default", which main resolves via
-	// mcp.DefaultSocketPath at connect time so internal/config stays free of the
-	// internal/mcp import.
+	// MCP gateway integration (opt-in). Gateway is the HTTP gateway URL; an empty
+	// Gateway means "use the shared default", which main resolves at connect
+	// time so internal/config stays free of gateway packages.
 	MCP MCPConfig
 }
 
@@ -83,14 +82,14 @@ type Config struct {
 // MCP is enabled and which gateway to dial.
 type MCPConfig struct {
 	Enable  bool
-	Gateway string // unix socket path OR http(s) gateway URL; "" means resolve the shared default at use
+	Gateway string // http(s) gateway URL; "" means resolve the shared default at use
 
 	// Headers are static request headers (e.g. Authorization) sent on every
-	// request to an http(s) gateway; ignored for a unix-socket gateway. It is
-	// config-file-only (file key "headers" under "mcp"), with NO env var: this
-	// matches the config-file-only precedent for structured settings (a
-	// map cannot be expressed cleanly through a single env var), so a header set
-	// belongs in the config file alongside the gateway URL it authenticates to.
+	// request to the gateway. It is config-file-only (file key "headers" under
+	// "mcp"), with NO env var: this matches the config-file-only precedent for
+	// structured settings (a map cannot be expressed cleanly through a single env
+	// var), so a header set belongs in the config file alongside the gateway URL
+	// it authenticates to.
 	Headers map[string]string
 }
 
@@ -264,7 +263,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_PROMPT"), fc.Prompt, "> ")
 
 	// MCP block (env > file > default; no flags). Gateway is left empty when
-	// unset so main can resolve the shared default socket at connect time.
+	// unset so main can resolve the shared default HTTP URL at connect time.
 	var mcpEnableFile *bool
 	var mcpGatewayFile string
 	if fc.MCP != nil {

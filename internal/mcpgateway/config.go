@@ -1,8 +1,8 @@
 // Package mcpgateway implements the MCP gateway daemon: it loads a Claude
 // Code-compatible config, supervises downstream MCP servers (stdio children and
 // streamable-HTTP endpoints), aggregates their tools under a stable namespace,
-// and serves the merged tool surface to harness over a unix socket as a single
-// MCP server. The binary CLI wrapper (cmd/harness-mcp-gateway) is a thin shell
+// and serves the merged tool surface to harness over HTTP as a single MCP
+// server. The binary CLI wrapper (cmd/harness-mcp-gateway) is a thin shell
 // around Daemon.Run; all gateway logic lives here so it stays testable without
 // a process.
 package mcpgateway
@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,8 +20,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-
-	"harness/internal/mcp"
 )
 
 // FileConfig is the on-disk config shape. It is Claude Code-compatible
@@ -44,10 +43,8 @@ type ServerConfig struct {
 }
 
 // GatewaySettings carries gateway-level overrides. Empty fields fall back to
-// defaults (socket → mcp.DefaultSocketPath, logLevel → info). An empty Listen
-// disables the optional HTTP listener; only the unix socket is served.
+// defaults (listen → DefaultListen, logLevel → info).
 type GatewaySettings struct {
-	Socket   string `json:"socket"`
 	Listen   string `json:"listen"`
 	LogFile  string `json:"logFile"`
 	LogLevel string `json:"logLevel"`
@@ -82,12 +79,18 @@ type ResolvedServer struct {
 // never prints.
 type Config struct {
 	Servers  []ResolvedServer
-	Socket   string
 	Listen   string
 	LogFile  string
 	LogLevel string
 	Warnings []string
 }
+
+const (
+	// DefaultListen is the local HTTP address used when the gateway config and
+	// serve flags do not specify one. It intentionally sits next to the model
+	// proxy default (127.0.0.1:8765) without sharing the same port.
+	DefaultListen = "127.0.0.1:8766"
+)
 
 // serverNameRE constrains a server name. It is the qualified-name charset, kept
 // tight because the name becomes the middle segment of mcp__<server>__<tool>.
@@ -100,7 +103,7 @@ var serverNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // Warning, never fatal.
 func LoadConfig(path string) (Config, error) {
 	if path == "" {
-		// No config requested: valid empty config with default socket.
+		// No config requested: valid empty config with default HTTP listener.
 		return resolve(FileConfig{}), nil
 	}
 
@@ -159,15 +162,30 @@ func resolve(fc FileConfig) Config {
 		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("config references unset variable ${%s}; expanded to empty string", v))
 	}
 
-	cfg.Socket = fc.Gateway.Socket
-	if cfg.Socket == "" {
-		cfg.Socket = mcp.DefaultSocketPath(os.Getenv)
-	}
-	// Listen has no default: an empty value means "no HTTP listener". A non-empty
-	// address is validated lazily by net.Listen at bind time, so config load does
-	// not reject it here (a bad address surfaces as a Run error).
 	cfg.Listen = fc.Gateway.Listen
+	if cfg.Listen == "" {
+		cfg.Listen = DefaultListen
+	}
 	return cfg
+}
+
+// DefaultURL is the harness-side URL for the default gateway listener.
+func DefaultURL() string {
+	return URLForListen(DefaultListen)
+}
+
+// URLForListen turns a listen address into the HTTP URL local clients should
+// dial. Wildcard listeners are mapped to loopback for client-side convenience.
+func URLForListen(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://" + addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // resolveServer expands and validates one entry. It returns either a resolved

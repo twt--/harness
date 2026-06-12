@@ -2,8 +2,8 @@
 // used by MCP: a single message envelope, a newline-delimited codec, and a
 // bidirectional peer that correlates requests with responses and dispatches
 // inbound calls. It depends only on the standard library and knows nothing
-// about MCP schema types, so it serves both unix-socket and child-stdio
-// transports unchanged.
+// about MCP schema types, so it serves stream transports such as child stdio
+// unchanged.
 //
 // MCP tightens plain JSON-RPC 2.0 in two ways this package enforces: request
 // ids are never null and never reused per direction, and batching (top-level

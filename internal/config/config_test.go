@@ -722,7 +722,7 @@ func TestMCPDefaults(t *testing.T) {
 }
 
 func TestMCPFromFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"/tmp/gw.sock"}}`)
+	cfgPath := writeConfig(t, `{"mcp":{"enable":true,"gateway":"http://127.0.0.1:8766"}}`)
 	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -730,16 +730,16 @@ func TestMCPFromFile(t *testing.T) {
 	if !c.MCP.Enable {
 		t.Errorf("MCP.Enable = false, want true")
 	}
-	if c.MCP.Gateway != "/tmp/gw.sock" {
-		t.Errorf("MCP.Gateway = %q, want /tmp/gw.sock", c.MCP.Gateway)
+	if c.MCP.Gateway != "http://127.0.0.1:8766" {
+		t.Errorf("MCP.Gateway = %q, want http://127.0.0.1:8766", c.MCP.Gateway)
 	}
 }
 
 func TestMCPEnvOverridesFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"mcp":{"enable":false,"gateway":"/file/gw.sock"}}`)
+	cfgPath := writeConfig(t, `{"mcp":{"enable":false,"gateway":"http://file.example/mcp"}}`)
 	env := envFrom(map[string]string{
 		"HARNESS_MCP_ENABLE":  "true",
-		"HARNESS_MCP_GATEWAY": "/env/gw.sock",
+		"HARNESS_MCP_GATEWAY": "http://env.example/mcp",
 	})
 	c, err := Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
 	if err != nil {
@@ -748,8 +748,8 @@ func TestMCPEnvOverridesFile(t *testing.T) {
 	if !c.MCP.Enable {
 		t.Errorf("MCP.Enable = false, want true (env overrides file)")
 	}
-	if c.MCP.Gateway != "/env/gw.sock" {
-		t.Errorf("MCP.Gateway = %q, want /env/gw.sock (env overrides file)", c.MCP.Gateway)
+	if c.MCP.Gateway != "http://env.example/mcp" {
+		t.Errorf("MCP.Gateway = %q, want http://env.example/mcp (env overrides file)", c.MCP.Gateway)
 	}
 }
 

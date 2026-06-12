@@ -3,10 +3,8 @@ package mcpgateway
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,28 +15,12 @@ import (
 	"harness/internal/mcp"
 )
 
-// shortSocketDir returns a short-lived temp directory whose path is well under
-// the unix sun_path limit (~104 bytes on macOS). t.TempDir() on macOS nests
-// under a long /var/folders/.../<TestName>/NNN path that can overflow sun_path,
-// so socket tests use this instead and clean it up themselves.
-func shortSocketDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "hmg")
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
-}
-
 // daemonConfig builds a Config wired to spawn the TestHelperProcess fake server,
-// with a socket under a short temp dir.
+// with an ephemeral HTTP listener.
 func daemonConfig(t *testing.T, env map[string]string) (Config, func() *exec.Cmd) {
 	t.Helper()
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
 	cfg := Config{
-		Socket:   socket,
+		Listen:   freePort(t),
 		LogLevel: "debug",
 		Servers: []ResolvedServer{
 			{Name: "h", Transport: TransportStdio, Command: "helper"},
@@ -59,29 +41,6 @@ func startDaemon(t *testing.T, ctx context.Context, cfg Config, spawn func() *ex
 	return errCh
 }
 
-// dialGateway connects an mcp.Client to the gateway socket, initializing it.
-func dialGateway(t *testing.T, socket string) *mcp.Client {
-	t.Helper()
-	var conn net.Conn
-	var err error
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err = net.Dial("unix", socket)
-		if err == nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("dial gateway: %v", err)
-	}
-	client := mcp.NewClient(conn, mcp.ClientOptions{Info: mcp.Implementation{Name: "test", Version: "1"}})
-	if _, err := client.Initialize(context.Background()); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
-	return client
-}
-
 // freePort binds an ephemeral TCP port, closes it, and returns the address so a
 // daemon can re-bind it. There is a small race between close and re-bind, but it
 // is the standard stdlib idiom for "give me a free port" in tests.
@@ -96,9 +55,9 @@ func freePort(t *testing.T) string {
 	return addr
 }
 
-// dialHTTPGateway builds an mcp.Client over the daemon's HTTP listener and
+// dialGateway builds an mcp.Client over the daemon's HTTP listener and
 // initializes it, polling until the listener accepts.
-func dialHTTPGateway(t *testing.T, addr string) *mcp.Client {
+func dialGateway(t *testing.T, addr string) *mcp.Client {
 	t.Helper()
 	endpoint := "http://" + addr
 	tr := mcp.NewHTTPTransport(mcp.HTTPOptions{Endpoint: endpoint})
@@ -115,12 +74,9 @@ func dialHTTPGateway(t *testing.T, addr string) *mcp.Client {
 	return nil
 }
 
-func TestDaemonServesSocketAndHTTP(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+func TestDaemonServesHTTP(t *testing.T) {
 	addr := freePort(t)
 	cfg := Config{
-		Socket:  socket,
 		Listen:  addr,
 		Servers: []ResolvedServer{{Name: "h", Transport: TransportStdio, Command: "helper"}},
 	}
@@ -129,28 +85,22 @@ func TestDaemonServesSocketAndHTTP(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
-	// Both transports must surface the same aggregated tool.
-	socketClient := dialGateway(t, socket)
-	httpClient := dialHTTPGateway(t, addr)
-
-	for _, c := range []*mcp.Client{socketClient, httpClient} {
-		var tools []mcp.Tool
-		waitFor(t, 5*time.Second, func() bool {
-			var err error
-			tools, err = c.ListTools(context.Background())
-			return err == nil && len(tools) == 1
-		})
-		if tools[0].Name != "mcp__h__echo" {
-			t.Fatalf("unexpected tool over transport: %+v", tools)
-		}
-		res, err := c.CallTool(context.Background(), "mcp__h__echo", json.RawMessage(`{"hi":1}`))
-		if err != nil || res.IsError || res.Content[0].Text != `{"hi":1}` {
-			t.Fatalf("call round-trip wrong: err=%v res=%+v", err, res)
-		}
+	client := dialGateway(t, addr)
+	var tools []mcp.Tool
+	waitFor(t, 5*time.Second, func() bool {
+		var err error
+		tools, err = client.ListTools(context.Background())
+		return err == nil && len(tools) == 1
+	})
+	if tools[0].Name != "mcp__h__echo" {
+		t.Fatalf("unexpected tool: %+v", tools)
+	}
+	res, err := client.CallTool(context.Background(), "mcp__h__echo", json.RawMessage(`{"hi":1}`))
+	if err != nil || res.IsError || res.Content[0].Text != `{"hi":1}` {
+		t.Fatalf("call round-trip wrong: err=%v res=%+v", err, res)
 	}
 
-	socketClient.Close()
-	httpClient.Close()
+	client.Close()
 	cancel()
 	if err := <-errCh; err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -164,8 +114,6 @@ func TestDaemonServesSocketAndHTTP(t *testing.T) {
 }
 
 func TestDaemonHTTPBindFailureFailsRun(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
 	// An unbindable address (port 0 with a bogus host form) — use a port already
 	// held to force EADDRINUSE.
 	held, err := net.Listen("tcp", "127.0.0.1:0")
@@ -175,7 +123,7 @@ func TestDaemonHTTPBindFailureFailsRun(t *testing.T) {
 	defer held.Close()
 	addr := held.Addr().String()
 
-	cfg := Config{Socket: socket, Listen: addr}
+	cfg := Config{Listen: addr}
 	d := NewDaemon(cfg, slog.New(slog.DiscardHandler))
 	d.spawn = helperSpawn(t, nil)
 	d.sleep = func(context.Context, time.Duration) {}
@@ -187,10 +135,6 @@ func TestDaemonHTTPBindFailureFailsRun(t *testing.T) {
 	if !strings.Contains(runErr.Error(), addr) {
 		t.Errorf("error should name the listen addr; got %v", runErr)
 	}
-	// The socket must be cleaned up on the failed-bind teardown path.
-	if _, err := os.Stat(socket); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("socket not removed after failed HTTP bind: %v", err)
-	}
 }
 
 func TestDaemonEndToEnd(t *testing.T) {
@@ -198,7 +142,7 @@ func TestDaemonEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
-	client := dialGateway(t, cfg.Socket)
+	client := dialGateway(t, cfg.Listen)
 
 	// ListTools should eventually include the namespaced echo tool.
 	var tools []mcp.Tool
@@ -224,71 +168,38 @@ func TestDaemonEndToEnd(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	// Socket removed on shutdown.
-	if _, err := os.Stat(cfg.Socket); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("socket not removed: %v", err)
-	}
 }
 
-func TestDaemonAlreadyRunning(t *testing.T) {
+func TestDaemonAddressInUse(t *testing.T) {
 	cfg, spawn := daemonConfig(t, map[string]string{"HELPER_TOOLS": "echo"})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
 	// Wait for the first daemon to bind.
-	dialGateway(t, cfg.Socket).Close()
+	dialGateway(t, cfg.Listen).Close()
 
-	// A second daemon on the same socket must return ErrAlreadyRunning.
+	// A second daemon on the same address must return a bind error.
 	d2 := NewDaemon(cfg, slog.New(slog.DiscardHandler))
 	d2.spawn = spawn
 	d2.sleep = func(context.Context, time.Duration) {}
 	err := d2.Run(context.Background())
-	if !errors.Is(err, ErrAlreadyRunning) {
-		t.Fatalf("second daemon: want ErrAlreadyRunning, got %v", err)
+	if err == nil {
+		t.Fatalf("second daemon should fail while %s is in use", cfg.Listen)
+	}
+	if !strings.Contains(err.Error(), cfg.Listen) {
+		t.Fatalf("second daemon error should name %s, got %v", cfg.Listen, err)
 	}
 
 	cancel()
 	<-errCh
 }
 
-func TestDaemonStaleSocketUnlinked(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
-
-	// Create a stale unix socket file with NO listener: bind then close the
-	// listener but leave the file (simulating a crashed prior daemon).
-	l, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatalf("pre-bind: %v", err)
-	}
-	// Closing the listener normally unlinks; recreate a plain file to be a true
-	// stale path that net.Listen rejects with EADDRINUSE.
-	l.Close()
-	if err := os.WriteFile(socket, []byte{}, 0o600); err != nil {
-		t.Fatalf("write stale file: %v", err)
-	}
-
-	cfg := Config{Socket: socket, LogLevel: "debug"}
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := startDaemon(t, ctx, cfg, helperSpawn(t, nil))
-
-	// The daemon should unlink the stale path and bind successfully.
-	client := dialGateway(t, socket)
-	client.Close()
-
-	cancel()
-	if err := <-errCh; err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-}
-
 func TestDaemonConcurrentSessionsShareChild(t *testing.T) {
-	dir := shortSocketDir(t)
-	socket := filepath.Join(dir, "g.sock")
+	dir := t.TempDir()
 	counter := filepath.Join(dir, "spawns.txt")
 	cfg := Config{
-		Socket:  socket,
+		Listen:  freePort(t),
 		Servers: []ResolvedServer{{Name: "h", Transport: TransportStdio, Command: "helper"}},
 	}
 	spawn := helperSpawn(t, map[string]string{"HELPER_TOOLS": "echo", "HELPER_SPAWN_COUNTER": counter})
@@ -296,8 +207,8 @@ func TestDaemonConcurrentSessionsShareChild(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := startDaemon(t, ctx, cfg, spawn)
 
-	c1 := dialGateway(t, socket)
-	c2 := dialGateway(t, socket)
+	c1 := dialGateway(t, cfg.Listen)
+	c2 := dialGateway(t, cfg.Listen)
 
 	var wg sync.WaitGroup
 	for _, c := range []*mcp.Client{c1, c2} {
@@ -325,68 +236,4 @@ func TestDaemonConcurrentSessionsShareChild(t *testing.T) {
 	c2.Close()
 	cancel()
 	<-errCh
-}
-
-func TestDaemonCreatesMissingSocketDir(t *testing.T) {
-	dir := shortSocketDir(t)
-	socketDir := filepath.Join(dir, "sub")
-	socket := filepath.Join(socketDir, "g.sock")
-	cfg := Config{Socket: socket}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := startDaemon(t, ctx, cfg, helperSpawn(t, nil))
-	dialGateway(t, socket).Close()
-
-	if _, err := os.Stat(socketDir); err != nil {
-		t.Fatalf("stat socket dir: %v", err)
-	}
-
-	cancel()
-	<-errCh
-}
-
-func TestEnsureSocketDirCreatesMissing(t *testing.T) {
-	dir := filepath.Join(shortSocketDir(t), "new")
-	if err := ensureSocketDir(dir); err != nil {
-		t.Fatalf("ensureSocketDir: %v", err)
-	}
-	if _, err := os.Stat(dir); err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-}
-
-func TestEnsureSocketDirUsesPreexistingDirAsIs(t *testing.T) {
-	dir := filepath.Join(shortSocketDir(t), "loose")
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := ensureSocketDir(dir); err != nil {
-		t.Fatalf("ensureSocketDir: %v", err)
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	// A pre-existing parent is used as-is: its mode is not tightened, so the
-	// socket location is fully user-configurable.
-	if perm := info.Mode().Perm(); perm != 0o755 {
-		t.Fatalf("pre-existing dir mode changed: perm = %o, want 0755", perm)
-	}
-}
-
-func TestEnsureSocketDirErrorsOnRegularFileParent(t *testing.T) {
-	// MkdirAll fails naturally when a regular file occupies the parent path; the
-	// error is surfaced rather than swallowed. This is a plain error-path test,
-	// not a location-restriction defense.
-	path := filepath.Join(shortSocketDir(t), "afile")
-	if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	err := ensureSocketDir(path)
-	if err == nil {
-		t.Fatalf("ensureSocketDir should error when a regular file occupies the parent path")
-	}
-	if !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("unexpected error: %v", err)
-	}
 }

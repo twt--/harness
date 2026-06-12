@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
-	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -14,76 +12,46 @@ import (
 	"harness/internal/config"
 	"harness/internal/logging"
 	"harness/internal/mcp"
+	"harness/internal/mcpgateway"
 	"harness/internal/mcptools"
 	"harness/internal/mode"
 	"harness/internal/tools"
 )
 
-// MCP startup timing budget. The probe is a single short unix-socket dial so a
-// dead socket fails fast; registration gets a larger budget.
+// MCP startup timing budget.
 const (
-	mcpProbeTimeout    = 250 * time.Millisecond
 	mcpRegisterTimeout = 5 * time.Second
 )
 
-// mcpDeps bundles the dial seam setupMCP depends on, so the liveness probe is
-// injectable in tests. A zero mcpDeps is unusable; use defaultMCPDeps for
-// production wiring.
-type mcpDeps struct {
-	dial func(network, addr string, timeout time.Duration) (net.Conn, error)
-}
-
-// defaultMCPDeps returns the production seams: a real unix dialer.
-func defaultMCPDeps() mcpDeps {
-	return mcpDeps{
-		dial: net.DialTimeout,
-	}
-}
-
-// setupMCP probes the already-running gateway, registers the discovered tools
-// into catalog, and returns the live conn plus its initial registration summary
-// and a cleanup func. It NEVER fails harness startup: if the gateway is
-// unreachable or registration fails it logs a single warning via logger and
-// returns ok=false with a nil conn and a no-op cleanup, so the caller can defer
-// cleanup unconditionally. The harness does not start the gateway; that is the
-// operator's job (run harness-mcp-gateway separately).
+// setupMCP connects to the already-running HTTP gateway, registers the
+// discovered tools into catalog, and returns the live conn plus its initial
+// registration summary and a cleanup func. It NEVER fails harness startup: if
+// the gateway is unreachable or registration fails it logs a single warning via
+// logger and returns ok=false with a nil conn and a no-op cleanup, so the caller
+// can defer cleanup unconditionally. The harness does not start the gateway;
+// that is the operator's job (run harness-mcp-gateway separately).
 //
-// The returned conn (when ok) backs the prompt-boundary refresh hook; cleanup
-// closes that conn (the daemon itself keeps running and serving other sessions).
-func setupMCP(ctx context.Context, mcpCfg config.MCPConfig, catalog *tools.Registry, logger *slog.Logger, deps mcpDeps) (conn *mcptools.Conn, summary mcptools.Summary, cleanup func(), ok bool) {
+// The returned conn (when ok) backs tool dispatch; cleanup closes that conn (the
+// daemon itself keeps running and serving other sessions).
+func setupMCP(ctx context.Context, mcpCfg config.MCPConfig, catalog *tools.Registry, logger *slog.Logger) (conn *mcptools.Conn, summary mcptools.Summary, cleanup func(), ok bool) {
 	noop := func() {}
 	gateway := resolveMCPGateway(mcpCfg.Gateway)
-
-	// Probe only the unix family with a short dial. An http(s) gateway is not
-	// probed: an HTTP HEAD/GET would hit 405 (no GET stream in v1) and tell us
-	// little, so we attempt NewConn+Register directly — the mcpRegisterTimeout
-	// below bounds that attempt — and surface the same single warning on failure.
 	if !isHTTPGateway(gateway) {
-		if err := probeMCP(deps, gateway); err != nil {
-			logger.Warn(fmt.Sprintf("mcp: cannot connect to gateway at %s: %v; MCP tools unavailable", gateway, err), logging.Category("mcp"))
-			return nil, mcptools.Summary{}, noop, false
-		}
+		logger.Warn(fmt.Sprintf("mcp: cannot connect to gateway at %s: gateway must be an http(s) URL; MCP tools unavailable", gateway), logging.Category("mcp"))
+		return nil, mcptools.Summary{}, noop, false
 	}
 
 	c := mcptools.NewConn(mcptools.Options{
-		Socket:  gateway,
-		Headers: mcpCfg.Headers,
-		Info:    mcp.Implementation{Name: "harness", Version: "dev"},
-		Logger:  logger,
+		Endpoint: gateway,
+		Headers:  mcpCfg.Headers,
+		Info:     mcp.Implementation{Name: "harness", Version: "dev"},
+		Logger:   logger,
 	})
 	regCtx, cancel := context.WithTimeout(ctx, mcpRegisterTimeout)
 	defer cancel()
 	sum, err := mcptools.Register(regCtx, catalog, c)
 	if err != nil {
-		// For an unprobed http gateway, a register failure is the first sign the
-		// gateway is unreachable: emit the same single "cannot connect" warning
-		// shape so the operator sees the URL and the error. For the unix family
-		// (already probed) this path is the rarer post-probe discovery failure.
-		if isHTTPGateway(gateway) {
-			logger.Warn(fmt.Sprintf("mcp: cannot connect to gateway at %s: %v; MCP tools unavailable", gateway, err), logging.Category("mcp"))
-		} else {
-			logger.Warn(fmt.Sprintf("mcp: tool discovery failed: %v; continuing without MCP tools", err), logging.Category("mcp"))
-		}
+		logger.Warn(fmt.Sprintf("mcp: cannot connect to gateway at %s: %v; MCP tools unavailable", gateway, err), logging.Category("mcp"))
 		_ = c.Close()
 		return nil, mcptools.Summary{}, noop, false
 	}
@@ -120,40 +88,20 @@ func augmentModesWithMCP(modes map[string]mode.Mode, mcpNames []string) {
 	}
 }
 
-// resolveMCPGateway turns the configured gateway value into a dialable address.
-// An http(s) URL passes through verbatim (the http transport family). An empty
-// value resolves to the shared default unix socket. Otherwise it is a unix path,
-// with an optional unix:// URL prefix stripped (users sometimes sketch the
-// socket as a URL).
+// resolveMCPGateway turns the configured gateway value into a dialable HTTP URL.
+// An empty value resolves to the shared default gateway URL.
 func resolveMCPGateway(gateway string) string {
-	if isHTTPGateway(gateway) {
-		return gateway
-	}
-	gateway = strings.TrimPrefix(gateway, "unix://")
 	if gateway == "" {
-		return mcp.DefaultSocketPath(os.Getenv)
+		return mcpgateway.DefaultURL()
 	}
 	return gateway
 }
 
 // isHTTPGateway reports whether gateway is an http(s) URL (case-insensitive
-// scheme). It must agree with mcptools' own URL detection so the probe decision
-// here matches the transport family the Conn picks.
+// scheme).
 func isHTTPGateway(gateway string) bool {
 	lower := strings.ToLower(gateway)
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
-}
-
-// probeMCP reports whether something is accepting on the socket: a short dial
-// that is immediately closed on success. It returns the dial error on failure
-// so the caller can surface why the gateway was unreachable.
-func probeMCP(deps mcpDeps, socket string) error {
-	conn, err := deps.dial("unix", socket, mcpProbeTimeout)
-	if err != nil {
-		return err
-	}
-	_ = conn.Close()
-	return nil
 }
 
 // mcpModeBases is the per-mode base allowed-tool list for every default-

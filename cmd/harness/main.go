@@ -240,7 +240,7 @@ func run(env environment) int {
 	var mcpConn *mcptools.Conn
 	var mcpSummary mcptools.Summary
 	if cfg.MCP.Enable {
-		conn, summary, cleanup, ok := setupMCP(context.Background(), cfg.MCP, toolCatalog, logger, defaultMCPDeps())
+		conn, summary, cleanup, ok := setupMCP(context.Background(), cfg.MCP, toolCatalog, logger)
 		defer cleanup()
 		if ok {
 			mcpConn, mcpSummary = conn, summary

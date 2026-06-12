@@ -53,16 +53,16 @@ serve loop driven against a fake downstream) stands in. They live in
 ```sh
 go test ./cmd/harness/ -run TestSetupMCP -v
 go test ./cmd/harness-mcp-gateway/ -run 'TestServe|TestTools' -v
-go test ./internal/mcpgateway/ -run TestDaemonServesSocketAndHTTP -v
+go test ./internal/mcpgateway/ -run TestDaemonServesHTTP -v
 ```
 
 | Leg | Test | What it asserts |
 |---|---|---|
-| Gateway `serve` + `tools` listing | `TestToolsListsAggregatedTools` | `runServe` binds a socket, supervises a fake downstream, and aggregates its tools; the `tools` subcommand connects and prints `2 tools` with the namespaced names `mcp__fake__echo` / `mcp__fake__ping`, descriptions collapsed to their first line. A `SIGINT` shuts the daemon down cleanly. |
-| One-shot calling an `mcp__` tool (unix socket) | `TestSetupMCPRegistersToolsAndOneShotCalls` | With `HARNESS_MCP_ENABLE=true` and the gateway socket in env, `harness -p` discovers the gateway's tool, the model calls `mcp__test__echo`, the harness dispatches it over the socket, and the **second** model request carries the `echo:` tool result. The assistant's text lands on **stdout**; stderr shows `mcp: connected`. |
-| Gateway down → warn and continue | `TestSetupMCPWarnsAndContinuesWhenUnreachable` | MCP is enabled but the socket is dead (harness never spawns a gateway). The single 250 ms probe fails, startup **proceeds** (exit 0), emits one `[warn] [mcp]` `cannot connect to gateway … MCP tools unavailable` line, registers **zero** `mcp__` tools, and returns a no-op cleanup — MCP never fails startup. |
-| HTTP gateway, one-shot round-trip | `TestSetupMCPHTTPGatewayRoundTrip` | With `mcp.gateway` set to an `http://` URL (an in-process streamable-HTTP gateway), harness **skips the probe**, connects directly, registers the tool, and a one-shot model turn calls it; the result flows back over HTTP. |
-| Daemon serves socket **and** HTTP together | `TestDaemonServesSocketAndHTTP` | With `gateway.listen` set, one daemon binds both the unix socket and the TCP listener; an MCP client over each transport lists the same aggregated tools. The HTTP side uses an `Mcp-Session-Id` session and JSON-only responses. |
+| Gateway `serve` + `tools` listing | `TestToolsListsAggregatedTools` | `runServe` binds an HTTP listener, supervises a fake downstream, and aggregates its tools; the `tools` subcommand connects and prints `2 tools` with the namespaced names `mcp__fake__echo` / `mcp__fake__ping`, descriptions collapsed to their first line. A `SIGINT` shuts the daemon down cleanly. |
+| One-shot calling an `mcp__` tool | `TestSetupMCPRegistersToolsAndOneShotCalls` | With `HARNESS_MCP_ENABLE=true` and an HTTP gateway URL in env, `harness -p` discovers the gateway's tool, the model calls `mcp__test__echo`, the harness dispatches it over HTTP, and the **second** model request carries the `echo:` tool result. The assistant's text lands on **stdout**; stderr shows `mcp: connected`. |
+| Non-HTTP gateway → warn and continue | `TestSetupMCPRejectsNonHTTPGatewayAndContinues` | MCP is enabled but the gateway value is not an `http(s)` URL. Startup **proceeds** (exit 0), emits one `[warn] [mcp]` `cannot connect to gateway … MCP tools unavailable` line, registers **zero** `mcp__` tools, and returns a no-op cleanup — MCP never fails startup. |
+| HTTP gateway down → warn and continue | `TestSetupMCPHTTPUnreachableWarnsAndContinues` | With `mcp.gateway` set to a closed `http://` URL, harness attempts registration, emits one warning, and continues without MCP tools. |
+| Daemon serves HTTP | `TestDaemonServesHTTP` | With `gateway.listen` set, one daemon binds the TCP listener; an MCP client lists the aggregated tools and calls one. The HTTP side uses an `Mcp-Session-Id` session and JSON-only responses. |
 | `tools -gateway <url>` against the HTTP listener | `TestServeListenFlagAndToolsGateway` | `runServe -listen <addr>` brings up the HTTP listener; the `tools` subcommand with `-gateway http://<addr>` connects over HTTP and prints the same aggregated table. |
 
 ### Real downstream MCP server (BLOCKED — run by hand)
@@ -84,26 +84,26 @@ HARNESS_MCP_ENABLE=true ./harness -model claude-opus-4-8 \
 ```
 
 Expect: `mcp: connected (N servers, M tools): ...` on stderr, the daemon outliving
-harness (a second harness reuses it), and downstream stderr/crashes recorded in
-`gateway.log` next to the socket. If the gateway is **not** running, harness emits
-one `mcp: cannot connect to gateway at <path>: …; MCP tools unavailable` warning
-and continues toolless.
+harness (a second harness reuses it), and downstream stderr/crashes recorded in the
+gateway log. If the gateway is **not** running, harness emits one
+`mcp: cannot connect to gateway at http://127.0.0.1:8766: …; MCP tools unavailable`
+warning and continues toolless.
 
-To smoke the **HTTP** gateway path, add `"gateway": {"listen": "127.0.0.1:8420"}`
-to the gateway config (or pass `serve -listen 127.0.0.1:8420`), then:
+To smoke a non-default gateway address, add
+`"gateway": {"listen": "127.0.0.1:8420"}` to the gateway config (or pass
+`serve -listen 127.0.0.1:8420`), then:
 
 ```sh
 ./harness-mcp-gateway serve -listen 127.0.0.1:8420 &
-./harness-mcp-gateway tools -gateway http://127.0.0.1:8420   # same table over HTTP
+./harness-mcp-gateway tools -gateway http://127.0.0.1:8420
 
 # Point harness at the URL (config mcp.gateway = "http://127.0.0.1:8420", or env):
 HARNESS_MCP_ENABLE=true HARNESS_MCP_GATEWAY=http://127.0.0.1:8420 \
   ./harness -model claude-opus-4-8 -p "use an MCP tool to <task>"
 ```
 
-Expect: the same `mcp: connected` line; harness connects directly (no probe over
-HTTP). The tool list is fixed at startup over HTTP — no `[mcp: tool list updated]`
-notice fires.
+Expect: the same `mcp: connected` line. The tool list is fixed at startup over
+HTTP — no `[mcp: tool list updated]` notice fires.
 
 ### How the mock works
 

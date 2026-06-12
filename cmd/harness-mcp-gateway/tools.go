@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"time"
 
@@ -18,16 +17,15 @@ var toolsCommandTimeout = 10 * time.Second
 
 // runTools connects to a running gateway as an MCP client and prints the
 // aggregated tool table. It is a debug/status command: if it connects and
-// lists, the gateway is up. It targets either the unix socket (-socket > config
-// > default) or an HTTP listener (-gateway), which are mutually exclusive.
+// lists, the gateway is up. It targets the HTTP gateway URL from -gateway,
+// config gateway.listen, or the default listener.
 func runTools(env environment, args []string) int {
 	fs := flag.NewFlagSet("tools", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	// -config defaults to "" so a missing default path is non-fatal (resolved
 	// below); an explicit -config typo still surfaces as a load error.
 	configPath := fs.String("config", "", "config file path")
-	socket := fs.String("socket", "", "gateway socket path (overrides config and default)")
-	gateway := fs.String("gateway", "", "HTTP gateway URL (mutually exclusive with -socket)")
+	gateway := fs.String("gateway", "", "HTTP gateway URL")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage(env.stdout, env.getenv)
@@ -37,21 +35,17 @@ func runTools(env environment, args []string) int {
 		return exitUsage
 	}
 
-	if *gateway != "" && *socket != "" {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: -gateway and -socket are mutually exclusive\n")
-		return exitUsage
-	}
-
-	client, code := toolsClient(env, fs, *gateway, *socket, *configPath)
+	gatewayURL, code := resolveToolsGateway(env, fs, *gateway, *configPath)
 	if code != exitOK {
 		return code
 	}
+	client := toolsClient(gatewayURL)
 	defer client.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), toolsCommandTimeout)
 	defer cancel()
 	if _, err := client.Initialize(ctx); err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
+		fmt.Fprintf(env.stderr, "harness-mcp-gateway: cannot connect to gateway at %s: %v\n", gatewayURL, err)
 		return exitRuntime
 	}
 	tools, err := client.ListTools(ctx)
@@ -64,48 +58,28 @@ func runTools(env environment, args []string) int {
 	return exitOK
 }
 
-// toolsClient builds the MCP client for the tools command: an HTTP client when
-// -gateway is set, else a unix-socket client. The returned code is exitOK on
-// success; on failure the error is already printed.
-func toolsClient(env environment, fs *flag.FlagSet, gateway, socket, configFlag string) (*mcp.Client, int) {
+// toolsClient builds the HTTP MCP client for the tools command.
+func toolsClient(gatewayURL string) *mcp.Client {
 	info := mcp.Implementation{Name: "harness-mcp-gateway-tools", Version: "1"}
-
-	if gateway != "" {
-		tr := mcp.NewHTTPTransport(mcp.HTTPOptions{Endpoint: gateway})
-		return mcp.NewClientTransport(tr, mcp.ClientOptions{Info: info}), exitOK
-	}
-
-	socketPath, code := resolveToolsSocket(env, socket, resolveConfigPath(configFlag, flagWasSet(fs, "config"), env.getenv))
-	if code != exitOK {
-		return nil, code
-	}
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		fmt.Fprintf(env.stderr, "harness-mcp-gateway: cannot connect to gateway at %s: %v\n", socketPath, err)
-		return nil, exitRuntime
-	}
-	return mcp.NewClient(conn, mcp.ClientOptions{Info: info}), exitOK
+	tr := mcp.NewHTTPTransport(mcp.HTTPOptions{Endpoint: gatewayURL})
+	return mcp.NewClientTransport(tr, mcp.ClientOptions{Info: info})
 }
 
-// resolveToolsSocket determines which socket the tools command connects to:
-// the -socket flag, else the config's socket, else the default. A config that
-// fails to load is a runtime error (a typo'd -config should not silently fall
-// back to the default socket). The returned code is exitOK on success.
-func resolveToolsSocket(env environment, socketFlag, configPath string) (string, int) {
-	if socketFlag != "" {
-		return socketFlag, exitOK
+// resolveToolsGateway determines which HTTP URL the tools command connects to:
+// the -gateway flag, else the config's gateway.listen, else the default URL. A
+// config that fails to load is a runtime error (a typo'd -config should not
+// silently fall back to the default URL). The returned code is exitOK on success.
+func resolveToolsGateway(env environment, fs *flag.FlagSet, gatewayFlag, configFlag string) (string, int) {
+	if gatewayFlag != "" {
+		return gatewayFlag, exitOK
 	}
+	configPath := resolveConfigPath(configFlag, flagWasSet(fs, "config"), env.getenv)
 	cfg, err := mcpgateway.LoadConfig(configPath)
 	if err != nil {
 		fmt.Fprintf(env.stderr, "harness-mcp-gateway: %v\n", err)
 		return "", exitRuntime
 	}
-	// LoadConfig always fills Socket (config value or default), so this is never
-	// empty; guard defensively anyway.
-	if cfg.Socket == "" {
-		return mcp.DefaultSocketPath(env.getenv), exitOK
-	}
-	return cfg.Socket, exitOK
+	return mcpgateway.URLForListen(cfg.Listen), exitOK
 }
 
 // printToolTable writes one line per tool as "NAME\tDESCRIPTION-first-line",

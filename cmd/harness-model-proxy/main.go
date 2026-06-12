@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"harness/internal/httpserve"
 	"harness/internal/logging"
 	"harness/internal/modelproxy/server"
 	"harness/internal/modelsdev"
@@ -127,33 +128,24 @@ func run(env environment) int {
 	if *listen != "" {
 		addr = *listen
 	}
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if env.sigCh != nil {
+		go func() {
+			select {
+			case <-env.sigCh:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
 	}
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("model proxy listening", "addr", addr)
-		errCh <- srv.ListenAndServe()
-	}()
-
-	select {
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return exitOK
-		}
+	srv := httpserve.New(addr, handler)
+	logger.Info("model proxy listening", "addr", addr)
+	if err := httpserve.Run(ctx, srv); err != nil {
 		fmt.Fprintf(env.stderr, "harness-model-proxy: %v\n", err)
 		return exitRuntime
-	case <-env.sigCh:
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			fmt.Fprintf(env.stderr, "harness-model-proxy: shutdown: %v\n", err)
-			return exitRuntime
-		}
-		return exitOK
 	}
+	return exitOK
 }
 
 func usage(w io.Writer) {

@@ -8,8 +8,8 @@ import (
 )
 
 // Transport is the minimal client-side RPC surface a Client needs. A stream
-// transport (a jsonrpc.Peer over stdio or a unix socket) and the future HTTP
-// transport both satisfy it, so the Client is transport-agnostic.
+// transport (a jsonrpc.Peer over stdio) and the HTTP transport both satisfy it,
+// so the Client is transport-agnostic.
 type Transport interface {
 	// Call sends a request and returns its result payload. A JSON-RPC error
 	// response is returned as a non-nil error wrapping *jsonrpc.Error.
@@ -32,8 +32,8 @@ type cancelTransport interface {
 }
 
 // peerTransport adapts a *jsonrpc.Peer to the Transport (and cancelTransport)
-// interfaces. It is the transport used for every stream connection: the
-// harness's unix socket and the gateway's downstream stdio pipes.
+// interfaces. It is the transport used for stream connections such as downstream
+// stdio pipes and test in-memory peers.
 type peerTransport struct {
 	peer *jsonrpc.Peer
 }
