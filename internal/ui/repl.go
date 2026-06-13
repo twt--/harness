@@ -163,18 +163,23 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	// Restore a usable terminal before the first prompt (termios sane plus an
 	// emulator soft reset), in case a prior process left it in raw, no-echo,
 	// or mouse-reporting state. Targets /dev/tty directly; no-op without one.
-	var restoreCtrlG func() error
+	usePromptEditor := promptLineEditorEnabled(in, app.Errw)
+	var restorePromptTerm func() error
 	disablePromptTerm := func() {
 		_ = term.SetBracketedPaste(false)
-		if restoreCtrlG != nil {
-			_ = restoreCtrlG()
-			restoreCtrlG = nil
+		if restorePromptTerm != nil {
+			_ = restorePromptTerm()
+			restorePromptTerm = nil
 		}
 	}
 	enablePromptTerm := func() {
 		_ = term.Reset()
-		if cleanup, err := term.EnableCtrlGLineEnd(); err == nil {
-			restoreCtrlG = cleanup
+		if usePromptEditor {
+			if cleanup, err := term.EnablePromptRawMode(); err == nil {
+				restorePromptTerm = cleanup
+			}
+		} else if cleanup, err := term.EnableCtrlGLineEnd(); err == nil {
+			restorePromptTerm = cleanup
 		}
 		_ = term.SetBracketedPaste(true)
 	}
@@ -199,12 +204,12 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		app.AfterEditor = prevAfterEditor
 	}()
 
-	reader := newREPLReader(in)
-	readReq := make(chan struct{})
+	reader := newREPLReader(in, app.Errw, usePromptEditor)
+	readReq := make(chan replReadRequest)
 	inputs := make(chan replReadResult, 1)
 	go func() {
-		for range readReq {
-			input, ok, err := reader.read()
+		for req := range readReq {
+			input, ok, err := reader.read(req)
 			inputs <- replReadResult{input: input, ok: ok, err: err}
 			if !ok {
 				return
@@ -227,12 +232,12 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		escPresses      escapePresses
 	)
 
-	requestRead := func() {
+	requestRead := func(req replReadRequest) {
 		if readPending || inputEnded {
 			return
 		}
 		readPending = true
-		readReq <- struct{}{}
+		readReq <- req
 	}
 	setInputEnded := func(err error) {
 		inputEnded = true
@@ -267,6 +272,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		exitAfterTurn = false
 		promptPrinted = false
 		escPresses.reset()
+		disablePromptTerm()
 		enableTurnTerm()
 		turnDone = done
 		go func() {
@@ -275,15 +281,21 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		}()
 	}
 	readCommandLine := func(label string) (string, error) {
-		if _, err := fmt.Fprint(app.Errw, label); err != nil {
-			return "", err
-		}
 		if len(queued) > 0 {
+			if _, err := fmt.Fprint(app.Errw, label); err != nil {
+				return "", err
+			}
 			input := queued[0]
 			queued = queued[1:]
 			return strings.TrimSpace(input.text), nil
 		}
-		input, ok, err := reader.read()
+		req := replReadRequest{}
+		if usePromptEditor {
+			req = replReadRequest{prompt: label, promptEditor: true}
+		} else if _, err := fmt.Fprint(app.Errw, label); err != nil {
+			return "", err
+		}
+		input, ok, err := reader.read(req)
 		if !ok {
 			if err != nil {
 				return "", err
@@ -314,7 +326,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	for {
 		if active {
 			if !activeReadPause {
-				requestRead()
+				requestRead(replReadRequest{})
 			}
 			select {
 			case <-exit:
@@ -323,6 +335,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				exitAfterTurn = true
 			case <-turnDone:
 				disableTurnTerm()
+				enablePromptTerm()
 				active = false
 				activeReadPause = false
 				turnDone = nil
@@ -370,10 +383,12 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			return ExitOK
 		}
 		if !promptPrinted {
-			fmt.Fprint(app.Errw, prompt)
+			if !usePromptEditor {
+				fmt.Fprint(app.Errw, prompt)
+			}
 			promptPrinted = true
 		}
-		requestRead()
+		requestRead(replReadRequest{prompt: prompt, promptEditor: usePromptEditor})
 		select {
 		case <-exit:
 			// SIGINT exit request at the idle prompt (design §8.4).
@@ -392,6 +407,15 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	}
 }
 
+func promptLineEditorEnabled(in io.Reader, w io.Writer) bool {
+	inf, ok := in.(*os.File)
+	if !ok || !term.IsTerminal(inf) {
+		return false
+	}
+	wf, ok := w.(*os.File)
+	return ok && term.IsTerminal(wf)
+}
+
 type replInput struct {
 	text   string
 	pasted bool
@@ -403,6 +427,11 @@ type replReadResult struct {
 	input replInput
 	ok    bool
 	err   error
+}
+
+type replReadRequest struct {
+	prompt       string
+	promptEditor bool
 }
 
 type replAction struct {
@@ -514,20 +543,29 @@ func queuedContainsEditor(inputs []replInput) bool {
 
 type replReader struct {
 	r             *bufio.Reader
+	editor        *promptLineEditor
 	paste         strings.Builder
 	inPaste       bool
 	escapeLineEnd atomic.Bool
 }
 
-func newREPLReader(in io.Reader) *replReader {
-	return &replReader{r: bufio.NewReader(in)}
+func newREPLReader(in io.Reader, promptWriter io.Writer, promptEditor bool) *replReader {
+	r := bufio.NewReader(in)
+	rr := &replReader{r: r}
+	if promptEditor {
+		rr.editor = &promptLineEditor{r: r, w: promptWriter}
+	}
+	return rr
 }
 
 func (rr *replReader) setEscapeLineEnd(enabled bool) {
 	rr.escapeLineEnd.Store(enabled)
 }
 
-func (rr *replReader) read() (replInput, bool, error) {
+func (rr *replReader) read(req replReadRequest) (replInput, bool, error) {
+	if req.promptEditor && rr.editor != nil {
+		return rr.editor.read(req.prompt)
+	}
 	for {
 		line, terminator, err := readTerminalLine(rr.r, rr.escapeLineEnd.Load())
 		if line != "" || terminator != lineTermNone {

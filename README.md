@@ -175,6 +175,11 @@ literal prompt, preserving embedded newlines; pasted `/commands` are not
 executed as meta-commands. For non-interactive large input, prefer `-p -` or
 piped stdin.
 
+At an interactive terminal, the prompt supports basic line editing: left/right
+arrows move the cursor, Backspace and Delete remove text around the cursor, and
+typed text inserts at the cursor position. Cursor movement is rune-aware but not
+full grapheme- or emoji-width aware.
+
 Press **Ctrl-G** at the prompt, or run `/edit [draft]`, to open an external
 editor for a multi-line prompt. Harness uses `$VISUAL`, then `$EDITOR`, then
 `vi`. The temp file preloads the visible output from the previous turn, followed

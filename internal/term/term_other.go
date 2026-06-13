@@ -17,6 +17,10 @@ func EnableCtrlGLineEnd() (func() error, error) {
 	return func() error { return nil }, nil
 }
 
+func EnablePromptRawMode() (func() error, error) {
+	return func() error { return nil }, nil
+}
+
 func EnableEscLineEnd() (func() error, error) {
 	return func() error { return nil }, nil
 }

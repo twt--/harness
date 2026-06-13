@@ -950,19 +950,22 @@ targets `/dev/tty` directly, is a silent no-op without a controlling terminal, a
 unlike the RIS (`\033c`) it replaced — never clears the screen or scrollback.
 
 After reset, the REPL enables bracketed-paste reporting for the session and disables it
-on exit. Bracketed paste markers are parsed by the input reader so a multi-line paste is
-submitted as one literal user prompt, preserving embedded newlines and preventing pasted
-`/commands` from dispatching as meta-commands. The reader uses `bufio.Reader` rather
-than `bufio.Scanner` so long prompt lines are not capped by Scanner's token limit.
+on exit. On an interactive TTY, the idle prompt switches to a small raw-mode line editor
+that supports left/right cursor movement, Backspace, Delete, insertion at the cursor, and
+Ctrl-D on an empty prompt. The editor stores cursor positions as Go runes; exact grapheme
+cluster and emoji-width handling are out of scope. Bracketed paste markers are parsed so
+a multi-line paste into an empty prompt is submitted as one literal user prompt,
+preserving embedded newlines and preventing pasted `/commands` from dispatching as
+meta-commands. For non-TTY input the REPL keeps the `bufio.Reader` line path, so long
+scripted prompt lines are not capped by Scanner's token limit.
 
-The REPL also configures Ctrl-G as a canonical-mode line delimiter where termios is
-available. Pressing Ctrl-G opens the external prompt editor immediately while preserving
-normal terminal line editing. During an active REPL turn, Escape is temporarily configured
-as the second canonical-mode line delimiter so Esc-Esc can cancel the turn without a
-raw-mode prompt reader; typeahead lines are queued for the next prompt. Bracketed paste is
-disabled while Escape is armed, then restored when the prompt returns. Before launching
-the editor, harness restores the original termios and disables bracketed paste so the
-editor owns a normal TTY; after it exits, the REPL reapplies its prompt settings.
+Ctrl-G opens the external prompt editor from the raw-mode prompt with the current draft.
+During an active REPL turn, harness restores the prompt terminal mode and temporarily
+configures Escape as the second canonical-mode line delimiter so Esc-Esc can cancel the
+turn; typeahead lines are queued for the next prompt. Bracketed paste is disabled while
+Escape is armed, then restored when the prompt returns. Before launching the editor,
+harness restores the original termios and disables bracketed paste so the editor owns a
+normal TTY; after it exits, the REPL reapplies its prompt settings.
 
 External editor prompt files use `$VISUAL`, then `$EDITOR`, then `vi`, attached to
 `/dev/tty`. The temp file contains the visible output from the latest recorded turn,

@@ -102,6 +102,22 @@ func ctrlGLineEndTermios(t syscall.Termios) syscall.Termios {
 	return t
 }
 
+// EnablePromptRawMode switches the controlling terminal into the raw-ish mode
+// used by the REPL's prompt editor. Signals stay enabled so Ctrl-C continues to
+// flow through the ordinary process signal path. The returned cleanup restores
+// the original termios; setup and cleanup are silent no-ops without a
+// controlling terminal.
+func EnablePromptRawMode() (func() error, error) {
+	return withTTYTermios(promptRawTermios, "prompt raw mode")
+}
+
+func promptRawTermios(t syscall.Termios) syscall.Termios {
+	t.Lflag &^= syscall.ICANON | syscall.ECHO | syscall.ECHOCTL
+	t.Cc[syscall.VMIN] = 1
+	t.Cc[syscall.VTIME] = 0
+	return t
+}
+
 // EnableEscLineEnd makes Escape act as a canonical-mode line delimiter. The
 // REPL enables this only while a model turn is active so Esc-Esc can be observed
 // immediately without switching the whole prompt to raw mode. The returned

@@ -104,6 +104,28 @@ func TestCtrlGLineEndSuppressesControlEcho(t *testing.T) {
 	}
 }
 
+func TestPromptRawTermiosKeepsSignals(t *testing.T) {
+	var tio syscall.Termios
+	tio.Lflag = syscall.ICANON | syscall.ECHO | syscall.ECHOCTL | syscall.ISIG | syscall.IEXTEN
+
+	got := promptRawTermios(tio)
+	if got.Lflag&syscall.ICANON != 0 {
+		t.Fatal("prompt raw mode should disable canonical input")
+	}
+	if got.Lflag&syscall.ECHO != 0 {
+		t.Fatal("prompt raw mode should disable echo")
+	}
+	if got.Lflag&syscall.ECHOCTL != 0 {
+		t.Fatal("prompt raw mode should disable control-character echo")
+	}
+	if got.Lflag&syscall.ISIG == 0 {
+		t.Fatal("prompt raw mode should preserve signal delivery")
+	}
+	if got.Cc[syscall.VMIN] != 1 || got.Cc[syscall.VTIME] != 0 {
+		t.Fatalf("VMIN/VTIME = %d/%d, want 1/0", got.Cc[syscall.VMIN], got.Cc[syscall.VTIME])
+	}
+}
+
 // TestResetOnRealTTY runs only when a controlling terminal is available (e.g.
 // under script(1) or a developer's shell): it deliberately breaks the terminal
 // (echo and canonical mode off), calls Reset, and verifies both are restored.
