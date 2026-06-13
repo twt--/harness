@@ -136,7 +136,7 @@ Precedence is **flags > environment > config file > built-in defaults**.
   `-config`): `model_proxy_url`, `provider`, `model`, `mode`, `modes` (see
   [Run modes](#run-modes)), and flag defaults. The `default_context_window`
   fallback is used only when proxy metadata has no configured context window;
-  `context_window` forces an override. See `examples/config/harness/config.json`
+  `context_window` forces an override. See `examples/harness/config.json`
   for a complete schema reference with the effective defaults.
 - Context-efficiency knobs are config-file only: `agents_md_warn_bytes`
   (default `8192`, warning only; `AGENTS.md` is still included in full),
@@ -164,8 +164,8 @@ Precedence is **flags > environment > config file > built-in defaults**.
   files that are not already referenced by the proxy config are not overwritten
   unless `--force` is set.
 - For hand-written model-proxy config shape references, see
-  `examples/config/harness-model-proxy/config.json` and
-  `examples/config/harness-model-proxy/providers.json`; setup remains the
+  `examples/harness-model-proxy/config.json` and
+  `examples/harness-model-proxy/providers.json`; setup remains the
   recommended way to create real provider allowlists.
 - Run `./harness-model-proxy --refresh-models` to fetch the latest live
   `models.dev` catalog and refresh metadata for the currently configured model
@@ -400,7 +400,7 @@ streamable-HTTP endpoint (`url`/`headers`). `${NAME}` references in any string a
 expanded from the proxy's environment (a literal `$` is preserved; an unset
 variable warns and expands to empty). Invalid server entries are skipped with a
 warning, never fatal — the proxy still serves the valid ones. See
-`examples/config/harness-mcp-proxy/config.json` for a copyable starting point.
+`examples/harness-mcp-proxy/config.json` for a copyable starting point.
 
 Stdio servers inherit the proxy's **full environment** — whatever environment
 the `harness-mcp-proxy serve` process was started with — plus the per-server
