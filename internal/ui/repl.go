@@ -1072,8 +1072,9 @@ func (app *App) toolsSummary() string {
 	// Enabled built-in tools
 	if len(builtins) > 0 {
 		b.WriteString("built-in tools:\n")
+		width := maxStringLen(builtins)
 		for _, name := range builtins {
-			writeToolSummaryLine(&b, "  ", name, descriptions[name])
+			writeToolSummaryLine(&b, "  ", name, descriptions[name], width)
 		}
 	}
 
@@ -1096,8 +1097,9 @@ func (app *App) toolsSummary() string {
 		b.WriteString("mcp tools:\n")
 		for _, label := range labels {
 			fmt.Fprintf(&b, "  [%s]\n", label)
+			width := maxStringLen(byServer[label])
 			for _, name := range byServer[label] {
-				writeToolSummaryLine(&b, "    ", name, descriptions[name])
+				writeToolSummaryLine(&b, "    ", name, descriptions[name], width)
 			}
 		}
 	}
@@ -1119,12 +1121,22 @@ func (app *App) toolsSummary() string {
 	return b.String()
 }
 
-func writeToolSummaryLine(b *strings.Builder, indent, name, description string) {
+func writeToolSummaryLine(b *strings.Builder, indent, name, description string, width int) {
 	if description == "" {
 		fmt.Fprintf(b, "%s%s\n", indent, name)
 		return
 	}
-	fmt.Fprintf(b, "%s%s - %s\n", indent, name, description)
+	fmt.Fprintf(b, "%s%-*s  - %s\n", indent, width, name, description)
+}
+
+func maxStringLen(values []string) int {
+	maxLen := 0
+	for _, value := range values {
+		if len(value) > maxLen {
+			maxLen = len(value)
+		}
+	}
+	return maxLen
 }
 
 // mcpServerLabel extracts a display-friendly server label from an MCP tool

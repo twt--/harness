@@ -252,12 +252,13 @@ func TestREPLToolsCommandListsBuiltInMCPAndDisabledTools(t *testing.T) {
 	got := errw.String()
 	for _, want := range []string{
 		"built-in tools:",
-		"  read_file - Read a file from disk.",
+		"  read_file    - Read a file from disk.",
+		"  list_dir     - List directory entries",
 		"mcp tools:",
 		"  [files]",
-		"    mcp__files__read - refreshed tool",
+		"    mcp__files__read  - refreshed tool",
 		"  [search]",
-		"    mcp__search__lookup - refreshed tool",
+		"    mcp__search__lookup  - refreshed tool",
 		"disabled tools:",
 		`  rg  ("rg" binary not found)`,
 	} {
@@ -265,6 +266,20 @@ func TestREPLToolsCommandListsBuiltInMCPAndDisabledTools(t *testing.T) {
 			t.Errorf("/tools output missing %q:\n%s", want, got)
 		}
 	}
+	if col := toolSummarySeparatorColumn(t, got, "read_file"); col != toolSummarySeparatorColumn(t, got, "list_dir") {
+		t.Errorf("built-in description separators not aligned:\n%s", got)
+	}
+}
+
+func toolSummarySeparatorColumn(t *testing.T, summary, name string) int {
+	t.Helper()
+	for _, line := range strings.Split(summary, "\n") {
+		if strings.Contains(line, name) {
+			return strings.Index(line, " - ")
+		}
+	}
+	t.Fatalf("summary missing tool %q:\n%s", name, summary)
+	return -1
 }
 
 func TestREPLUsageLineSeedsFromSavedUsage(t *testing.T) {
