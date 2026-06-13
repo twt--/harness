@@ -249,6 +249,14 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			inputErr = nil
 		}
 	}
+	finish := func(code int) int {
+		if app.Renderer != nil {
+			app.Renderer.finishAssistantLine()
+		}
+		app.saveOrWarn(app.SessionPath)
+		app.printExitUsageSummary()
+		return code
+	}
 	enableTurnTerm := func() {
 		_ = term.SetBracketedPaste(false)
 		if cleanup, err := term.EnableEscLineEnd(); err == nil {
@@ -341,8 +349,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				turnDone = nil
 				escPresses.reset()
 				if exitAfterTurn {
-					app.saveOrWarn(app.SessionPath)
-					return ExitInterrupt
+					return finish(ExitInterrupt)
 				}
 			case res := <-inputs:
 				readPending = false
@@ -373,14 +380,13 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			input := queued[0]
 			queued = queued[1:]
 			if applyAction(input) {
-				return ExitOK
+				return finish(ExitOK)
 			}
 			continue
 		}
 		if inputEnded {
 			warnInputErr()
-			app.saveOrWarn(app.SessionPath)
-			return ExitOK
+			return finish(ExitOK)
 		}
 		if !promptPrinted {
 			if !usePromptEditor {
@@ -392,8 +398,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		select {
 		case <-exit:
 			// SIGINT exit request at the idle prompt (design §8.4).
-			app.saveOrWarn(app.SessionPath)
-			return ExitInterrupt
+			return finish(ExitInterrupt)
 		case res := <-inputs:
 			readPending = false
 			if !res.ok {
@@ -401,7 +406,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				continue
 			}
 			if applyAction(res.input) {
-				return ExitOK
+				return finish(ExitOK)
 			}
 		}
 	}
@@ -659,7 +664,6 @@ func (app *App) command(line string, readCommandLine func(string) (string, error
 	case "/help":
 		fmt.Fprintln(app.Errw, helpText)
 	case "/exit", "/quit":
-		app.saveOrWarn(app.SessionPath)
 		return true
 	case "/clear":
 		app.clear()
@@ -957,6 +961,7 @@ func (app *App) addUsage(u agent.TurnUsage) {
 	app.usage.OutputTokens += u.Usage.OutputTokens
 	app.usage.CacheReadTokens += u.Usage.CacheReadTokens
 	app.usage.CacheWriteTokens += u.Usage.CacheWriteTokens
+	app.usage.ReasoningTokens += u.Usage.ReasoningTokens
 	if app.Registry != nil {
 		model := app.RegistryModel
 		if model == "" {
@@ -1030,12 +1035,28 @@ func (app *App) recordEvent(ev session.Event) {
 func (app *App) usageSummary() string {
 	u := app.usage
 	var b strings.Builder
-	fmt.Fprintf(&b, "[session: %d in / %d out", u.InputTokens, u.OutputTokens)
+	fmt.Fprintf(&b, "[session: %d input / %d cached input / %d output / %d reasoning",
+		u.InputTokens, u.CacheReadTokens, u.OutputTokens, u.ReasoningTokens)
+	if u.CacheWriteTokens > 0 {
+		fmt.Fprintf(&b, " / %d cache write", u.CacheWriteTokens)
+	}
 	if u.CostUSD > 0 {
 		fmt.Fprintf(&b, " · $%.4f", u.CostUSD)
 	}
 	b.WriteString("]")
 	return b.String()
+}
+
+func (app *App) printExitUsageSummary() {
+	fmt.Fprintf(app.Errw, "[session summary: %d input / %d cached input / %d output / %d reasoning",
+		app.usage.InputTokens, app.usage.CacheReadTokens, app.usage.OutputTokens, app.usage.ReasoningTokens)
+	if app.usage.CacheWriteTokens > 0 {
+		fmt.Fprintf(app.Errw, " / %d cache write", app.usage.CacheWriteTokens)
+	}
+	if app.usage.CostUSD > 0 {
+		fmt.Fprintf(app.Errw, " · $%.4f", app.usage.CostUSD)
+	}
+	fmt.Fprintln(app.Errw, "]")
 }
 
 // skillsSummary renders the available skills for /skills (design §10), grouped

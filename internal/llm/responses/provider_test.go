@@ -53,7 +53,7 @@ func TestStreamTextOnly(t *testing.T) {
 	if done.StopReason != llm.StopEndTurn {
 		t.Errorf("stop reason = %q, want end_turn", done.StopReason)
 	}
-	want := llm.Usage{InputTokens: 18, OutputTokens: 15, CacheReadTokens: 7}
+	want := llm.Usage{InputTokens: 18, OutputTokens: 15, CacheReadTokens: 7, ReasoningTokens: 4}
 	if done.Usage == nil || *done.Usage != want {
 		t.Errorf("usage = %+v, want %+v", done.Usage, want)
 	}

@@ -180,6 +180,7 @@ func normalizeUsage(u *wireUsage) llm.Usage {
 		OutputTokens:     u.CompletionTokens,
 		CacheReadTokens:  cached,
 		CacheWriteTokens: 0,
+		ReasoningTokens:  u.CompletionTokensDetails.ReasoningTokens,
 	}
 }
 

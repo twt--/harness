@@ -60,7 +60,9 @@ func TestStreamTextOnly(t *testing.T) {
 	if done.Usage == nil {
 		t.Fatal("EventDone carries no usage")
 	}
-	want := llm.Usage{InputTokens: 25, OutputTokens: 15, CacheWriteTokens: 10, CacheReadTokens: 7}
+	// Anthropic reports extended thinking usage as output tokens, not a separate
+	// reasoning-token usage field, so ReasoningTokens remains zero.
+	want := llm.Usage{InputTokens: 25, OutputTokens: 15, CacheWriteTokens: 10, CacheReadTokens: 7, ReasoningTokens: 0}
 	if *done.Usage != want {
 		t.Errorf("final usage = %+v, want %+v", *done.Usage, want)
 	}

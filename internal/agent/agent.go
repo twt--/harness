@@ -490,6 +490,7 @@ func add(a, b llm.Usage) llm.Usage {
 		OutputTokens:     a.OutputTokens + b.OutputTokens,
 		CacheReadTokens:  a.CacheReadTokens + b.CacheReadTokens,
 		CacheWriteTokens: a.CacheWriteTokens + b.CacheWriteTokens,
+		ReasoningTokens:  a.ReasoningTokens + b.ReasoningTokens,
 	}
 }
 
@@ -502,5 +503,6 @@ func mergeUsage(acc, in llm.Usage) llm.Usage {
 		OutputTokens:     max(acc.OutputTokens, in.OutputTokens),
 		CacheReadTokens:  max(acc.CacheReadTokens, in.CacheReadTokens),
 		CacheWriteTokens: max(acc.CacheWriteTokens, in.CacheWriteTokens),
+		ReasoningTokens:  max(acc.ReasoningTokens, in.ReasoningTokens),
 	}
 }

@@ -542,8 +542,9 @@ A single SIGINT handler plus a per-turn `context.CancelFunc`:
   partial text, strip un-executed tool calls. Print `[cancelled]`, return to prompt.
 - **Esc-Esc during a REPL turn** → same turn cancellation as the first ^C, without
   the second-^C exit behavior.
-- **Second ^C within ~1 s, or ^C at the idle prompt** → save session, exit 130.
-- **^D at the prompt** → save session, exit 0.
+- **Second ^C within ~1 s, or ^C at the idle prompt** → save session, print the
+  session token summary, exit 130.
+- **^D at the prompt** → save session, print the session token summary, exit 0.
 
 ### 8.5 System prompt (`internal/sysprompt`)
 
@@ -981,16 +982,20 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 | command | effect |
 |---|---|
 | `/help` | list commands |
-| `/exit`, `/quit` | save and exit |
+| `/exit`, `/quit` | save, print a session token summary, and exit |
 | `/clear` | reset conversation; rotate to a fresh session file |
 | `/compact` | force compaction now |
-| `/usage` | cumulative session tokens + cost |
+| `/usage` | cumulative input, cached input, output, reasoning tokens, and cost |
 | `/tools` | list enabled built-in and MCP tools with descriptions, plus disabled optional tools |
 | `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
 | `/model` | choose a configured provider, then choose one of its configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
+
+Anthropic usage does not currently expose a separate reasoning-token field;
+extended thinking is counted in output tokens, so the reasoning total remains
+zero for Anthropic sessions.
 
 ### Flags
 

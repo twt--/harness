@@ -193,10 +193,10 @@ by a delimiter; only text written after the delimiter is sent as the next prompt
 | command | effect |
 |---|---|
 | `/help` | list commands |
-| `/exit`, `/quit` | save and exit |
+| `/exit`, `/quit` | save, print a session token summary, and exit |
 | `/clear` | reset the conversation; rotate to a fresh session directory |
 | `/compact` | force compaction now |
-| `/usage` | cumulative session tokens and cost |
+| `/usage` | cumulative input, cached input, output, reasoning tokens, and cost |
 | `/tools` | list enabled built-in and MCP tools with descriptions, plus disabled optional tools |
 | `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
@@ -205,6 +205,10 @@ by a delimiter; only text written after the delimiter is sent as the next prompt
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
 | `/mode` | list run modes, marking the current one |
 | `/mode <name>` | switch the active run mode |
+
+Anthropic usage does not currently expose a separate reasoning-token field;
+extended thinking is counted in output tokens, so the reasoning total remains
+zero for Anthropic sessions.
 
 ## Run modes
 
@@ -301,8 +305,9 @@ Turn summaries include an approximate context footprint, for example:
   turn**, cancels the turn (aborting the HTTP stream and killing any
   `run_command` process group); streamed partial text is kept and un-executed
   tool calls are stripped. Prints `[cancelled]` and returns to the prompt.
-- **A second Ctrl-C within ~1s, or Ctrl-C at the idle prompt** saves and exits
-  130. **Ctrl-D** at the prompt saves and exits 0.
+- **A second Ctrl-C within ~1s, or Ctrl-C at the idle prompt** saves, prints the
+  session token summary, and exits 130. **Ctrl-D** at the prompt saves, prints
+  the summary, and exits 0.
 
 ## Tools
 

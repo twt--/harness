@@ -61,7 +61,7 @@ func TestStreamTextOnly(t *testing.T) {
 		t.Fatal("EventDone carries no usage")
 	}
 	// prompt_tokens 25 includes 7 cached: InputTokens = 25 - 7 = 18.
-	want := llm.Usage{InputTokens: 18, OutputTokens: 15, CacheReadTokens: 7, CacheWriteTokens: 0}
+	want := llm.Usage{InputTokens: 18, OutputTokens: 15, CacheReadTokens: 7, CacheWriteTokens: 0, ReasoningTokens: 4}
 	if *done.Usage != want {
 		t.Errorf("final usage = %+v, want %+v", *done.Usage, want)
 	}

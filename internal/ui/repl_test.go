@@ -230,6 +230,34 @@ func TestREPLUsageCumulative(t *testing.T) {
 	}
 }
 
+func TestREPLExitPrintsUsageSummary(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("a")},
+			Stop:   llm.StopEndTurn,
+			Usage: llm.Usage{
+				InputTokens:      100,
+				CacheReadTokens:  30,
+				CacheWriteTokens: 20,
+				OutputTokens:     10,
+				ReasoningTokens:  4,
+			},
+		},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+
+	in := strings.NewReader("p1\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := errw.String()
+	want := "[session summary: 100 input / 30 cached input / 10 output / 4 reasoning / 20 cache write]"
+	if !strings.Contains(got, want) {
+		t.Errorf("exit should print usage summary %q, errw=%q", want, got)
+	}
+}
+
 func TestREPLToolsCommandListsBuiltInMCPAndDisabledTools(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake")
