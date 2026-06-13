@@ -512,6 +512,7 @@ func run(env environment) int {
 			return ui.ExitRuntime
 		}
 		fmt.Fprintf(stderr, "session: %s\n", sessionPath)
+		fmt.Fprintf(stderr, "provider: %s  model: %s\n", cfg.Provider, cfg.Model)
 		code := ui.OneShot(app, prompt)
 		select {
 		case <-exitCh:
@@ -525,6 +526,7 @@ func run(env environment) int {
 	// including SIGINT, so the exit-save never races an in-flight turn's own save
 	// or usage update (design §8.4); main only forwards the exit request.
 	fmt.Fprintf(stderr, "session: %s\n", sessionPath)
+	fmt.Fprintf(stderr, "provider: %s  model: %s\n", cfg.Provider, cfg.Model)
 	return ui.Run(stdin, app, exitCh)
 }
 

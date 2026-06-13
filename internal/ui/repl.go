@@ -708,6 +708,7 @@ func (app *App) pickModel(readLine func(string) (string, error)) {
 		fmt.Fprintln(app.Errw, app.modelSummary())
 		return
 	}
+	fmt.Fprintf(app.Errw, "current: provider=%s model=%s\n", app.Provider, app.Model)
 	model, err := app.PickModel(PickerIO{
 		ReadLine: readLine,
 		Writer:   app.Errw,
