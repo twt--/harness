@@ -151,6 +151,10 @@ func (app *App) clock() func() time.Time {
 // an active turn the same helper also preserves typeahead and observes Esc-Esc
 // without competing with an external editor launched from the idle prompt.
 func Run(in io.Reader, app *App, exit <-chan struct{}) int {
+	return run(in, app, exit, promptLineEditorEnabled(in, app.Errw))
+}
+
+func run(in io.Reader, app *App, exit <-chan struct{}, usePromptEditor bool) int {
 	if app.Created.IsZero() {
 		app.Created = app.clock()()
 	}
@@ -163,7 +167,6 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 	// Restore a usable terminal before the first prompt (termios sane plus an
 	// emulator soft reset), in case a prior process left it in raw, no-echo,
 	// or mouse-reporting state. Targets /dev/tty directly; no-op without one.
-	usePromptEditor := promptLineEditorEnabled(in, app.Errw)
 	var restorePromptTerm func() error
 	disablePromptTerm := func() {
 		_ = term.SetBracketedPaste(false)
@@ -226,6 +229,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		active          bool
 		activeReadPause bool
 		exitAfterTurn   bool
+		plainPromptRead bool
 		queued          []replInput
 		turnDone        <-chan struct{}
 		restoreEsc      func() error
@@ -278,6 +282,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 		active = true
 		activeReadPause = queuedContainsEditor(queued)
 		exitAfterTurn = false
+		plainPromptRead = false
 		promptPrinted = false
 		escPresses.reset()
 		disablePromptTerm()
@@ -343,13 +348,21 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				exitAfterTurn = true
 			case <-turnDone:
 				disableTurnTerm()
-				enablePromptTerm()
 				active = false
 				activeReadPause = false
 				turnDone = nil
 				escPresses.reset()
 				if exitAfterTurn {
 					return finish(ExitInterrupt)
+				}
+				if usePromptEditor && readPending {
+					// A plain read started during the model turn is still
+					// blocked. Let it collect the next line in canonical mode;
+					// starting the raw prompt editor now would leave no prompt
+					// drawn and no terminal echo until that stale read finishes.
+					plainPromptRead = true
+				} else {
+					enablePromptTerm()
 				}
 			case res := <-inputs:
 				readPending = false
@@ -369,9 +382,7 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 				}
 				escPresses.reset()
 				queued = append(queued, input)
-				if inputMayOpenEditor(input) {
-					activeReadPause = true
-				}
+				activeReadPause = true
 			}
 			continue
 		}
@@ -389,18 +400,24 @@ func Run(in io.Reader, app *App, exit <-chan struct{}) int {
 			return finish(ExitOK)
 		}
 		if !promptPrinted {
-			if !usePromptEditor {
+			if !usePromptEditor || plainPromptRead {
 				fmt.Fprint(app.Errw, prompt)
 			}
 			promptPrinted = true
 		}
-		requestRead(replReadRequest{prompt: prompt, promptEditor: usePromptEditor})
+		if !plainPromptRead {
+			requestRead(replReadRequest{prompt: prompt, promptEditor: usePromptEditor})
+		}
 		select {
 		case <-exit:
 			// SIGINT exit request at the idle prompt (design §8.4).
 			return finish(ExitInterrupt)
 		case res := <-inputs:
 			readPending = false
+			if plainPromptRead {
+				plainPromptRead = false
+				enablePromptTerm()
+			}
 			if !res.ok {
 				setInputEnded(res.err)
 				continue

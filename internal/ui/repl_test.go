@@ -736,6 +736,62 @@ func TestREPLTypeaheadDuringActiveTurnRunsAfterTurn(t *testing.T) {
 	}
 }
 
+func TestREPLPromptEditorPrintsPromptAfterTurnWithPendingActiveRead(t *testing.T) {
+	var out, errw bytes.Buffer
+	inTurn := make(chan struct{})
+	releaseTurn := make(chan struct{})
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("first answer")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 5, OutputTokens: 2},
+			Block: func(ctx context.Context) {
+				close(inTurn)
+				<-releaseTurn
+			},
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{textDelta("second answer")},
+			Stop:   llm.StopEndTurn,
+			Usage:  llm.Usage{InputTokens: 6, OutputTokens: 2},
+		},
+	)
+	app := newTestApp(t, &out, &errw, fp)
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- run(pr, app, nil, true) }()
+
+	waitFor(t, func() bool { return strings.Contains(errw.String(), "> ") }, "initial prompt")
+	writePipe(t, pw, "first\n")
+	select {
+	case <-inTurn:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not start")
+	}
+
+	close(releaseTurn)
+	waitFor(t, func() bool {
+		s := errw.String()
+		return strings.Contains(s, "[turn:") && strings.Count(s, "> ") >= 2
+	}, "prompt after first turn")
+
+	writePipe(t, pw, "second\n")
+	waitFor(t, func() bool { return len(fp.Requests) == 2 }, "second request")
+	waitFor(t, func() bool { return strings.Count(errw.String(), "> ") >= 3 }, "prompt after second turn")
+	writePipe(t, pw, "/exit\n")
+	_ = pw.Close()
+
+	if code := waitRun(t, codeCh); code != ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(fp.Requests))
+	}
+}
+
 // TestREPLInputReadErrorWarned covers the lint fix: a non-EOF read error from
 // stdin must be surfaced (warned to errw) rather than silently treated as a clean
 // end of input. The scanner stops on the error; Run reports it and exits 0
@@ -908,6 +964,18 @@ func waitRun(t *testing.T, codeCh <-chan int) int {
 		t.Fatal("Run did not return")
 	}
 	return 0
+}
+
+func waitFor(t *testing.T, ok func() bool, label string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", label)
 }
 
 // errContext is a sentinel non-cancellation error for provider-error tests.
