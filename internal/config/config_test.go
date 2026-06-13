@@ -153,7 +153,7 @@ func TestHarnessEnvMapping(t *testing.T) {
 	env := envFrom(map[string]string{
 		"HARNESS_MODEL":                  "env-model",
 		"HARNESS_MODEL_PROXY_URL":        "http://proxy.example",
-		"HARNESS_MAX_STEPS":              "12",
+		"HARNESS_MAX_TURNS":              "12",
 		"HARNESS_DEFAULT_CONTEXT_WINDOW": "512000",
 		"HARNESS_CONTEXT_WINDOW":         "256000",
 		"HARNESS_REASONING_EFFORT":       "HIGH",
@@ -175,8 +175,8 @@ func TestHarnessEnvMapping(t *testing.T) {
 	if c.ModelProxyURL != "http://proxy.example" {
 		t.Fatalf("model proxy URL %q", c.ModelProxyURL)
 	}
-	if c.MaxSteps != 12 {
-		t.Fatalf("max-steps %d, want 12", c.MaxSteps)
+	if c.MaxTurns != 12 {
+		t.Fatalf("max-turns %d, want 12", c.MaxTurns)
 	}
 	if c.DefaultContextWindow != 512000 {
 		t.Fatalf("default-context-window %d, want 512000", c.DefaultContextWindow)
@@ -262,13 +262,13 @@ func TestNoColorStandardEnv(t *testing.T) {
 	}
 }
 
-func TestMaxStepsDefault(t *testing.T) {
+func TestMaxTurnsDefault(t *testing.T) {
 	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.MaxSteps != 50 {
-		t.Fatalf("default max-steps %d, want 50", c.MaxSteps)
+	if c.MaxTurns != 250 {
+		t.Fatalf("default max-turns %d, want 250", c.MaxTurns)
 	}
 }
 
@@ -308,48 +308,48 @@ func TestReasoningEffortPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
 	})
 }
 
-func TestMaxStepsFlagBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"max_steps":7}`)
-	c, err := Load([]string{"-max-steps", "9"}, noEnv, cfgPath)
+func TestMaxTurnsFlagBeatsFile(t *testing.T) {
+	cfgPath := writeConfig(t, `{"max_turns":7}`)
+	c, err := Load([]string{"-max-turns", "9"}, noEnv, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.MaxSteps != 9 {
-		t.Fatalf("max-steps %d, want 9 (flag beats file)", c.MaxSteps)
+	if c.MaxTurns != 9 {
+		t.Fatalf("max-turns %d, want 9 (flag beats file)", c.MaxTurns)
 	}
 
 	c, err = Load(nil, noEnv, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.MaxSteps != 7 {
-		t.Fatalf("max-steps %d, want 7 (file beats default)", c.MaxSteps)
+	if c.MaxTurns != 7 {
+		t.Fatalf("max-turns %d, want 7 (file beats default)", c.MaxTurns)
 	}
 }
 
-func TestDelegateMaxStepsConfigOnly(t *testing.T) {
+func TestDelegateMaxTurnsConfigOnly(t *testing.T) {
 	c, err := Load(nil, noEnv, "")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.DelegateMaxSteps != 20 {
-		t.Fatalf("default delegate max steps = %d, want 20", c.DelegateMaxSteps)
+	if c.DelegateMaxTurns != 20 {
+		t.Fatalf("default delegate max turns = %d, want 20", c.DelegateMaxTurns)
 	}
 
-	cfgPath := writeConfig(t, `{"delegate_max_steps":5}`)
+	cfgPath := writeConfig(t, `{"delegate_max_turns":5}`)
 	c, err = Load(nil, noEnv, cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.DelegateMaxSteps != 5 {
-		t.Fatalf("file delegate max steps = %d, want 5", c.DelegateMaxSteps)
+	if c.DelegateMaxTurns != 5 {
+		t.Fatalf("file delegate max turns = %d, want 5", c.DelegateMaxTurns)
 	}
 }
 
-func TestDelegateMaxStepsMustBePositive(t *testing.T) {
-	cfgPath := writeConfig(t, `{"delegate_max_steps":0}`)
+func TestDelegateMaxTurnsMustBePositive(t *testing.T) {
+	cfgPath := writeConfig(t, `{"delegate_max_turns":0}`)
 	if _, err := Load(nil, noEnv, cfgPath); err == nil {
-		t.Fatal("delegate_max_steps=0 should be invalid")
+		t.Fatal("delegate_max_turns=0 should be invalid")
 	}
 }
 
@@ -423,10 +423,10 @@ func TestBadFlagIsUsageError(t *testing.T) {
 	}
 }
 
-func TestBadMaxStepsValueIsUsageError(t *testing.T) {
-	_, err := Load([]string{"-max-steps", "notanumber"}, noEnv, "")
+func TestBadMaxTurnsValueIsUsageError(t *testing.T) {
+	_, err := Load([]string{"-max-turns", "notanumber"}, noEnv, "")
 	if err == nil {
-		t.Fatalf("expected usage error for non-integer -max-steps")
+		t.Fatalf("expected usage error for non-integer -max-turns")
 	}
 }
 
@@ -434,7 +434,7 @@ func TestBadMaxStepsValueIsUsageError(t *testing.T) {
 // name every one of them so the help is an accurate reference.
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-model-proxy-url", "-system", "-system-override",
-	"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
+	"-no-env", "-resume", "-session", "-max-turns", "-default-context-window", "-context-window",
 	"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
 }
 
@@ -484,7 +484,7 @@ func TestSaveSelectedModelCreatesConfig(t *testing.T) {
 }
 
 func TestSaveSelectedModelPreservesOtherConfigKeys(t *testing.T) {
-	path := writeConfig(t, `{"mode":"plan","max_steps":7,"provider":"old","model":"old-model"}`)
+	path := writeConfig(t, `{"mode":"plan","max_turns":7,"provider":"old","model":"old-model"}`)
 	if err := SaveSelectedModel(path, "anthropic", "claude-opus-4-8"); err != nil {
 		t.Fatalf("SaveSelectedModel: %v", err)
 	}
@@ -495,8 +495,8 @@ func TestSaveSelectedModelPreservesOtherConfigKeys(t *testing.T) {
 	if c.Provider != "anthropic" || c.Model != "claude-opus-4-8" {
 		t.Fatalf("provider/model = %q/%q, want anthropic/claude-opus-4-8", c.Provider, c.Model)
 	}
-	if c.Mode != "plan" || c.MaxSteps != 7 {
-		t.Fatalf("preserved mode/max_steps = %q/%d, want plan/7", c.Mode, c.MaxSteps)
+	if c.Mode != "plan" || c.MaxTurns != 7 {
+		t.Fatalf("preserved mode/max_turns = %q/%d, want plan/7", c.Mode, c.MaxTurns)
 	}
 }
 
@@ -511,9 +511,9 @@ func TestUsageListsEveryFlag(t *testing.T) {
 			t.Errorf("usage text missing flag %q:\n%s", f, out)
 		}
 	}
-	// -max-steps default (50) must be visible so the reference is accurate.
-	if !strings.Contains(out, "50") {
-		t.Errorf("usage text should show the -max-steps default 50:\n%s", out)
+	// -max-turns default (250) must be visible so the reference is accurate.
+	if !strings.Contains(out, "250") {
+		t.Errorf("usage text should show the -max-turns default 250:\n%s", out)
 	}
 	if !strings.Contains(out, "256000") {
 		t.Errorf("usage text should show the -default-context-window default 256000:\n%s", out)
@@ -563,24 +563,24 @@ func TestModeUnspecifiedIsEmpty(t *testing.T) {
 	}
 }
 
-func TestOnMaxStepsResolution(t *testing.T) {
+func TestOnMaxTurnsResolution(t *testing.T) {
 	c := loadOK(t, nil, noEnv, "")
-	if c.OnMaxSteps != "stop" {
-		t.Errorf("default OnMaxSteps = %q, want \"stop\"", c.OnMaxSteps)
+	if c.OnMaxTurns != "stop" {
+		t.Errorf("default OnMaxTurns = %q, want \"stop\"", c.OnMaxTurns)
 	}
 
 	checkPrecedence(t, precedenceCase[string]{
-		file:     `{"on_max_steps":"stop"}`,
-		env:      map[string]string{"HARNESS_ON_MAX_STEPS": "continue"},
-		flagArgs: []string{"-on-max-steps", "continue"},
-		got:      func(c Config) string { return c.OnMaxSteps },
+		file:     `{"on_max_turns":"stop"}`,
+		env:      map[string]string{"HARNESS_ON_MAX_TURNS": "continue"},
+		flagArgs: []string{"-on-max-turns", "continue"},
+		got:      func(c Config) string { return c.OnMaxTurns },
 		wantFlag: "continue",
 		wantEnv:  "continue",
 		wantFile: "stop",
 	})
 
-	if _, err := Load([]string{"-on-max-steps", "bogus"}, noEnv, ""); err == nil {
-		t.Error("invalid on-max-steps value should error")
+	if _, err := Load([]string{"-on-max-turns", "bogus"}, noEnv, ""); err == nil {
+		t.Error("invalid on-max-turns value should error")
 	}
 }
 

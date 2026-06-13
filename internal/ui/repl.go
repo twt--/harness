@@ -1233,8 +1233,8 @@ func (s *accumulatingSink) TextDelta(text string) {
 	s.app.recordEvent(session.Event{Type: session.EventAssistantDelta, Turn: s.turn, Text: text})
 }
 
-func (s *accumulatingSink) ModelStepStart(step, attempt int, ctx agent.ContextEstimate) {
-	s.r.ModelStepStart(step, attempt, ctx)
+func (s *accumulatingSink) ModelTurnStart(modelTurn, attempt int, ctx agent.ContextEstimate) {
+	s.r.ModelTurnStart(modelTurn, attempt, ctx)
 }
 
 func (s *accumulatingSink) ToolUseStart(c llm.ToolCall) {
@@ -1286,10 +1286,10 @@ func (s *accumulatingSink) TurnComplete(u agent.TurnUsage) {
 		s.r.cumInput, s.r.cumOutput, s.r.cumCost)
 	usage := u.Usage
 	s.app.recordEvent(session.Event{
-		Type:    session.EventTurnUsage,
-		Turn:    s.turn,
-		Display: line,
-		Usage:   &usage,
-		Steps:   u.Steps,
+		Type:       session.EventTurnUsage,
+		Turn:       s.turn,
+		Display:    line,
+		Usage:      &usage,
+		ModelTurns: u.ModelTurns,
 	})
 }

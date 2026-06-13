@@ -155,11 +155,11 @@ Implements design §8 entirely.
 
 - [ ] **Step 1:** `agent_test.go` with FakeProvider + a recording fake tool:
   - text-only turn appends user+assistant, returns at end_turn.
-  - tool turn: 2 parallel calls executed sequentially in emission order; one user message with 2 results in order; loop re-calls provider; `ValidateTranscript` passes after every step.
+  - tool turn: 2 parallel calls executed sequentially in emission order; one user message with 2 results in order; loop re-calls provider; `ValidateTranscript` passes after every model turn.
   - failing tool: error string fed back as is_error result; next request (captured by FakeProvider) carries it.
-  - max-steps: FakeProvider always returns tool_use; loop stops at the limit, transcript valid, sink told.
+  - max-turns: FakeProvider always returns tool_use; loop stops at the limit, transcript valid, sink told.
   - cancellation: cancel ctx mid-stream; partial text kept as text-only assistant message, no dangling tool_use, `ValidateTranscript` passes.
-  - usage accumulation across steps reported to sink.
+  - usage accumulation across model turns reported to sink.
 - [ ] **Step 2:** FAIL → implement `agent.go` → PASS. Commit `feat: agent turn loop`.
 - [ ] **Step 3:** `sysprompt_test.go`: env block contains cwd/os/date; git summary against scratch repo (branch, modified/untracked counts); non-repo line; append vs override vs `-no-env` composition. Implement → PASS → commit `feat: system prompt builder`.
 - [ ] **Step 4:** Interrupt watcher: unit-test the state machine with injected signal channel (first signal → cancel func called; second within window → exit request; signal at idle → exit request). Implement → commit `feat: interrupt handling`.

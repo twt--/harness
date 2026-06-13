@@ -1,5 +1,5 @@
-// Package agent runs one user turn as a loop of model steps until the model
-// stops asking for tools, executing each step's tool calls in emission order
+// Package agent runs one user turn as a loop of model turns until the model
+// stops asking for tools, executing each model turn's tool calls in emission order
 // (concurrently when they are all read-only) and upholding the transcript
 // invariant after every mutation (design §8, §4).
 package agent
@@ -16,12 +16,12 @@ import (
 	"harness/internal/tools"
 )
 
-// defaultMaxSteps caps model round-trips per user turn (design §8.1).
-const defaultMaxSteps = 50
+// defaultMaxTurns caps model turns per user prompt (design §8.1).
+const defaultMaxTurns = 250
 
-// streamRetries is the per-step mid-stream retry budget: a step whose stream
+// streamRetries is the per-model-turn mid-stream retry budget: a model turn whose stream
 // fails after the first byte may be re-requested this many times (spec §2).
-// Retries do not consume the maxSteps budget.
+// Retries do not consume the maxTurns budget.
 const streamRetries = 2
 
 // maxAutoContinues bounds AutoContinue budgets per turn so a pathological
@@ -36,20 +36,20 @@ const maxParallelTools = 8
 // renderer implements it (design §8.1, §10).
 type EventSink interface {
 	TextDelta(text string) // incremental assistant text
-	ModelStepStart(step, attempt int, ctx ContextEstimate)
+	ModelTurnStart(modelTurn, attempt int, ctx ContextEstimate)
 	ToolUseStart(call llm.ToolCall)
 	ToolUseDelta(index int, delta string)
 	ToolStart(call llm.ToolCall)      // a tool call is about to run
 	ToolResult(result llm.ToolResult) // a tool call finished
-	Notice(msg string)                // out-of-band notices (max-steps, cancelled)
+	Notice(msg string)                // out-of-band notices (max-turns, cancelled)
 	TurnComplete(usage TurnUsage)     // end of the turn
 }
 
-// TurnUsage is the per-turn summary handed to the sink (design §10 usage line).
+// TurnUsage is the per-user-turn summary handed to the sink (design §10 usage line).
 type TurnUsage struct {
-	Steps   int
-	Usage   llm.Usage
-	Context ContextEstimate
+	ModelTurns int
+	Usage      llm.Usage
+	Context    ContextEstimate
 }
 
 // ContextEstimate is a coarse request-footprint estimate for UI diagnostics.
@@ -61,10 +61,10 @@ type ContextEstimate struct {
 	Messages int
 }
 
-// Options configures an Agent. The zero value is valid; MaxSteps falls back to
+// Options configures an Agent. The zero value is valid; MaxTurns falls back to
 // the default.
 type Options struct {
-	MaxSteps int
+	MaxTurns int
 	// Model is the resolved model id stamped onto every request. The agent loop
 	// owns Request.Model because the provider config carries no model (one
 	// provider can serve many models); main injects the resolved value here.
@@ -82,7 +82,7 @@ type Options struct {
 	// Reasoning is forwarded to every model request. Empty means provider
 	// default.
 	Reasoning llm.ReasoningConfig
-	// AutoContinue grants up to maxAutoContinues fresh step budgets when the
+	// AutoContinue grants up to maxAutoContinues fresh model-turn budgets when the
 	// model still wants tools at the cap, instead of stopping (spec §5).
 	AutoContinue bool
 	// CompactKeepTurns controls how many whole recent turns remain verbatim after
@@ -104,10 +104,10 @@ type Agent struct {
 	transcript                []llm.Message
 	system                    string
 	model                     string
-	maxSteps                  int
+	maxTurns                  int
 	contextWindow             int // -context-window override; 0 = use the registry default
 	reasoning                 llm.ReasoningConfig
-	autoContinue              bool                // grant fresh step budgets at the cap (spec §5)
+	autoContinue              bool                // grant fresh model-turn budgets at the cap (spec §5)
 	sleep                     func(time.Duration) // mid-stream retry backoff; nil-free, set in New
 	compactKeepTurns          int
 	compactSummaryMaxTokens   int
@@ -115,11 +115,11 @@ type Agent struct {
 	archiveCompaction         CompactionArchiver
 }
 
-// New constructs an Agent. A non-positive Options.MaxSteps uses the default.
+// New constructs an Agent. A non-positive Options.MaxTurns uses the default.
 func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
-	maxSteps := opts.MaxSteps
-	if maxSteps <= 0 {
-		maxSteps = defaultMaxSteps
+	maxTurns := opts.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = defaultMaxTurns
 	}
 	modelRegistry := opts.Registry
 	if modelRegistry == nil {
@@ -130,7 +130,7 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		tools:                     registry,
 		registry:                  modelRegistry,
 		model:                     opts.Model,
-		maxSteps:                  maxSteps,
+		maxTurns:                  maxTurns,
 		contextWindow:             opts.ContextWindow,
 		reasoning:                 opts.Reasoning,
 		autoContinue:              opts.AutoContinue,
@@ -217,29 +217,29 @@ func (a *Agent) EstimateContext() ContextEstimate {
 	}, a.window())
 }
 
-// stepResult holds what one stream produced after assembly.
-type stepResult struct {
+// modelTurnResult holds what one model turn produced after assembly.
+type modelTurnResult struct {
 	text       string
 	toolCalls  []llm.ToolCall
 	usage      llm.Usage
 	stopReason llm.StopReason
 }
 
-// RunTurn appends the user message, then loops model steps until the model
-// stops requesting tools or the step budget is hit (design §8.1). Cancellation
+// RunTurn appends the user message, then loops model turns until the model
+// stops requesting tools or the model-turn budget is hit (design §8.1). Cancellation
 // mid-stream applies the §4 cancel repair and returns ctx.Err(); the transcript
 // is left valid (re-sendable) in every exit path.
 func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) error {
 	a.transcript = append(a.transcript, textMessage(llm.RoleUser, userText))
 
 	var total llm.Usage
-	var lastInput int // input tokens the final step reported (drives the trigger)
+	var lastInput int // input tokens the final model turn reported (drives the trigger)
 	var lastContext ContextEstimate
-	steps := 0
-	budget := a.maxSteps
+	modelTurns := 0
+	budget := a.maxTurns
 	continues := 0
 
-	for steps < budget {
+	for modelTurns < budget {
 		lastContext = a.EstimateContext()
 		// Proactive trigger (spec §4): a turn whose tool results balloon the
 		// context compacts before the next request, not after the turn. The
@@ -248,7 +248,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			if compUsage, err := a.Compact(ctx, sink); err == nil {
 				total = add(total, compUsage)
 				// The old reported count no longer describes the compacted
-				// transcript and would re-trigger every step.
+				// transcript and would re-trigger every model turn.
 				lastInput = 0
 				lastContext = a.EstimateContext()
 			}
@@ -262,8 +262,8 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Reasoning: a.reasoning,
 		}
 
-		res, wasted, err := a.streamWithRetry(ctx, req, sink, steps+1, lastContext)
-		steps++
+		res, wasted, err := a.streamWithRetry(ctx, req, sink, modelTurns+1, lastContext)
+		modelTurns++
 		total = add(total, add(res.usage, wasted))
 		// Context-size signal, not billing: cached tokens occupy the window too.
 		lastInput = res.usage.InputTokens + res.usage.CacheReadTokens + res.usage.CacheWriteTokens
@@ -278,7 +278,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				sink.Notice("[cancelled]")
 			}
-			sink.TurnComplete(TurnUsage{Steps: steps, Usage: total, Context: lastContext})
+			sink.TurnComplete(TurnUsage{ModelTurns: modelTurns, Usage: total, Context: lastContext})
 			return err
 		}
 
@@ -295,13 +295,13 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Content: results,
 		})
 
-		if steps >= budget {
+		if modelTurns >= budget {
 			if a.autoContinue && continues < maxAutoContinues {
 				continues++
-				budget += a.maxSteps
-				sink.Notice(fmt.Sprintf("[max steps reached; auto-continuing (%d/%d)]", continues, maxAutoContinues))
+				budget += a.maxTurns
+				sink.Notice(fmt.Sprintf("[max turns reached; auto-continuing (%d/%d)]", continues, maxAutoContinues))
 			} else {
-				sink.Notice(maxStepsNotice(a.maxSteps))
+				sink.Notice(maxTurnsNotice(a.maxTurns))
 				break
 			}
 		}
@@ -317,11 +317,11 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		lastContext = a.EstimateContext()
 	}
 
-	sink.TurnComplete(TurnUsage{Steps: steps, Usage: total, Context: lastContext})
+	sink.TurnComplete(TurnUsage{ModelTurns: modelTurns, Usage: total, Context: lastContext})
 	return nil
 }
 
-// dispatchCalls runs one step's tool calls: concurrently when the step is
+// dispatchCalls runs one model turn's tool calls: concurrently when that turn is
 // all-read-only with 2+ calls, sequentially otherwise. Sink events and the
 // returned blocks are in emission order either way, and the sink is only
 // ever called from this goroutine (spec §8).
@@ -373,26 +373,26 @@ func resultBlock(r llm.ToolResult) llm.ContentBlock {
 	}
 }
 
-// streamWithRetry runs stream, re-requesting the step from scratch when it
+// streamWithRetry runs stream, re-requesting the model turn from scratch when it
 // fails mid-flight with a retryable error. Partial output from a failed
 // attempt is never committed to the transcript; wasted carries the usage
 // failed attempts reported (paid for, so counted) — it never drives the
 // compaction trigger.
-func (a *Agent) streamWithRetry(ctx context.Context, req llm.Request, sink EventSink, step int, estimate ContextEstimate) (res stepResult, wasted llm.Usage, err error) {
+func (a *Agent) streamWithRetry(ctx context.Context, req llm.Request, sink EventSink, modelTurn int, estimate ContextEstimate) (res modelTurnResult, wasted llm.Usage, err error) {
 	for attempt := 0; ; attempt++ {
-		sink.ModelStepStart(step, attempt+1, estimate)
+		sink.ModelTurnStart(modelTurn, attempt+1, estimate)
 		res, err = a.stream(ctx, req, sink)
 		if err == nil || attempt >= streamRetries || !retryableStreamError(err) {
 			return res, wasted, err
 		}
 		wasted = add(wasted, res.usage)
-		sink.Notice(fmt.Sprintf("[stream interrupted: %v; retrying step]", err))
+		sink.Notice(fmt.Sprintf("[stream interrupted: %v; retrying model turn]", err))
 		a.sleep(retry.Next(attempt, 0))
 	}
 }
 
 // retryableStreamError reports whether a mid-stream failure may be retried by
-// re-requesting the step. Cancellation is the user's call to stop; a
+// re-requesting the model turn. Cancellation is the user's call to stop; a
 // non-retryable APIError (invalid_request, auth) will not get better by
 // asking again. Everything else — truncated streams, transport resets,
 // retryable API errors — is transient (spec §2).
@@ -411,8 +411,8 @@ func retryableStreamError(err error) bool {
 // assembles completed tool calls in emission order, and captures the final
 // usage and stop reason. A terminal stream error is returned with whatever
 // partial text streamed so far (for cancel repair).
-func (a *Agent) stream(ctx context.Context, req llm.Request, sink EventSink) (stepResult, error) {
-	var res stepResult
+func (a *Agent) stream(ctx context.Context, req llm.Request, sink EventSink) (modelTurnResult, error) {
+	var res modelTurnResult
 	var text []byte
 
 	for ev, err := range a.provider.Stream(ctx, req) {
@@ -460,9 +460,9 @@ func textMessage(role llm.Role, text string) llm.Message {
 	return llm.Message{Role: role, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: text}}}
 }
 
-// assistantMessage builds the assistant message for a completed step: the text
+// assistantMessage builds the assistant message for a completed model turn: the text
 // block (if any) first, then tool_use blocks in emission order (design §8.1).
-func assistantMessage(res stepResult) llm.Message {
+func assistantMessage(res modelTurnResult) llm.Message {
 	content := make([]llm.ContentBlock, 0, 1+len(res.toolCalls))
 	if res.text != "" {
 		content = append(content, llm.ContentBlock{Kind: llm.BlockText, Text: res.text})
@@ -478,10 +478,10 @@ func assistantMessage(res stepResult) llm.Message {
 	return llm.Message{Role: llm.RoleAssistant, Content: content}
 }
 
-// maxStepsNotice is the exact guard message printed when the step budget is
+// maxTurnsNotice is the exact guard message printed when the model-turn budget is
 // exhausted (design §8.1).
-func maxStepsNotice(maxSteps int) string {
-	return fmt.Sprintf("[stopped: reached max steps (%d); say \"continue\" to keep going]", maxSteps)
+func maxTurnsNotice(maxTurns int) string {
+	return fmt.Sprintf("[stopped: reached max turns (%d); say \"continue\" to keep going]", maxTurns)
 }
 
 func add(a, b llm.Usage) llm.Usage {

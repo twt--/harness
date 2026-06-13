@@ -256,7 +256,7 @@ func run(env environment) int {
 		Reasoning:     reasoning,
 	})
 	toolCatalog.Register(delegate.New(delegateState.Snapshot, delegateTools, delegate.Options{
-		MaxSteps:                  cfg.DelegateMaxSteps,
+		MaxTurns:                  cfg.DelegateMaxTurns,
 		CompactKeepTurns:          cfg.CompactKeepTurns,
 		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
 		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,
@@ -380,12 +380,12 @@ func run(env environment) int {
 	}
 
 	ag := agent.New(provider, toolRegistry, agent.Options{
-		MaxSteps:                  cfg.MaxSteps,
+		MaxTurns:                  cfg.MaxTurns,
 		Model:                     cfg.Model,
 		ContextWindow:             cfg.ContextWindow,
 		Registry:                  modelRegistry,
 		Reasoning:                 reasoning,
-		AutoContinue:              cfg.OnMaxSteps == "continue",
+		AutoContinue:              cfg.OnMaxTurns == "continue",
 		CompactKeepTurns:          cfg.CompactKeepTurns,
 		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
 		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,

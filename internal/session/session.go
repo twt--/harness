@@ -97,16 +97,16 @@ func Load(dir string) (Session, error) {
 // Event is one append-only replay record. Display carries the exact user-facing
 // line for events that the renderer shows as dim one-liners.
 type Event struct {
-	Time    time.Time       `json:"time,omitempty"`
-	Type    string          `json:"type"`
-	Turn    int             `json:"turn,omitempty"`
-	Text    string          `json:"text,omitempty"`
-	Display string          `json:"display,omitempty"`
-	ToolID  string          `json:"tool_id,omitempty"`
-	Tool    string          `json:"tool,omitempty"`
-	Input   json.RawMessage `json:"input,omitempty"`
-	Usage   *llm.Usage      `json:"usage,omitempty"`
-	Steps   int             `json:"steps,omitempty"`
+	Time       time.Time       `json:"time,omitempty"`
+	Type       string          `json:"type"`
+	Turn       int             `json:"turn,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Display    string          `json:"display,omitempty"`
+	ToolID     string          `json:"tool_id,omitempty"`
+	Tool       string          `json:"tool,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	Usage      *llm.Usage      `json:"usage,omitempty"`
+	ModelTurns int             `json:"model_turns,omitempty"`
 }
 
 const (

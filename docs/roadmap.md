@@ -31,11 +31,11 @@ line-level claims before starting one.
    only when ripgrep is installed. Search semantics, ignore behavior, binary
    handling, and output format are owned by the host tools rather than an
    in-tree matcher.
-7. **Proactive compaction.** The step loop estimates the transcript before
+7. **Proactive compaction.** The model-turn loop estimates the transcript before
    every request and compacts mid-turn at the same 78% threshold; the
    reported-tokens signal now counts cached tokens too.
-8. **maxSteps auto-continue.** `on_max_steps = continue` grants up to 3 fresh
-   step budgets before stopping; default behavior is unchanged.
-9. **Parallel dispatch of read-only tool calls.** Steps whose calls are all
+8. **max-turns auto-continue.** `on_max_turns = continue` grants up to 3 fresh
+   model-turn budgets before stopping; default behavior is unchanged.
+9. **Parallel dispatch of read-only tool calls.** Model turns whose calls are all
    read-only dispatch concurrently (bounded at 8); ordering of sink events,
-   results, and transcript blocks is unchanged. Mixed steps stay sequential.
+   results, and transcript blocks is unchanged. Mixed turns stay sequential.

@@ -15,13 +15,13 @@ import (
 	"harness/internal/tools"
 )
 
-const DefaultMaxSteps = 20
+const DefaultMaxTurns = 20
 
 const schema = `{
   "type": "object",
   "properties": {
     "task": {"type": "string", "description": "The self-contained read-only research, inspection, or analysis task for the delegate agent."},
-    "max_steps": {"type": "integer", "minimum": 1, "description": "Optional model round-trip cap for this delegate call. Values above the configured cap are reduced to the cap."}
+    "max_turns": {"type": "integer", "minimum": 1, "description": "Optional model-turn cap for this delegate call. Values above the configured cap are reduced to the cap."}
   },
   "required": ["task"]
 }`
@@ -63,7 +63,7 @@ func (s *State) Snapshot() Runtime {
 
 // Options configures the delegate tool.
 type Options struct {
-	MaxSteps                  int
+	MaxTurns                  int
 	CompactKeepTurns          int
 	CompactSummaryMaxTokens   int
 	CompactToolResultMaxBytes int
@@ -98,7 +98,7 @@ func (t *Tool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 func (t *Tool) RunMetered(ctx context.Context, input json.RawMessage) (tools.MeteredResult, error) {
 	var args struct {
 		Task     string `json:"task"`
-		MaxSteps *int   `json:"max_steps"`
+		MaxTurns *int   `json:"max_turns"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.MeteredResult{}, err
@@ -107,7 +107,7 @@ func (t *Tool) RunMetered(ctx context.Context, input json.RawMessage) (tools.Met
 	if task == "" {
 		return tools.MeteredResult{}, fmt.Errorf("task is required")
 	}
-	maxSteps, err := t.maxSteps(args.MaxSteps)
+	maxTurns, err := t.maxTurns(args.MaxTurns)
 	if err != nil {
 		return tools.MeteredResult{}, err
 	}
@@ -121,7 +121,7 @@ func (t *Tool) RunMetered(ctx context.Context, input json.RawMessage) (tools.Met
 	}
 
 	child := agent.New(runtime.Provider, t.child, agent.Options{
-		MaxSteps:                  maxSteps,
+		MaxTurns:                  maxTurns,
 		Model:                     runtime.Model,
 		ContextWindow:             runtime.ContextWindow,
 		Registry:                  runtime.Registry,
@@ -141,26 +141,33 @@ func (t *Tool) RunMetered(ctx context.Context, input json.RawMessage) (tools.Met
 	if report == "" {
 		report = "(delegate completed without a final text response)"
 	}
-	report += fmt.Sprintf("\n\n[delegate: %d steps, %d input tokens, %d output tokens]",
-		sink.usage.Steps, sink.usage.Usage.InputTokens, sink.usage.Usage.OutputTokens)
+	report += fmt.Sprintf("\n\n[delegate: %s, %d input tokens, %d output tokens]",
+		modelTurnPhrase(sink.usage.ModelTurns), sink.usage.Usage.InputTokens, sink.usage.Usage.OutputTokens)
 	return tools.MeteredResult{Text: report, Usage: sink.usage.Usage}, nil
 }
 
-func (t *Tool) maxSteps(requested *int) (int, error) {
-	cap := t.opts.MaxSteps
+func (t *Tool) maxTurns(requested *int) (int, error) {
+	cap := t.opts.MaxTurns
 	if cap <= 0 {
-		cap = DefaultMaxSteps
+		cap = DefaultMaxTurns
 	}
 	if requested == nil {
 		return cap, nil
 	}
 	if *requested <= 0 {
-		return 0, fmt.Errorf("max_steps must be positive")
+		return 0, fmt.Errorf("max_turns must be positive")
 	}
 	if *requested > cap {
 		return cap, nil
 	}
 	return *requested, nil
+}
+
+func modelTurnPhrase(n int) string {
+	if n == 1 {
+		return "1 model turn"
+	}
+	return fmt.Sprintf("%d model turns", n)
 }
 
 func appendDelegateSystem(system string) string {
@@ -192,7 +199,7 @@ type quietSink struct {
 
 func (*quietSink) TextDelta(string) {}
 
-func (*quietSink) ModelStepStart(int, int, agent.ContextEstimate) {}
+func (*quietSink) ModelTurnStart(int, int, agent.ContextEstimate) {}
 
 func (*quietSink) ToolUseStart(llm.ToolCall) {}
 

@@ -42,11 +42,11 @@ type Config struct {
 	Session string // -session: explicit save path
 
 	// Loop / model limits.
-	MaxSteps                  int // -max-steps, default 50
+	MaxTurns                  int // -max-turns, default 250
 	DefaultContextWindow      int // -default-context-window, fallback for unknown/unconfigured models
 	ContextWindow             int // -context-window, 0 = registry/default
 	ReasoningEffort           string
-	OnMaxSteps                string // -on-max-steps: "stop" (default) or "continue"
+	OnMaxTurns                string // -on-max-turns: "stop" (default) or "continue"
 	AgentsMDWarnBytes         int    // config-only warning threshold in bytes; default 8192, explicit 0 disables
 	ToolResultMaxBytes        int    // config-only; 0 = tool default
 	ToolResultMaxLines        int    // config-only; 0 = tool default
@@ -54,7 +54,7 @@ type Config struct {
 	CompactKeepTurns          int    // config-only; 0 = agent default
 	CompactSummaryMaxTokens   int    // config-only; 0 = agent default
 	CompactToolResultMaxBytes int    // config-only; 0 = agent default, negative disables
-	DelegateMaxSteps          int    // config-only; default 20, per delegate call cap
+	DelegateMaxTurns          int    // config-only; default 20, per delegate call cap
 
 	// Run mode. Empty means "not specified" so main can let a resumed
 	// session supply the mode before falling back to the default.
@@ -96,9 +96,9 @@ type MCPConfig struct {
 }
 
 const (
-	defaultMaxSteps         = 50
+	defaultMaxTurns         = 250
 	defaultContextWindow    = 256_000
-	defaultDelegateMaxSteps = 20
+	defaultDelegateMaxTurns = 20
 )
 
 // FileModeConfig is one entry of the config file's "modes" object. It mirrors
@@ -118,11 +118,11 @@ type fileConfig struct {
 	ModelProxyURL             string                    `json:"model_proxy_url"`
 	System                    string                    `json:"system"`
 	NoEnv                     *bool                     `json:"no_env"`
-	MaxSteps                  *int                      `json:"max_steps"`
+	MaxTurns                  *int                      `json:"max_turns"`
 	DefaultContextWindow      *int                      `json:"default_context_window"`
 	ContextWindow             *int                      `json:"context_window"`
 	ReasoningEffort           string                    `json:"reasoning_effort"`
-	OnMaxSteps                string                    `json:"on_max_steps"`
+	OnMaxTurns                string                    `json:"on_max_turns"`
 	AgentsMDWarnBytes         *int                      `json:"agents_md_warn_bytes"`
 	ToolResultMaxBytes        *int                      `json:"tool_result_max_bytes"`
 	ToolResultMaxLines        *int                      `json:"tool_result_max_lines"`
@@ -130,7 +130,7 @@ type fileConfig struct {
 	CompactKeepTurns          *int                      `json:"compact_keep_turns"`
 	CompactSummaryMaxTokens   *int                      `json:"compact_summary_max_tokens"`
 	CompactToolResultMaxBytes *int                      `json:"compact_tool_result_max_bytes"`
-	DelegateMaxSteps          *int                      `json:"delegate_max_steps"`
+	DelegateMaxTurns          *int                      `json:"delegate_max_turns"`
 	Verbose                   *bool                     `json:"verbose"`
 	ToolStream                *bool                     `json:"tool_stream"`
 	LogLevel                  string                    `json:"log_level"`
@@ -174,7 +174,7 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fProvider, fModel, fModelProxyURL := f.provider, f.model, f.modelProxyURL
 	fSystem, fSystemOverride, fNoEnv := f.system, f.systemOverride, f.noEnv
 	fResume, fSession := f.resume, f.session
-	fMaxSteps, fDefaultContextWindow, fContextWindow := f.maxSteps, f.defaultContextWindow, f.contextWindow
+	fMaxTurns, fDefaultContextWindow, fContextWindow := f.maxTurns, f.defaultContextWindow, f.contextWindow
 	fReasoningEffort := f.reasoningEffort
 	fPrompt, fReplPrompt, fVerbose, fToolStream, fNoColor := f.prompt, f.replPrompt, f.verbose, f.toolStream, f.noColor
 
@@ -217,18 +217,18 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		c.Session = getenv("HARNESS_SESSION")
 	}
 
-	c.MaxSteps = resolveInt(set["max-steps"], *fMaxSteps,
-		getenv("HARNESS_MAX_STEPS"), fc.MaxSteps, defaultMaxSteps)
+	c.MaxTurns = resolveInt(set["max-turns"], *fMaxTurns,
+		getenv("HARNESS_MAX_TURNS"), fc.MaxTurns, defaultMaxTurns)
 	c.DefaultContextWindow = resolveInt(set["default-context-window"], *fDefaultContextWindow,
 		getenv("HARNESS_DEFAULT_CONTEXT_WINDOW"), fc.DefaultContextWindow, defaultContextWindow)
 	c.ContextWindow = resolveInt(set["context-window"], *fContextWindow,
 		getenv("HARNESS_CONTEXT_WINDOW"), fc.ContextWindow, 0)
 	c.ReasoningEffort = strings.ToLower(strings.TrimSpace(resolveString(set["reasoning-effort"], *fReasoningEffort,
 		getenv("HARNESS_REASONING_EFFORT"), fc.ReasoningEffort, "")))
-	c.OnMaxSteps = strings.ToLower(strings.TrimSpace(resolveString(set["on-max-steps"], *f.onMaxSteps,
-		getenv("HARNESS_ON_MAX_STEPS"), fc.OnMaxSteps, "stop")))
-	if c.OnMaxSteps != "stop" && c.OnMaxSteps != "continue" {
-		return Config{}, fmt.Errorf("invalid -on-max-steps %q (valid: stop, continue)", c.OnMaxSteps)
+	c.OnMaxTurns = strings.ToLower(strings.TrimSpace(resolveString(set["on-max-turns"], *f.onMaxTurns,
+		getenv("HARNESS_ON_MAX_TURNS"), fc.OnMaxTurns, "stop")))
+	if c.OnMaxTurns != "stop" && c.OnMaxTurns != "continue" {
+		return Config{}, fmt.Errorf("invalid -on-max-turns %q (valid: stop, continue)", c.OnMaxTurns)
 	}
 	c.AgentsMDWarnBytes = intValue(fc.AgentsMDWarnBytes, 8192)
 	c.ToolResultMaxBytes = intValue(fc.ToolResultMaxBytes, 0)
@@ -237,9 +237,9 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	c.CompactKeepTurns = intValue(fc.CompactKeepTurns, 0)
 	c.CompactSummaryMaxTokens = intValue(fc.CompactSummaryMaxTokens, 0)
 	c.CompactToolResultMaxBytes = intValue(fc.CompactToolResultMaxBytes, 0)
-	c.DelegateMaxSteps = intValue(fc.DelegateMaxSteps, defaultDelegateMaxSteps)
-	if c.DelegateMaxSteps <= 0 {
-		return Config{}, fmt.Errorf("delegate_max_steps must be positive")
+	c.DelegateMaxTurns = intValue(fc.DelegateMaxTurns, defaultDelegateMaxTurns)
+	if c.DelegateMaxTurns <= 0 {
+		return Config{}, fmt.Errorf("delegate_max_turns must be positive")
 	}
 	c.Mode = strings.ToLower(strings.TrimSpace(resolveString(set["mode"], *f.mode,
 		getenv("HARNESS_MODE"), fc.Mode, "")))
@@ -398,11 +398,11 @@ type flags struct {
 	system, systemOverride         *string
 	noEnv                          *bool
 	resume, session                *string
-	maxSteps                       *int
+	maxTurns                       *int
 	defaultContextWindow           *int
 	contextWindow                  *int
 	reasoningEffort                *string
-	onMaxSteps                     *string
+	onMaxTurns                     *string
 	mode                           *string
 	prompt                         *string
 	replPrompt                     *string
@@ -427,11 +427,11 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.noEnv = fs.Bool("no-env", false, "omit the environment context block")
 	f.resume = fs.String("resume", "", "load a session transcript and continue")
 	f.session = fs.String("session", "", "explicit session save path")
-	f.maxSteps = fs.Int("max-steps", defaultMaxSteps, "model round-trips per user turn")
+	f.maxTurns = fs.Int("max-turns", defaultMaxTurns, "model turns per user prompt")
 	f.defaultContextWindow = fs.Int("default-context-window", defaultContextWindow, "default context window for unknown/unconfigured models (tokens)")
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
 	f.reasoningEffort = fs.String("reasoning-effort", "", "reasoning/thinking effort (provider/model dependent)")
-	f.onMaxSteps = fs.String("on-max-steps", "", "when the step budget is hit: stop (default) or continue (up to 3 fresh budgets)")
+	f.onMaxTurns = fs.String("on-max-turns", "", "when the model-turn budget is hit: stop (default) or continue (up to 3 fresh budgets)")
 	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.toolStream = fs.Bool("tool-stream", true, "show live tool-call progress")

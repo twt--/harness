@@ -618,7 +618,7 @@ func TestREPLEOFSavesAndExitsZero(t *testing.T) {
 func TestREPLProviderErrorReported(t *testing.T) {
 	var out, errw bytes.Buffer
 	// A plain (non-API, non-cancel) error is retryable, so it must persist
-	// across the whole per-step budget (1 + 2 retries) to surface to errw.
+	// across the whole per-model-turn budget (1 + 2 retries) to surface to errw.
 	fail := llmtest.Step{Err: errContext("boom")}
 	fp := llmtest.New("fake", fail, fail, fail)
 	app := newTestApp(t, &out, &errw, fp)

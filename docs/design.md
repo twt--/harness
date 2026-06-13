@@ -176,7 +176,7 @@ type ToolResult struct { // becomes a BlockToolResult
 
 Both APIs hard-reject conversations that violate this. A `ValidateTranscript([]Message) error`
 helper encodes the invariant; tests assert it after every operation that mutates a
-transcript (cancel, compact, resume, max-steps stop). Repair rules:
+transcript (cancel, compact, resume, max-turns stop). Repair rules:
 
 - **Cancel mid-turn:** keep streamed partial text as an assistant text-only message;
   strip un-executed `tool_use` blocks. If nothing streamed, drop the partial message.
@@ -444,7 +444,7 @@ Precedence: **flags > environment > config file > built-in defaults.**
   model_proxy_url, run modes, flag defaults, and config-only context-efficiency knobs:
   `agents_md_warn_bytes`, `tool_result_max_bytes`, `tool_result_max_lines`,
   `read_file_default_limit`, `compact_keep_turns`, `compact_summary_max_tokens`, and
-  `compact_tool_result_max_bytes`, plus `delegate_max_steps` (default `20`) for the
+  `compact_tool_result_max_bytes`, plus `delegate_max_turns` (default `20`) for the
   read-only delegate tool.
 - `harness-model-proxy --setup` creates a proxy config in the default proxy directory,
   appends a new provider config to an existing proxy config, or updates an existing
@@ -476,11 +476,11 @@ Precedence: **flags > environment > config file > built-in defaults.**
 
 ### 8.1 Turn loop
 
-One user turn runs model steps until the model stops asking for tools:
+One user prompt runs model turns until the model stops asking for tools:
 
 ```
 append user message
-for step := 0; step < maxSteps; step++ {           // -max-steps, default 50
+for modelTurn := 0; modelTurn < maxTurns; modelTurn++ { // -max-turns, default 250
     stream := provider.Stream(ctx, request)
     accumulate: print text deltas live; collect assembled tool calls;
                 capture usage + stop reason
@@ -495,17 +495,17 @@ print turn usage line; save session
 ```
 
 - **Mostly-sequential tool execution.** Coding tools mutate a shared filesystem; deterministic
-  ordering matching the model's emission order is worth far more than parallelism. A step
-  whose calls are all read-only (2+ of them) dispatches concurrently, bounded at 8; results,
-  sink events, and transcript blocks stay in emission order. Mixed steps stay sequential.
+  ordering matching the model's emission order is worth far more than parallelism. A model
+  turn whose calls are all read-only (2+ of them) dispatches concurrently, bounded at 8;
+  results, sink events, and transcript blocks stay in emission order. Mixed turns stay sequential.
 - **One result per call, always.** Required by both APIs (§4 invariant). `Dispatch`
   produces a result even on panic.
 - **Metered tools:** tools may optionally report token usage (currently `delegate`).
   The agent adds that usage to the turn/session total, while the normal tool result
   remains the only child output added to the parent transcript.
-- **Max-steps guard:** on hit, print
-  `[stopped: reached max steps (50); say "continue" to keep going]`, keep the
-  transcript (it is valid — the last step's results are appended), return to the prompt.
+- **Max-turns guard:** on hit, print
+  `[stopped: reached max turns (250); say "continue" to keep going]`, keep the
+  transcript (it is valid — the last model turn's results are appended), return to the prompt.
 
 ### 8.2 Tool failure handling
 
@@ -862,7 +862,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 | param | type | notes |
 |---|---|---|
 | `task` | string, required | complete task for the child agent |
-| `max_steps` | int | optional per-call model round-trip cap; capped at `delegate_max_steps` |
+| `max_turns` | int | optional per-call model-turn cap; capped at `delegate_max_turns` |
 
 - Implemented in `internal/delegate`, not `internal/tools`, to avoid an import cycle:
   the delegate tool starts a child `agent.Agent`, while `internal/agent` already
@@ -921,7 +921,7 @@ backoff allows.
 ### Rendering
 
 - Assistant text streams raw as deltas arrive. No markdown rendering.
-- Model progress renders as plain stderr lines, e.g. `[model: step 1 waiting]`.
+- Model progress renders as plain stderr lines, e.g. `[model: turn 1 waiting]`.
 - Live tool-call construction renders progress to stderr by default:
   `[tool-call: name id=...]`. Disable with `-tool-stream=false`,
   `HARNESS_TOOL_STREAM=false`, or `"tool_stream": false`. Partial argument deltas
@@ -930,7 +930,7 @@ backoff allows.
   `[grep] args=["-R","-n","func main","."] → 14 lines, 2.1KB`
   built from the tool name, key args, and a result summary. `-v` adds the first ~5 lines
   of each result, dimmed.
-- Per-turn usage line: `[turn: 3 steps · 12.4k in / 1.8k out · $0.071 · 4.3s]`
+- Per-turn usage line: `[turn: 3 model turns · 12.4k in / 1.8k out · $0.071 · 4.3s]`
   (cost omitted for unknown models).
 - Dim color only when stdout is a TTY (`os.Stdout.Stat()` mode check); `NO_COLOR` env or
   `-no-color` disables. Everything is legible without color.
@@ -1009,7 +1009,7 @@ zero for Anthropic sessions.
 -no-env           omit environment context block
 -resume <file>    load a session transcript and continue
 -session <file>   explicit session save path
--max-steps <n>    model round-trips per user turn (default 50)
+-max-turns <n>    model turns per user prompt (default 250)
 -default-context-window <n>
 -context-window <n>
 -reasoning-effort <level>
@@ -1107,7 +1107,7 @@ injectable), the retry clock, and `ValidateTranscript`.
 | providers | `httptest.Server` replaying `.sse` golden fixtures per dialect → assert ordered events; golden request-JSON tests (Responses input items, Chat role:tool hoisting, args-string vs object, system placement, `stream_options`, cache_control); tool-call reassembly tables (fragment splits, empty args → `{}`, interleaved parallel calls, invalid tail → retryable stream error); truncated stream; mid-stream cancellation; retry loop via injected sleeper (429-then-200, 400 immediate failure, budget exhaustion) |
 | `internal/retry` | `Next`: jitter bounds, 30s cap, Retry-After floor |
 | tools | table-driven against `t.TempDir()`; `grep` wrapper against the host CLI; optional `rg` registration with a fake executable on PATH; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` table: exact/offset/whitespace fuzz, create, delete, rename, multi-file with one rejected file (rejected file untouched) |
-| agent loop | `FakeProvider` scripts: multi-tool batches, error-result feedback (next request carries the error), max-steps stop, cancellation → transcript still re-sendable |
+| agent loop | `FakeProvider` scripts: multi-tool batches, error-result feedback (next request carries the error), max-turns stop, cancellation → transcript still re-sendable |
 | delegate | child-agent request shape, read-only child tools, no recursive delegate exposure, metered usage folded into parent turn totals |
 | session | save→load→save round-trip; atomic rename leaves no `.tmp`; resume repair; cross-provider resume |
 | compaction | canned summary via FakeProvider; old messages collapse, last 4 turns kept; invariant holds |

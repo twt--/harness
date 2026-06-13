@@ -105,8 +105,8 @@ interrupted.
 -no-env           omit the environment context block (cwd/os/date/git)
 -resume <file>    load a session transcript and continue
 -session <file>   explicit session save path
--max-steps <n>    model round-trips per user turn (default 50)
--on-max-steps <action>  when the step budget is hit: stop (default) or continue (up to 3 fresh budgets)
+-max-turns <n>    model turns per user prompt (default 250)
+-on-max-turns <action>  when the model-turn budget is hit: stop (default) or continue (up to 3 fresh budgets)
 -default-context-window <n>   fallback window for unknown/unconfigured models (default 256000)
 -context-window <n>   override the model's context window (tokens)
 -reasoning-effort <level>   reasoning/thinking effort when supported
@@ -129,7 +129,7 @@ escaped as `@@`).
 Precedence is **flags > environment > config file > built-in defaults**.
 
 - Environment: `HARNESS_MODEL_PROXY_URL`, `HARNESS_PROVIDER`, `HARNESS_MODEL`,
-  `HARNESS_MAX_STEPS`, `HARNESS_DEFAULT_CONTEXT_WINDOW`, and other `HARNESS_*`
+  `HARNESS_MAX_TURNS`, `HARNESS_DEFAULT_CONTEXT_WINDOW`, and other `HARNESS_*`
   equivalents for user-facing flags. Provider API-key environment variables are
   read only by `harness-model-proxy`.
 - Optional config file at `~/.config/harness/config.json` (override with
@@ -143,7 +143,7 @@ Precedence is **flags > environment > config file > built-in defaults**.
   `tool_result_max_bytes`, `tool_result_max_lines`, `read_file_default_limit`,
   `compact_keep_turns`, `compact_summary_max_tokens`, and
   `compact_tool_result_max_bytes`. The read-only delegate tool also has
-  `delegate_max_steps` (default `20`) as a config-file-only cap.
+  `delegate_max_turns` (default `20`) as a config-file-only cap.
 - If `reasoning_effort` / `HARNESS_REASONING_EFFORT` / `-reasoning-effort` is set,
   harness sends it to the proxy only when requested. Proxy catalog metadata is
   used to reject unsupported models or effort values.
@@ -224,7 +224,7 @@ Three modes are built in:
 |---|---|---|
 | `auto` | all available tools, including `delegate` | the default — the model decides what to do |
 | `plan` | inspection tools (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, optional `git_readonly`), `write_tmp_file`, and `delegate` | collaborate on a plan without modifying the project |
-| `independent` | all available tools, including `delegate` | complete the task end-to-end without pausing for input; stop only on a hard blocker or the step limit |
+| `independent` | all available tools, including `delegate` | complete the task end-to-end without pausing for input; stop only on a hard blocker or the model-turn limit |
 
 Define new modes or override built-ins in the config file under `modes`. Entries
 **field-level merge** onto a built-in of the same name — an omitted field keeps
@@ -296,7 +296,7 @@ archive step fails, compaction is aborted and the full transcript is kept.
 Turn summaries include an approximate context footprint, for example:
 
 ```text
-[turn: 3 steps · 12.4k in / 1.8k out · $0.071 · ctx 42.0k/256.0k (sys 2.0k tools 1.5k msgs 38.5k) · 4.3s]
+[turn: 3 model turns · 12.4k in / 1.8k out · $0.071 · ctx 42.0k/256.0k (sys 2.0k tools 1.5k msgs 38.5k) · 4.3s]
 ```
 
 ## Interrupts

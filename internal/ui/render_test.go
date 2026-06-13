@@ -133,8 +133,8 @@ func TestUsageLineKnownModelShowsCost(t *testing.T) {
 	})
 	r.StartTurn()
 	r.TurnComplete(agent.TurnUsage{
-		Steps: 3,
-		Usage: llm.Usage{InputTokens: 12400, OutputTokens: 1800},
+		ModelTurns: 3,
+		Usage:      llm.Usage{InputTokens: 12400, OutputTokens: 1800},
 	})
 
 	got := errw.String()
@@ -144,8 +144,8 @@ func TestUsageLineKnownModelShowsCost(t *testing.T) {
 	if !strings.Contains(got, "[turn:") {
 		t.Errorf("usage line should be bracketed, got %q", got)
 	}
-	if !strings.Contains(got, "3 steps") {
-		t.Errorf("usage line should show step count, got %q", got)
+	if !strings.Contains(got, "3 model turns") {
+		t.Errorf("usage line should show model-turn count, got %q", got)
 	}
 	if !strings.Contains(got, "12.4k (12.4k) in") || !strings.Contains(got, "1.8k (1.8k) out") {
 		t.Errorf("usage line should show per-turn (cumulative) token counts, got %q", got)
@@ -170,7 +170,7 @@ func TestUsageLineUnknownModelOmitsCost(t *testing.T) {
 		Now:   fixedClock(start, time.Second),
 	})
 	r.StartTurn()
-	r.TurnComplete(agent.TurnUsage{Steps: 1, Usage: llm.Usage{InputTokens: 100, OutputTokens: 10}})
+	r.TurnComplete(agent.TurnUsage{ModelTurns: 1, Usage: llm.Usage{InputTokens: 100, OutputTokens: 10}})
 
 	got := errw.String()
 	if strings.Contains(got, "$") {
@@ -203,7 +203,7 @@ func TestTurnCompleteWritesTrailingNewline(t *testing.T) {
 	r := NewRenderer(&out, &errw, RenderOptions{})
 	r.StartTurn()
 	r.TextDelta("hello world")
-	r.TurnComplete(agent.TurnUsage{Steps: 1})
+	r.TurnComplete(agent.TurnUsage{ModelTurns: 1})
 
 	got := out.String()
 	if !strings.HasSuffix(got, "\n") {
@@ -228,21 +228,21 @@ func TestTextDeltaGoesToStdout(t *testing.T) {
 	}
 }
 
-func TestModelStepStartGoesToStderr(t *testing.T) {
+func TestModelTurnStartGoesToStderr(t *testing.T) {
 	var out, errw bytes.Buffer
 	r := NewRenderer(&out, &errw, RenderOptions{})
 
-	r.ModelStepStart(2, 1, agent.ContextEstimate{})
-	r.ModelStepStart(2, 3, agent.ContextEstimate{})
+	r.ModelTurnStart(2, 1, agent.ContextEstimate{})
+	r.ModelTurnStart(2, 3, agent.ContextEstimate{})
 
 	if out.Len() != 0 {
 		t.Errorf("model progress must not touch stdout, got %q", out.String())
 	}
 	got := errw.String()
-	if !strings.Contains(got, "[model: step 2 waiting]") {
-		t.Errorf("missing step wait line, got %q", got)
+	if !strings.Contains(got, "[model: turn 2 waiting]") {
+		t.Errorf("missing model-turn wait line, got %q", got)
 	}
-	if !strings.Contains(got, "[model: step 2 retry 2 waiting]") {
+	if !strings.Contains(got, "[model: turn 2 retry 2 waiting]") {
 		t.Errorf("missing retry wait line, got %q", got)
 	}
 }
@@ -340,8 +340,8 @@ func TestUsageLineCumulativeAcrossTurns(t *testing.T) {
 	// Turn 1: 1000 in, 200 out.
 	r.StartTurn()
 	r.TurnComplete(agent.TurnUsage{
-		Steps: 1,
-		Usage: llm.Usage{InputTokens: 1000, OutputTokens: 200},
+		ModelTurns: 1,
+		Usage:      llm.Usage{InputTokens: 1000, OutputTokens: 200},
 	})
 	line1 := errw.String()
 	errw.Reset()
@@ -355,8 +355,8 @@ func TestUsageLineCumulativeAcrossTurns(t *testing.T) {
 	// Turn 2: 500 in, 300 out. Cumulative: 1500 in, 500 out.
 	r.StartTurn()
 	r.TurnComplete(agent.TurnUsage{
-		Steps: 2,
-		Usage: llm.Usage{InputTokens: 500, OutputTokens: 300},
+		ModelTurns: 2,
+		Usage:      llm.Usage{InputTokens: 500, OutputTokens: 300},
 	})
 	line2 := errw.String()
 	if !strings.Contains(line2, "500 (1.5k) in") {

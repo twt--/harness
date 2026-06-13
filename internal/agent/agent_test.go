@@ -20,25 +20,25 @@ import (
 // recordSink captures every sink callback so tests can assert what the UI would
 // have been told.
 type recordSink struct {
-	text       strings.Builder
-	models     []modelStepEvent
-	toolUses   []llm.ToolCall
-	argDeltas  []string
-	starts     []llm.ToolCall
-	results    []llm.ToolResult
-	notices    []string
-	turnUsage  []TurnUsage
-	stepCounts []int
+	text            strings.Builder
+	models          []modelTurnEvent
+	toolUses        []llm.ToolCall
+	argDeltas       []string
+	starts          []llm.ToolCall
+	results         []llm.ToolResult
+	notices         []string
+	turnUsage       []TurnUsage
+	modelTurnCounts []int
 }
 
-type modelStepEvent struct {
-	step    int
-	attempt int
+type modelTurnEvent struct {
+	modelTurn int
+	attempt   int
 }
 
 func (s *recordSink) TextDelta(t string) { s.text.WriteString(t) }
-func (s *recordSink) ModelStepStart(step, attempt int, _ ContextEstimate) {
-	s.models = append(s.models, modelStepEvent{step: step, attempt: attempt})
+func (s *recordSink) ModelTurnStart(modelTurn, attempt int, _ ContextEstimate) {
+	s.models = append(s.models, modelTurnEvent{modelTurn: modelTurn, attempt: attempt})
 }
 func (s *recordSink) ToolUseStart(c llm.ToolCall) { s.toolUses = append(s.toolUses, c) }
 func (s *recordSink) ToolUseDelta(_ int, delta string) {
@@ -49,11 +49,11 @@ func (s *recordSink) ToolResult(r llm.ToolResult) { s.results = append(s.results
 func (s *recordSink) Notice(msg string)           { s.notices = append(s.notices, msg) }
 func (s *recordSink) TurnComplete(u TurnUsage) {
 	s.turnUsage = append(s.turnUsage, u)
-	s.stepCounts = append(s.stepCounts, u.Steps)
+	s.modelTurnCounts = append(s.modelTurnCounts, u.ModelTurns)
 }
 
 // recordTool is a fake tool whose Run is scriptable; it records the inputs it
-// received in call order. The mutex guards inputs because read-only steps now
+// received in call order. The mutex guards inputs because read-only model turns now
 // dispatch Run concurrently.
 type recordTool struct {
 	name     string
@@ -317,7 +317,7 @@ func TestToolCallStreamEventsForwardedBeforeDone(t *testing.T) {
 	}
 }
 
-func TestModelStepStartEmittedForRetries(t *testing.T) {
+func TestModelTurnStartEmittedForRetries(t *testing.T) {
 	fail := llmtest.Step{Err: &llm.APIError{StatusCode: 529, Message: "overloaded", Retryable: true}}
 	fp := llmtest.New("fake",
 		fail,
@@ -330,9 +330,9 @@ func TestModelStepStartEmittedForRetries(t *testing.T) {
 	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	want := []modelStepEvent{{step: 1, attempt: 1}, {step: 1, attempt: 2}}
+	want := []modelTurnEvent{{modelTurn: 1, attempt: 1}, {modelTurn: 1, attempt: 2}}
 	if !slices.Equal(sink.models, want) {
-		t.Errorf("model step events = %+v, want %+v", sink.models, want)
+		t.Errorf("model turn events = %+v, want %+v", sink.models, want)
 	}
 }
 
@@ -391,20 +391,20 @@ func TestFailingToolFedBackAsError(t *testing.T) {
 	}
 }
 
-func TestMaxStepsStop(t *testing.T) {
+func TestMaxTurnsStop(t *testing.T) {
 	tool := &recordTool{name: "loop", run: func(_ context.Context, _ json.RawMessage) (string, error) {
 		return "again", nil
 	}}
 	reg := &tools.Registry{}
 	reg.Register(tool)
 
-	// Every step asks for a tool: the loop must stop at the limit.
+	// Every model turn asks for a tool: the loop must stop at the limit.
 	always := llmtest.Step{
 		Events: []llm.StreamEvent{toolDone(0, "id", "loop", `{}`)},
 		Stop:   llm.StopToolUse,
 	}
 	fp := llmtest.New("fake", always, always, always)
-	a := newAgent(fp, reg, Options{MaxSteps: 3})
+	a := newAgent(fp, reg, Options{MaxTurns: 3})
 	sink := &recordSink{}
 
 	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
@@ -416,39 +416,39 @@ func TestMaxStepsStop(t *testing.T) {
 		t.Errorf("provider called %d times, want 3 (the limit)", len(fp.Requests))
 	}
 
-	var sawMaxSteps bool
+	var sawMaxTurns bool
 	for _, n := range sink.notices {
-		if strings.Contains(n, "max steps") {
-			sawMaxSteps = true
+		if strings.Contains(n, "max turns") {
+			sawMaxTurns = true
 			if !strings.Contains(n, "(3)") {
-				t.Errorf("max-steps notice should name the limit: %q", n)
+				t.Errorf("max-turns notice should name the limit: %q", n)
 			}
 		}
 	}
-	if !sawMaxSteps {
-		t.Errorf("sink not told about max-steps stop, notices=%v", sink.notices)
+	if !sawMaxTurns {
+		t.Errorf("sink not told about max-turns stop, notices=%v", sink.notices)
 	}
 }
 
-func TestAutoContinuePastMaxSteps(t *testing.T) {
+func TestAutoContinuePastMaxTurns(t *testing.T) {
 	tool := &recordTool{name: "loop", run: func(_ context.Context, _ json.RawMessage) (string, error) {
 		return "again", nil
 	}}
 	reg := &tools.Registry{}
 	reg.Register(tool)
 
-	// Every step asks for a tool; with MaxSteps 2 and 3 auto-continues the
-	// loop runs 2*(1+3)=8 steps, then stops with the final notice.
+	// Every model turn asks for a tool; with MaxTurns 2 and 3 auto-continues the
+	// loop runs 2*(1+3)=8 model turns, then stops with the final notice.
 	always := llmtest.Step{
 		Events: []llm.StreamEvent{toolDone(0, "id", "loop", `{}`)},
 		Stop:   llm.StopToolUse,
 	}
-	steps := make([]llmtest.Step, 10)
-	for i := range steps {
-		steps[i] = always
+	modelTurns := make([]llmtest.Step, 10)
+	for i := range modelTurns {
+		modelTurns[i] = always
 	}
-	fp := llmtest.New("fake", steps...)
-	a := newAgent(fp, reg, Options{MaxSteps: 2, AutoContinue: true})
+	fp := llmtest.New("fake", modelTurns...)
+	a := newAgent(fp, reg, Options{MaxTurns: 2, AutoContinue: true})
 	sink := &recordSink{}
 
 	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
@@ -459,8 +459,8 @@ func TestAutoContinuePastMaxSteps(t *testing.T) {
 	if len(fp.Requests) != 8 {
 		t.Errorf("provider called %d times, want 8 (4 budgets of 2)", len(fp.Requests))
 	}
-	if sink.turnUsage[0].Steps != 8 {
-		t.Errorf("TurnComplete steps = %d, want 8", sink.turnUsage[0].Steps)
+	if sink.turnUsage[0].ModelTurns != 8 {
+		t.Errorf("TurnComplete model turns = %d, want 8", sink.turnUsage[0].ModelTurns)
 	}
 	var continues, stops int
 	for _, n := range sink.notices {
@@ -544,7 +544,7 @@ func TestCancellationWithNoTextDropsMessage(t *testing.T) {
 	}
 }
 
-func TestUsageAccumulatedAcrossSteps(t *testing.T) {
+func TestUsageAccumulatedAcrossModelTurns(t *testing.T) {
 	tool := &recordTool{name: "echo", run: func(_ context.Context, _ json.RawMessage) (string, error) {
 		return "x", nil
 	}}
@@ -576,8 +576,8 @@ func TestUsageAccumulatedAcrossSteps(t *testing.T) {
 	if tu.Usage.InputTokens != 300 || tu.Usage.OutputTokens != 30 {
 		t.Errorf("turn usage = %+v, want 300 in / 30 out", tu.Usage)
 	}
-	if tu.Steps != 2 {
-		t.Errorf("turn steps = %d, want 2", tu.Steps)
+	if tu.ModelTurns != 2 {
+		t.Errorf("turn model turns = %d, want 2", tu.ModelTurns)
 	}
 }
 
@@ -657,7 +657,7 @@ func TestMidStreamRetrySucceedsOnSecondAttempt(t *testing.T) {
 	}
 	var retried bool
 	for _, n := range sink.notices {
-		if strings.Contains(n, "retrying step") {
+		if strings.Contains(n, "retrying model turn") {
 			retried = true
 		}
 	}

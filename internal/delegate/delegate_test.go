@@ -38,13 +38,13 @@ func TestDelegateRunsChildAgentAndReturnsFinalReport(t *testing.T) {
 		Registry: llm.NewRegistry(nil),
 		System:   "parent system",
 	})
-	tool := New(state.Snapshot, childTools, Options{MaxSteps: 3})
+	tool := New(state.Snapshot, childTools, Options{MaxTurns: 3})
 
 	result, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"inspect the repo"}`))
 	if err != nil {
 		t.Fatalf("RunMetered: %v", err)
 	}
-	if !strings.Contains(result.Text, "final report") || !strings.Contains(result.Text, "[delegate: 1 steps") {
+	if !strings.Contains(result.Text, "final report") || !strings.Contains(result.Text, "[delegate: 1 model turn") {
 		t.Fatalf("delegate output = %q", result.Text)
 	}
 	if result.Usage.InputTokens != 11 || result.Usage.OutputTokens != 5 {
@@ -76,15 +76,15 @@ func TestDelegateRejectsRecursiveChildToolSet(t *testing.T) {
 		return Runtime{Provider: fp, Model: "m", Registry: llm.NewRegistry(nil)}
 	}, childTools, Options{})
 
-	if _, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"go","max_steps":0}`)); err == nil {
-		t.Fatalf("explicit max_steps=0 should be rejected")
+	if _, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"go","max_turns":0}`)); err == nil {
+		t.Fatalf("explicit max_turns=0 should be rejected")
 	}
 
-	result, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"go","max_steps":99}`))
+	result, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"go","max_turns":99}`))
 	if err != nil {
-		t.Fatalf("RunMetered with capped max_steps: %v", err)
+		t.Fatalf("RunMetered with capped max_turns: %v", err)
 	}
-	if !strings.Contains(result.Text, "[delegate: 1 steps") {
+	if !strings.Contains(result.Text, "[delegate: 1 model turn") {
 		t.Fatalf("delegate output = %q", result.Text)
 	}
 	for _, spec := range fp.Requests[0].Tools {

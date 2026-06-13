@@ -19,7 +19,7 @@ const Default = "auto"
 
 // Mode is one resolved run mode. AllowedTools is always explicit after
 // Builtins/Resolve (never empty), so callers need no nil special case. The
-// struct is deliberately small; future per-mode knobs (e.g. max_steps) can be
+// struct is deliberately small; future per-mode knobs (e.g. max_turns) can be
 // added alongside without changing the merge contract.
 type Mode struct {
 	Name         string
@@ -35,7 +35,7 @@ type FileMode struct {
 	Prompt       string   `json:"prompt"`
 }
 
-const independentPrompt = `You are running in independent mode. Complete the requested task end to end without pausing to ask the user for input, confirmation, or clarification. Make reasonable assumptions, proceed, and note any assumptions in your final report. Only stop early for a hard blocker you cannot resolve with the available tools, or when you reach the step limit. Do the work, verify it, then report what you did.`
+const independentPrompt = `You are running in independent mode. Complete the requested task end to end without pausing to ask the user for input, confirmation, or clarification. Make reasonable assumptions, proceed, and note any assumptions in your final report. Only stop early for a hard blocker you cannot resolve with the available tools, or when you reach the model-turn limit. Do the work, verify it, then report what you did.`
 
 const planPrompt = `You are running in plan mode. Collaborate with the user to investigate the codebase and design an implementation plan; do not modify the project. You have read-only tools, git_readonly for history when git is available, and write_tmp_file for drafting notes to scratch files. Read the relevant code before proposing changes, ask clarifying questions when requirements are ambiguous, and present a concrete, ordered plan naming the exact files and changes involved. When the plan is ready, summarize it for the user rather than executing it.`
 

@@ -285,7 +285,7 @@ func TestRunEnvBlockReportsAbsoluteCwd(t *testing.T) {
 func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	flags := []string{
 		"-p", "-provider", "-model", "-model-proxy-url", "-system", "-system-override",
-		"-no-env", "-resume", "-session", "-max-steps", "-default-context-window", "-context-window",
+		"-no-env", "-resume", "-session", "-max-turns", "-default-context-window", "-context-window",
 		"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
 	}
 	for _, arg := range []string{"-h", "--help"} {
@@ -417,7 +417,7 @@ func TestRunBadFlagUsageError(t *testing.T) {
 
 func TestRunOneShotProviderErrorExit1(t *testing.T) {
 	// A plain (non-API, non-cancel) provider error is retryable, so it must
-	// recur through the whole per-step budget (1 + 2 retries) to surface as the
+	// recur through the whole per-model-turn budget (1 + 2 retries) to surface as the
 	// turn-fatal exit-1 it models.
 	fail := llmtest.Step{Err: &runtimeErr{"upstream"}}
 	fp := llmtest.New("fake", fail, fail, fail)

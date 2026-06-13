@@ -101,12 +101,12 @@ func (r *Renderer) TextDelta(text string) {
 	r.assistantLineOpen = !strings.HasSuffix(text, "\n")
 }
 
-func (r *Renderer) ModelStepStart(step, attempt int, _ agent.ContextEstimate) {
+func (r *Renderer) ModelTurnStart(modelTurn, attempt int, _ agent.ContextEstimate) {
 	if attempt <= 1 {
-		r.dimLine(fmt.Sprintf("[model: step %d waiting]", step))
+		r.dimLine(fmt.Sprintf("[model: turn %d waiting]", modelTurn))
 		return
 	}
-	r.dimLine(fmt.Sprintf("[model: step %d retry %d waiting]", step, attempt-1))
+	r.dimLine(fmt.Sprintf("[model: turn %d retry %d waiting]", modelTurn, attempt-1))
 }
 
 func (r *Renderer) ToolUseStart(call llm.ToolCall) {
@@ -248,15 +248,15 @@ func ToolResultLine(call llm.ToolCall, result llm.ToolResult) string {
 
 // usageLine renders the per-turn summary with cumulative totals (design §10):
 //
-//	[turn: 3 steps · 12.4k (15.0k) in / 1.8k (2.0k) out · $0.071 ($0.102) · 4.3s]
+//	[turn: 3 model turns · 12.4k (15.0k) in / 1.8k (2.0k) out · $0.071 ($0.102) · 4.3s]
 //
 // Per-turn values are shown first; parenthesised values are cumulative across
 // the session. Cumulative cost is omitted for models with no price entry;
 // per-turn cost is also omitted when the model has no price entry.
 func usageLine(registry *llm.Registry, model string, u agent.TurnUsage, elapsed time.Duration, cumIn, cumOut int, cumCost float64) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[turn: %d steps · %s (%s) in / %s (%s) out",
-		u.Steps,
+	fmt.Fprintf(&b, "[turn: %s · %s (%s) in / %s (%s) out",
+		modelTurnPhrase(u.ModelTurns),
 		humanTokens(u.Usage.InputTokens), humanTokens(cumIn),
 		humanTokens(u.Usage.OutputTokens), humanTokens(cumOut))
 	if registry != nil {
@@ -273,6 +273,13 @@ func usageLine(registry *llm.Registry, model string, u agent.TurnUsage, elapsed 
 	}
 	fmt.Fprintf(&b, " · %s]", humanDuration(elapsed))
 	return b.String()
+}
+
+func modelTurnPhrase(n int) string {
+	if n == 1 {
+		return "1 model turn"
+	}
+	return fmt.Sprintf("%d model turns", n)
 }
 
 // turnCost returns the USD cost for a single turn's usage. It returns 0 when

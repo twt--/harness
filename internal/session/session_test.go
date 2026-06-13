@@ -301,7 +301,7 @@ func TestReplayPrintsUserFacingView(t *testing.T) {
 		{Type: EventAssistantDelta, Turn: 1, Text: "I'll check.\n"},
 		{Type: EventToolResult, Turn: 1, Display: `[rg pattern="panic" .] → 2 lines, 80B`},
 		{Type: EventNotice, Turn: 1, Display: "[compacted: 6 messages → summary]"},
-		{Type: EventTurnUsage, Turn: 1, Display: "[turn: 2 steps · 1.0k in / 100 out]"},
+		{Type: EventTurnUsage, Turn: 1, Display: "[turn: 2 model turns · 1.0k in / 100 out]"},
 	}
 	for _, ev := range events {
 		if err := AppendEvent(dir, ev); err != nil {
@@ -325,12 +325,12 @@ func TestLatestTurnOutputReturnsLatestVisibleOutputWithoutUserPrompt(t *testing.
 	events := []Event{
 		{Type: EventUser, Turn: 1, Text: "first prompt"},
 		{Type: EventAssistantDelta, Turn: 1, Text: "old answer\n"},
-		{Type: EventTurnUsage, Turn: 1, Display: "[turn: 1 steps]"},
+		{Type: EventTurnUsage, Turn: 1, Display: "[turn: 1 model turn]"},
 		{Type: EventUser, Turn: 2, Text: "second prompt"},
 		{Type: EventAssistantDelta, Turn: 2, Text: "new answer"},
 		{Type: EventToolResult, Turn: 2, Display: `[read_file path="x"] → 12B`},
 		{Type: EventNotice, Turn: 2, Display: "[notice]"},
-		{Type: EventTurnUsage, Turn: 2, Display: "[turn: 2 steps]"},
+		{Type: EventTurnUsage, Turn: 2, Display: "[turn: 2 model turns]"},
 	}
 	for _, ev := range events {
 		if err := AppendEvent(dir, ev); err != nil {
@@ -345,7 +345,7 @@ func TestLatestTurnOutputReturnsLatestVisibleOutputWithoutUserPrompt(t *testing.
 	want := "new answer\n" +
 		`[read_file path="x"] → 12B` + "\n" +
 		"[notice]\n" +
-		"[turn: 2 steps]"
+		"[turn: 2 model turns]"
 	if got != want {
 		t.Fatalf("latest output mismatch:\nwant %q\n got %q", want, got)
 	}
