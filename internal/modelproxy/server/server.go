@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
@@ -20,6 +22,8 @@ const maxStreamRequestBytes = 64 << 20
 type Config struct {
 	ProviderConfigs      []string `json:"provider_configs"`
 	DefaultContextWindow int      `json:"default_context_window"`
+	LogLevel             string   `json:"log_level,omitempty"`
+	LogFormat            string   `json:"log_format,omitempty"`
 }
 
 type Options struct {
@@ -33,6 +37,7 @@ type Options struct {
 
 type Handler struct {
 	catalog              protocol.Catalog
+	registry             *llm.Registry
 	providers            []llm.ProviderConfig
 	defaultContextWindow int
 	getenv               func(string) string
@@ -72,6 +77,7 @@ func NewHandler(opts Options) (*Handler, error) {
 	}
 	return &Handler{
 		catalog:              catalog,
+		registry:             registry,
 		providers:            providers,
 		defaultContextWindow: defaultWindow,
 		getenv:               getenv,
@@ -103,41 +109,97 @@ func (h *Handler) handleModels(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxStreamRequestBytes))
+	start := time.Now()
+	cw := &countingResponseWriter{ResponseWriter: w}
+	var (
+		providerID string
+		model      string
+		usage      llm.Usage
+		stop       llm.StopReason
+		streamErr  string
+		events     int
+		toolCalls  int
+		reqBytes   int
+	)
+	defer func() {
+		attrs := []any{
+			"requester", requesterName(r),
+			"remote_addr", r.RemoteAddr,
+			"provider", providerID,
+			"model", model,
+			"status", cw.statusCode(),
+			"request_bytes", reqBytes,
+			"response_bytes", cw.bytesWritten(),
+			"duration", time.Since(start),
+			"events", events,
+			"tool_calls", toolCalls,
+			"stop_reason", string(stop),
+			"input_tokens", usage.InputTokens,
+			"output_tokens", usage.OutputTokens,
+			"cache_read_tokens", usage.CacheReadTokens,
+			"cache_write_tokens", usage.CacheWriteTokens,
+			"reasoning_tokens", usage.ReasoningTokens,
+		}
+		if h.registry != nil && providerID != "" && model != "" {
+			if cost, ok := h.registry.Cost(providerID+":"+model, usage); ok {
+				attrs = append(attrs, "cost_usd", cost)
+			}
+		}
+		if streamErr != "" {
+			attrs = append(attrs, "err", streamErr)
+			h.logger.Warn("model request completed", attrs...)
+			return
+		}
+		if cw.statusCode() >= http.StatusBadRequest {
+			h.logger.Warn("model request completed", attrs...)
+			return
+		}
+		h.logger.Info("model request completed", attrs...)
+	}()
+
+	body, err := io.ReadAll(http.MaxBytesReader(cw, r.Body, maxStreamRequestBytes))
+	reqBytes = len(body)
 	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, &protocol.Error{StatusCode: http.StatusRequestEntityTooLarge, Message: "request body too large"})
+		streamErr = "request body too large"
+		writeError(cw, http.StatusRequestEntityTooLarge, &protocol.Error{StatusCode: http.StatusRequestEntityTooLarge, Message: "request body too large"})
 		return
 	}
 	var req protocol.StreamRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "malformed stream request"})
+		streamErr = "malformed stream request"
+		writeError(cw, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "malformed stream request"})
 		return
 	}
-	providerID := strings.TrimSpace(req.Provider)
+	providerID = strings.TrimSpace(req.Provider)
+	model = req.Request.Model
 	if providerID == "" {
-		writeError(w, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "provider is required"})
+		streamErr = "provider is required"
+		writeError(cw, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "provider is required"})
 		return
 	}
-	if req.Request.Model == "" {
-		writeError(w, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "model is required"})
+	if model == "" {
+		streamErr = "model is required"
+		writeError(cw, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: "model is required"})
 		return
 	}
 
 	opts, err := h.runtimeOptions(providerID, req.Request.Model)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: err.Error()})
+		streamErr = err.Error()
+		writeError(cw, http.StatusBadRequest, &protocol.Error{StatusCode: http.StatusBadRequest, Message: err.Error()})
 		return
 	}
 	provider, err := h.newProvider(opts)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, protocol.ErrorFrom(err))
+		streamErr = err.Error()
+		writeError(cw, http.StatusBadRequest, protocol.ErrorFrom(err))
 		return
 	}
 
-	w.Header().Set("content-type", protocol.ContentTypeNDJSON)
-	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-	enc := json.NewEncoder(w)
+	cw.Header().Set("content-type", protocol.ContentTypeNDJSON)
+	cw.WriteHeader(http.StatusOK)
+	var flusher http.Flusher = cw
+	enc := json.NewEncoder(cw)
 	flush := func() {
 		if flusher != nil {
 			flusher.Flush()
@@ -146,16 +208,89 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	for ev, err := range provider.Stream(r.Context(), req.Request) {
 		if err != nil {
+			streamErr = err.Error()
 			_ = enc.Encode(protocol.StreamEnvelope{Error: protocol.ErrorFrom(err)})
 			flush()
 			return
 		}
+		events++
+		if ev.Usage != nil {
+			usage = mergeUsage(usage, *ev.Usage)
+		}
+		if ev.Kind == llm.EventToolCallDone {
+			toolCalls++
+		}
+		if ev.Kind == llm.EventDone {
+			stop = ev.StopReason
+		}
 		event := ev
 		if err := enc.Encode(protocol.StreamEnvelope{Event: &event}); err != nil {
+			streamErr = err.Error()
 			return
 		}
 		flush()
 	}
+}
+
+type countingResponseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *countingResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+		w.ResponseWriter.WriteHeader(status)
+	}
+}
+
+func (w *countingResponseWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += n
+	return n, err
+}
+
+func (w *countingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *countingResponseWriter) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+func (w *countingResponseWriter) bytesWritten() int {
+	return w.bytes
+}
+
+func requesterName(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("X-Harness-Requester")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(r.UserAgent()); v != "" {
+		return v
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func mergeUsage(acc, in llm.Usage) llm.Usage {
+	acc.InputTokens = max(acc.InputTokens, in.InputTokens)
+	acc.OutputTokens = max(acc.OutputTokens, in.OutputTokens)
+	acc.CacheReadTokens = max(acc.CacheReadTokens, in.CacheReadTokens)
+	acc.CacheWriteTokens = max(acc.CacheWriteTokens, in.CacheWriteTokens)
+	acc.ReasoningTokens = max(acc.ReasoningTokens, in.ReasoningTokens)
+	return acc
 }
 
 func (h *Handler) runtimeOptions(providerID, model string) (factory.Options, error) {

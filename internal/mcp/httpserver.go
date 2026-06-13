@@ -50,6 +50,29 @@ type HTTPHandlerOptions struct {
 	now func() time.Time
 }
 
+// RequestInfo carries per-request metadata from the streamable-HTTP layer to a
+// ToolProvider. Proxies use it for structured request logging without making
+// provider interfaces HTTP-specific.
+type RequestInfo struct {
+	Requester        string
+	RequesterVersion string
+	RemoteAddr       string
+}
+
+type requestInfoKey struct{}
+
+// ContextWithRequestInfo attaches request metadata for tests or custom
+// transports that already know the requester.
+func ContextWithRequestInfo(ctx context.Context, info RequestInfo) context.Context {
+	return context.WithValue(ctx, requestInfoKey{}, info)
+}
+
+// RequestInfoFromContext returns request metadata attached by NewHTTPHandler.
+func RequestInfoFromContext(ctx context.Context) (RequestInfo, bool) {
+	info, ok := ctx.Value(requestInfoKey{}).(RequestInfo)
+	return info, ok
+}
+
 // NewHTTPHandler returns a spec-conforming streamable-HTTP MCP server handler
 // (spec revision 2025-06-18) for a tools-only provider. It interoperates with
 // the HTTPTransport client in this package.
@@ -88,6 +111,7 @@ func NewHTTPHandler(opts HTTPHandlerOptions) http.Handler {
 type httpSession struct {
 	mu       sync.Mutex
 	lastSeen time.Time
+	client   Implementation
 	inflight map[jsonrpc.ID]context.CancelFunc
 }
 
@@ -218,7 +242,7 @@ func (h *httpHandler) handleInitialize(w http.ResponseWriter, id jsonrpc.ID, par
 	// Negotiate: echo the client's version if we support it, else offer ours.
 	// The client surfaces a server-selected version it cannot speak as a
 	// VersionError, so offering ours is the correct downgrade signal.
-	_, raw, jerr := initializePayload(params, h.info, false)
+	p, raw, jerr := initializePayload(params, h.info, false)
 	if jerr != nil {
 		h.writeError(w, id, jerr)
 		return
@@ -236,6 +260,7 @@ func (h *httpHandler) handleInitialize(w http.ResponseWriter, id jsonrpc.ID, par
 	h.mu.Lock()
 	h.sessions[sessionID] = &httpSession{
 		lastSeen: h.now(),
+		client:   p.ClientInfo,
 		inflight: make(map[jsonrpc.ID]context.CancelFunc),
 	}
 	h.mu.Unlock()
@@ -264,7 +289,13 @@ func (h *httpHandler) handleCallTool(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
-	callCtx, cancel := context.WithCancel(r.Context())
+	clientInfo := sess.clientInfo()
+	requestInfo := RequestInfo{
+		Requester:        clientInfo.Name,
+		RequesterVersion: clientInfo.Version,
+		RemoteAddr:       r.RemoteAddr,
+	}
+	callCtx, cancel := context.WithCancel(ContextWithRequestInfo(r.Context(), requestInfo))
 	key := id
 	sess.mu.Lock()
 	sess.inflight[key] = cancel
@@ -282,6 +313,12 @@ func (h *httpHandler) handleCallTool(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 	h.writeResult(w, id, raw)
+}
+
+func (s *httpSession) clientInfo() Implementation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client
 }
 
 // cancelInflight cancels the in-flight call matching a notifications/cancelled

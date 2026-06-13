@@ -17,6 +17,8 @@ import (
 
 const maxErrorBodyBytes = 1 << 20
 
+const requesterHeader = "X-Harness-Requester"
+
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -47,6 +49,7 @@ func (c *Client) Catalog(ctx context.Context) (protocol.Catalog, error) {
 	if err != nil {
 		return protocol.Catalog{}, err
 	}
+	req.Header.Set(requesterHeader, "harness")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return protocol.Catalog{}, err
@@ -120,6 +123,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.St
 		}
 		httpReq.Header.Set("content-type", "application/json")
 		httpReq.Header.Set("accept", protocol.ContentTypeNDJSON)
+		httpReq.Header.Set(requesterHeader, "harness")
 
 		resp, err := p.client.http.Do(httpReq)
 		if err != nil {

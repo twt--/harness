@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"harness/internal/llm"
+	"harness/internal/logging"
 	"harness/internal/modelsdev"
 	"harness/internal/ui"
 )
@@ -25,6 +26,8 @@ import (
 type setupMainConfig struct {
 	ProviderConfigs      []string `json:"provider_configs"`
 	DefaultContextWindow int      `json:"default_context_window"`
+	LogLevel             string   `json:"log_level,omitempty"`
+	LogFormat            string   `json:"log_format,omitempty"`
 }
 
 type setupProviderConfig struct {
@@ -111,6 +114,8 @@ func runSetup(env environment, force bool) error {
 	mainConfig := setupMainConfig{
 		ProviderConfigs:      []string{providerFile},
 		DefaultContextWindow: llm.DefaultContextWindow,
+		LogLevel:             logging.LevelInfo,
+		LogFormat:            logging.FormatJSON,
 	}
 
 	var configBody any = mainConfig

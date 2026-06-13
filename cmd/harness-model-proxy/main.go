@@ -65,7 +65,8 @@ func run(env environment) int {
 	setup := fs.Bool("setup", false, "create or update proxy config")
 	force := fs.Bool("force", false, "with --setup, overwrite existing provider files")
 	refreshModels := fs.Bool("refresh-models", false, "fetch models.dev and update configured provider model metadata")
-	logLevel := fs.String("log-level", logging.LevelInfo, "log level: debug, info, warn, error")
+	logLevel := fs.String("log-level", "", "log level: debug, info, warn, error")
+	logFormat := fs.String("log-format", "", "log format: json, text")
 	if err := fs.Parse(env.args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage(env.stdout)
@@ -100,12 +101,20 @@ func run(env environment) int {
 		return exitRuntime
 	}
 
-	level, err := logging.CanonicalLevel(*logLevel)
+	level := cfg.LogLevel
+	if *logLevel != "" {
+		level = *logLevel
+	}
+	level, err = logging.CanonicalLevel(level)
 	if err != nil {
 		fmt.Fprintf(env.stderr, "harness-model-proxy: %v\n", err)
 		return exitUsage
 	}
-	logger, err := logging.NewLogger(env.stderr, level, false)
+	format := cfg.LogFormat
+	if *logFormat != "" {
+		format = *logFormat
+	}
+	logger, err := logging.NewProxyLogger(env.stderr, level, format)
 	if err != nil {
 		fmt.Fprintf(env.stderr, "harness-model-proxy: %v\n", err)
 		return exitUsage
@@ -164,6 +173,7 @@ func usage(w io.Writer) {
 	fs.Bool("force", false, "with --setup, overwrite existing provider files")
 	fs.Bool("refresh-models", false, "fetch models.dev and update configured provider model metadata")
 	fs.String("log-level", logging.LevelInfo, "log level: debug, info, warn, error")
+	fs.String("log-format", logging.FormatJSON, "log format: json, text")
 	fs.PrintDefaults()
 }
 

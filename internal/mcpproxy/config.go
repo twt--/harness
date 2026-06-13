@@ -43,11 +43,12 @@ type ServerConfig struct {
 }
 
 // ProxySettings carries proxy-level overrides. Empty fields fall back to
-// defaults (listen → DefaultListen, logLevel → info).
+// defaults (listen → DefaultListen, logLevel → info, logFormat → json).
 type ProxySettings struct {
-	Listen   string `json:"listen"`
-	LogFile  string `json:"logFile"`
-	LogLevel string `json:"logLevel"`
+	Listen    string `json:"listen"`
+	LogFile   string `json:"logFile"`
+	LogLevel  string `json:"logLevel"`
+	LogFormat string `json:"logFormat"`
 }
 
 // Transport selects a resolved server's downstream transport.
@@ -78,11 +79,12 @@ type ResolvedServer struct {
 // expansion vars, skipped invalid servers); the caller logs them — library code
 // never prints.
 type Config struct {
-	Servers  []ResolvedServer
-	Listen   string
-	LogFile  string
-	LogLevel string
-	Warnings []string
+	Servers   []ResolvedServer
+	Listen    string
+	LogFile   string
+	LogLevel  string
+	LogFormat string
+	Warnings  []string
 }
 
 const (
@@ -130,8 +132,9 @@ func LoadConfig(path string) (Config, error) {
 // always the post-expansion value.
 func resolve(fc FileConfig) Config {
 	cfg := Config{
-		LogFile:  fc.Proxy.LogFile,
-		LogLevel: fc.Proxy.LogLevel,
+		LogFile:   fc.Proxy.LogFile,
+		LogLevel:  fc.Proxy.LogLevel,
+		LogFormat: fc.Proxy.LogFormat,
 	}
 
 	// Expand variables across the whole config first, accumulating one warning

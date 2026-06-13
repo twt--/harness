@@ -99,7 +99,7 @@ func usage(w io.Writer, getenv func(string) string) {
 	fmt.Fprint(w, `harness-mcp-proxy - MCP proxy daemon and debug client
 
 Usage:
-  harness-mcp-proxy serve   [-config path] [-listen addr] [-log path] [-log-level level]
+  harness-mcp-proxy serve   [-config path] [-listen addr] [-log path] [-log-level level] [-log-format format]
   harness-mcp-proxy tools   [-config path] [-proxy url]
   harness-mcp-proxy version
 
@@ -115,6 +115,7 @@ serve flags:
   -listen addr      HTTP listen address (overrides config; default: `+mcpproxy.DefaultListen+`)
   -log path         log file (overrides config; default: stderr)
   -log-level level  debug|info|warn|error (overrides config; default: info)
+  -log-format fmt   json|text (overrides config; default: json)
 
 tools flags:
   -config path      config file (default: `+mcpproxy.DefaultConfigPath(getenv)+`)

@@ -29,6 +29,7 @@ func runServe(env environment, args []string) int {
 	listen := fs.String("listen", "", "HTTP listen address (overrides config and default)")
 	logPath := fs.String("log", "", "log file path (overrides config logFile)")
 	logLevel := fs.String("log-level", "", "log level: debug|info|warn|error (overrides config)")
+	logFormat := fs.String("log-format", "", "log format: json|text (overrides config)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			usage(env.stdout, env.getenv)
@@ -59,6 +60,14 @@ func runServe(env environment, args []string) int {
 		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitUsage
 	}
+	format := cfg.LogFormat
+	if *logFormat != "" {
+		format = *logFormat
+	}
+	if _, err := logging.ParseFormat(format); err != nil {
+		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
+		return exitUsage
+	}
 
 	// Resolve and open the log sink (flag > config > stderr-if-TTY > file).
 	sink, closeSink, err := openLogSink(logSinkParams{
@@ -72,7 +81,7 @@ func runServe(env environment, args []string) int {
 	}
 	defer closeSink()
 
-	logger, err := logging.NewLogger(sink, level, false)
+	logger, err := logging.NewProxyLogger(sink, level, format)
 	if err != nil {
 		fmt.Fprintf(env.stderr, "harness-mcp-proxy: %v\n", err)
 		return exitUsage

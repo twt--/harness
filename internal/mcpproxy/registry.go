@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"harness/internal/logging"
 	"harness/internal/mcp"
@@ -148,11 +149,46 @@ func (r *Registry) ListTools(ctx context.Context, cursor string) (mcp.ListToolsR
 // model should not have called it); a known tool's result (including IsError) is
 // passed straight through.
 func (r *Registry) CallTool(ctx context.Context, qualified string, args json.RawMessage) (*mcp.CallToolResult, error) {
+	start := time.Now()
 	sup, bare, ok := r.route(qualified)
 	if !ok {
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "unknown tool: %s", qualified)
+		err := jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "unknown tool: %s", qualified)
+		r.logToolCall(ctx, qualified, "", "", len(args), 0, time.Since(start), false, err)
+		return nil, err
 	}
-	return sup.CallTool(ctx, bare, args)
+	result, err := sup.CallTool(ctx, bare, args)
+	responseBytes := 0
+	isError := false
+	if result != nil {
+		isError = result.IsError
+		if raw, marshalErr := json.Marshal(result); marshalErr == nil {
+			responseBytes = len(raw)
+		}
+	}
+	r.logToolCall(ctx, qualified, sup.Name(), bare, len(args), responseBytes, time.Since(start), isError, err)
+	return result, err
+}
+
+func (r *Registry) logToolCall(ctx context.Context, qualified, server, tool string, requestBytes, responseBytes int, duration time.Duration, isError bool, err error) {
+	reqInfo, _ := mcp.RequestInfoFromContext(ctx)
+	attrs := []any{
+		"requester", reqInfo.Requester,
+		"requester_version", reqInfo.RequesterVersion,
+		"remote_addr", reqInfo.RemoteAddr,
+		"mcp", server,
+		"tool", tool,
+		"qualified_tool", qualified,
+		"request_bytes", requestBytes,
+		"response_bytes", responseBytes,
+		"duration", duration,
+		"is_error", isError,
+	}
+	if err != nil {
+		attrs = append(attrs, "err", err)
+		r.logger.Warn("mcp tool request completed", attrs...)
+		return
+	}
+	r.logger.Info("mcp tool request completed", attrs...)
 }
 
 // route resolves a qualified name to its supervisor and bare tool name via the

@@ -468,6 +468,11 @@ Precedence: **flags > environment > config file > built-in defaults.**
   and refreshes each configured provider file's current model allowlist, preserving
   stored API keys. It errors if models.dev is inaccessible or a configured provider
   or model is missing/unsupported.
+- The model proxy logs one structured record per `/v1/stream` request with
+  requester, provider, model, request/response bytes, duration, token usage, stop
+  reason, tool-call count, and `cost_usd` when provider config contains pricing.
+  Proxy config accepts `log_level` (`debug|info|warn|error`) and `log_format`
+  (`json` default, or `text`), with serve flags overriding config.
 - **Selection rule:** `harness` fetches `GET /v1/models` from the proxy. A
   `provider:model` value sets the provider and strips the prefix before sending
   requests. Otherwise an explicit `-provider` selects a proxy provider, and model
@@ -1173,11 +1178,12 @@ adapter for tool dispatch (§9.14).
 
 - **Proxy config** (`internal/mcpproxy`) is Claude Code-compatible:
   `{"mcpServers": {name: {command,args,env} | {type:"http"|"streamable-http",url,headers}}, "proxy":
-  {listen,logFile,logLevel}}`, at `$XDG_CONFIG_HOME/harness-mcp-proxy/config.json`
+  {listen,logFile,logLevel,logFormat}}`, at `$XDG_CONFIG_HOME/harness-mcp-proxy/config.json`
   (else `~/.config/...`). `${NAME}` and `${NAME:-default}` references are expanded
   strictly (literal `$`, `$5`, `$$`, or unterminated `${` is preserved verbatim;
   an unset strict var warns and expands to empty). Invalid servers are skipped
-  with a warning, never fatal. `proxy.listen` defaults to `127.0.0.1:8766`.
+  with a warning, never fatal. `proxy.listen` defaults to `127.0.0.1:8766`;
+  `proxy.logFormat` defaults to built-in slog JSON and also accepts `text`.
   Library code returns warnings; the CLI logs them.
 - **Downstream supervision.** Each server gets a `Supervisor`. A **stdio** child is
   spawned in its own process group, initialized + `tools/list`ed under a 30 s
@@ -1219,6 +1225,10 @@ adapter for tool dispatch (§9.14).
   reverse proxy's auth). Header values expand `${NAME}` and `${NAME:-default}`;
   unset strict refs are config errors. The `tools` subcommand debugs one with
   `tools -proxy <url>` or the configured/default URL.
+- **Request logging.** The MCP proxy logs one structured record per routed
+  `tools/call` with requester/clientInfo, downstream MCP server name, bare and
+  qualified tool name, request/response bytes, duration, `is_error`, and any
+  protocol error. Unknown tools are warning records.
 - **Refresh semantics.** The harness-side tool list is **fixed at startup** because
   the HTTP proxy has no notification channel. A downstream streamable-HTTP server
   behind the proxy likewise has no push channel, so its tools refresh only on a
@@ -1241,7 +1251,7 @@ The harness-side adapter contract (naming, description, schema, result and error
 mapping, the reconnecting `Conn`) is §9.14. The CLI wrapper has three subcommands —
 `serve` (the daemon), `tools` (connect to a running HTTP proxy and print the
 aggregated table), and `version` — with serve flags
-`-config`/`-listen`/`-log`/`-log-level`.
+`-config`/`-listen`/`-log`/`-log-level`/`-log-format`.
 
 ## 16. Future work
 

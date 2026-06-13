@@ -22,6 +22,9 @@ const (
 	LevelInfo  = "info"
 	LevelWarn  = "warn"
 	LevelError = "error"
+
+	FormatJSON = "json"
+	FormatText = "text"
 )
 
 // Category returns the standard category label attribute.
@@ -63,6 +66,19 @@ func CanonicalLevel(name string) (string, error) {
 	}
 }
 
+// ParseFormat converts a user-facing log format into its canonical value. The
+// empty value defaults proxy daemons to JSON for log-file and collector use.
+func ParseFormat(name string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", FormatJSON:
+		return FormatJSON, nil
+	case FormatText:
+		return FormatText, nil
+	default:
+		return "", fmt.Errorf("invalid log format %q (valid: json, text)", name)
+	}
+}
+
 // HandlerOptions configures PlainHandler.
 type HandlerOptions struct {
 	Level slog.Leveler
@@ -80,6 +96,30 @@ func NewLogger(w io.Writer, levelName string, quiet bool) (*slog.Logger, error) 
 		Level: level,
 		Quiet: quiet,
 	})), nil
+}
+
+// NewProxyLogger returns a slog.Logger for long-running proxy daemons. It uses
+// the standard library's built-in JSON/Text handlers; unlike the interactive
+// CLI logger, proxy logs keep timestamps and structured attributes.
+func NewProxyLogger(w io.Writer, levelName, formatName string) (*slog.Logger, error) {
+	level, err := ParseLevel(levelName)
+	if err != nil {
+		return nil, err
+	}
+	format, err := ParseFormat(formatName)
+	if err != nil {
+		return nil, err
+	}
+	if w == nil {
+		w = io.Discard
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	switch format {
+	case FormatText:
+		return slog.New(slog.NewTextHandler(w, opts)), nil
+	default:
+		return slog.New(slog.NewJSONHandler(w, opts)), nil
+	}
 }
 
 // PlainHandler renders records as:

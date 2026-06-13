@@ -1,6 +1,7 @@
 package mcpproxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"harness/internal/logging"
 	"harness/internal/mcp"
 	"harness/internal/mcp/jsonrpc"
 )
@@ -104,6 +106,52 @@ func TestRegistryRoutingWithUnderscoreServerNames(t *testing.T) {
 		if sup.Name() != tc.wantSrv || bare != "t" {
 			t.Fatalf("route(%q) = (%s,%s), want (%s,t)", tc.qualified, sup.Name(), bare, tc.wantSrv)
 		}
+	}
+}
+
+func TestRegistryLogsToolCallStats(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := logging.NewProxyLogger(&logs, logging.LevelInfo, logging.FormatJSON)
+	if err != nil {
+		t.Fatalf("NewProxyLogger: %v", err)
+	}
+	s := newFixedSupervisor("web", []mcp.Tool{tool("search")})
+	reg := NewRegistry([]*Supervisor{s}, logger)
+	ctx := mcp.ContextWithRequestInfo(context.Background(), mcp.RequestInfo{
+		Requester:        "harness",
+		RequesterVersion: "test",
+		RemoteAddr:       "127.0.0.1:1234",
+	})
+
+	res, err := reg.CallTool(ctx, "mcp__web__search", json.RawMessage(`{"q":"x"}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("CallTool result = %+v, want unavailable isError result", res)
+	}
+
+	var record map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+		t.Fatalf("decode log %q: %v", logs.String(), err)
+	}
+	for k, want := range map[string]any{
+		"msg":               "mcp tool request completed",
+		"requester":         "harness",
+		"requester_version": "test",
+		"remote_addr":       "127.0.0.1:1234",
+		"mcp":               "web",
+		"tool":              "search",
+		"qualified_tool":    "mcp__web__search",
+		"request_bytes":     float64(len(`{"q":"x"}`)),
+		"is_error":          true,
+	} {
+		if got := record[k]; got != want {
+			t.Fatalf("log[%s] = %v (%T), want %v", k, got, got, want)
+		}
+	}
+	if record["response_bytes"].(float64) <= 0 {
+		t.Fatalf("log response_bytes not populated: %+v", record)
 	}
 }
 

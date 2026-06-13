@@ -169,7 +169,11 @@ Precedence is **flags > environment > config file > built-in defaults**.
 - For hand-written model-proxy config shape references, see
   `examples/harness-model-proxy/config.json` and
   `examples/harness-model-proxy/providers.json`; setup remains the
-  recommended way to create real provider allowlists.
+  recommended way to create real provider allowlists. The model proxy logs
+  structured request records with requester, provider/model, token usage, cost
+  when priced, response size, and duration; configure `log_level` and
+  `log_format` (`json` by default, or `text`) in the proxy config or with
+  `--log-level` / `--log-format`.
 - Run `./harness-model-proxy --refresh-models` to fetch the latest live
   `models.dev` catalog and refresh metadata for the currently configured model
   allowlists, preserving stored API keys. Unlike setup, refresh fails if models.dev
@@ -391,15 +395,18 @@ The proxy has its own config file, **separate from harness**, at
   "proxy": {
     "listen": "127.0.0.1:8766",
     "logFile": "",
-    "logLevel": "info"
+    "logLevel": "info",
+    "logFormat": "json"
   }
 }
 ```
 
 `proxy.listen` defaults to `127.0.0.1:8766`; set it to another address such as
-`127.0.0.1:8420` when you need a different port or host. A server with no `type`
-(or `"stdio"`) is a child process (`command`/`args`/`env`); `"http"` is a
-streamable-HTTP endpoint (`url`/`headers`). `${NAME}` references in any string are
+`127.0.0.1:8420` when you need a different port or host. Proxy logs use JSON by
+default (`proxy.logFormat: "json"`) or built-in slog text format (`"text"`), with
+per-tool requester, MCP server, tool, size, duration, and error fields. A server
+with no `type` (or `"stdio"`) is a child process (`command`/`args`/`env`);
+`"http"` is a streamable-HTTP endpoint (`url`/`headers`). `${NAME}` references in any string are
 expanded from the proxy's environment (a literal `$` is preserved; an unset
 variable warns and expands to empty). Invalid server entries are skipped with a
 warning, never fatal — the proxy still serves the valid ones. See
@@ -442,7 +449,8 @@ Default paths (all derived per-user):
 - **Proxy URL:** `http://127.0.0.1:8766`.
 - **Config:** `$XDG_CONFIG_HOME/harness-mcp-proxy/config.json`, else
   `~/.config/harness-mcp-proxy/config.json`.
-- **Log:** stderr unless `proxy.logFile` or `serve -log` is set.
+- **Log:** stderr unless `proxy.logFile` or `serve -log` is set; JSON format
+  unless `proxy.logFormat` or `serve -log-format text` is set.
 
 Inspect the live surface without harness with:
 

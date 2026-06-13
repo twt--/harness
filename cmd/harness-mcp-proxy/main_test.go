@@ -268,6 +268,18 @@ func TestServeBadLogLevelExit2(t *testing.T) {
 	}
 }
 
+func TestServeBadLogFormatExit2(t *testing.T) {
+	env, _, errw := testEnv(t, nil)
+
+	code := runServe(env, []string{"-log-format", "plain"})
+	if code != exitUsage {
+		t.Fatalf("bad log format: exit = %d, want %d; stderr=%q", code, exitUsage, errw.String())
+	}
+	if !strings.Contains(errw.String(), "plain") {
+		t.Errorf("error should name the invalid format; stderr=%q", errw.String())
+	}
+}
+
 func TestToolsListsAggregatedTools(t *testing.T) {
 	dir := t.TempDir()
 	addr := freeAddr(t)

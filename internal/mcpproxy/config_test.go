@@ -25,14 +25,14 @@ func TestLoadConfigCamelCaseDecode(t *testing.T) {
 			"alpha": {"command": "alpha-bin", "args": ["--flag", "x"], "env": {"K": "v"}},
 			"beta": {"type": "http", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer t"}}
 		},
-		"proxy": {"listen": "127.0.0.1:8089", "socket": "/tmp/ignored.sock", "logFile": "/tmp/g.log", "logLevel": "debug"}
+		"proxy": {"listen": "127.0.0.1:8089", "socket": "/tmp/ignored.sock", "logFile": "/tmp/g.log", "logLevel": "debug", "logFormat": "text"}
 	}`)
 
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.Listen != "127.0.0.1:8089" || cfg.LogFile != "/tmp/g.log" || cfg.LogLevel != "debug" {
+	if cfg.Listen != "127.0.0.1:8089" || cfg.LogFile != "/tmp/g.log" || cfg.LogLevel != "debug" || cfg.LogFormat != "text" {
 		t.Fatalf("proxy settings not decoded: %+v", cfg)
 	}
 	if len(cfg.Servers) != 2 {

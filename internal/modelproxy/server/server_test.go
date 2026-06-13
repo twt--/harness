@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"harness/internal/llm"
 	"harness/internal/llm/factory"
 	"harness/internal/llm/llmtest"
+	"harness/internal/logging"
 	"harness/internal/modelproxy/protocol"
 )
 
@@ -177,5 +179,89 @@ func TestHandlerRequiresExplicitProviderAndModel(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing model status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHandlerLogsStreamStats(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "openai.json"), []byte(`{
+  "name": "openai",
+  "api_type": "openai",
+  "base_url": "http://localhost:11434/v1",
+  "models": [{"name":"priced","context_window":128000,"price":{"input":2,"output":4,"cache_read":0.5,"cache_write":1}}]
+}`), 0o600); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+
+	var logs bytes.Buffer
+	logger, err := logging.NewProxyLogger(&logs, logging.LevelInfo, logging.FormatJSON)
+	if err != nil {
+		t.Fatalf("NewProxyLogger: %v", err)
+	}
+	handler, err := NewHandler(Options{
+		ConfigDir: dir,
+		Config:    Config{ProviderConfigs: []string{"openai.json"}},
+		Logger:    logger,
+		New: func(factory.Options) (llm.Provider, error) {
+			return llmtest.New("fake", llmtest.Step{
+				Events: []llm.StreamEvent{
+					{Kind: llm.EventTextDelta, Text: "ok"},
+					{Kind: llm.EventToolCallDone, ToolName: "x"},
+				},
+				Stop:  llm.StopToolUse,
+				Usage: llm.Usage{InputTokens: 1000, OutputTokens: 2000, CacheReadTokens: 3000, CacheWriteTokens: 4000, ReasoningTokens: 500},
+			}), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	body, _ := json.Marshal(protocol.StreamRequest{
+		Provider: "openai",
+		Request:  llm.Request{Model: "priced"},
+	})
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/stream", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Harness-Requester", "test-client")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST stream: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var record map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+		t.Fatalf("decode log %q: %v", logs.String(), err)
+	}
+	for k, want := range map[string]any{
+		"msg":              "model request completed",
+		"requester":        "test-client",
+		"provider":         "openai",
+		"model":            "priced",
+		"status":           float64(http.StatusOK),
+		"input_tokens":     float64(1000),
+		"output_tokens":    float64(2000),
+		"reasoning_tokens": float64(500),
+		"tool_calls":       float64(1),
+		"stop_reason":      string(llm.StopToolUse),
+	} {
+		if got := record[k]; got != want {
+			t.Fatalf("log[%s] = %v (%T), want %v", k, got, got, want)
+		}
+	}
+	if record["cost_usd"] == nil {
+		t.Fatalf("log missing cost_usd: %+v", record)
+	}
+	if record["request_bytes"].(float64) <= 0 || record["response_bytes"].(float64) <= 0 {
+		t.Fatalf("log sizes not populated: %+v", record)
 	}
 }
