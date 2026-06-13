@@ -194,16 +194,16 @@ func TestRunOneShotAssistantToStdout(t *testing.T) {
 
 func TestRunTimestampModes(t *testing.T) {
 	cases := []struct {
-		name    string
-		args    []string
-		want    string
-		wantNot string
+		name       string
+		args       []string
+		wantStatus string
+		wantNot    string
 	}{
-		{name: "default short", args: nil, want: "12:00:00 42"},
-		{name: "full", args: []string{"-timestamps=full"}, want: "2026-06-09 12:00:00 42"},
-		{name: "long alias", args: []string{"-timestamps=long"}, want: "2026-06-09 12:00:00 42"},
-		{name: "none", args: []string{"-timestamps=none"}, want: "42", wantNot: "12:00:00"},
-		{name: "no timestamps alias", args: []string{"-no-timestamps"}, want: "42", wantNot: "12:00:00"},
+		{name: "default short", args: nil, wantStatus: "[12:00:00 model:"},
+		{name: "full", args: []string{"-timestamps=full"}, wantStatus: "[2026-06-09 12:00:00 model:"},
+		{name: "long alias", args: []string{"-timestamps=long"}, wantStatus: "[2026-06-09 12:00:00 model:"},
+		{name: "none", args: []string{"-timestamps=none"}, wantStatus: "[model:", wantNot: "12:00:00"},
+		{name: "no timestamps alias", args: []string{"-no-timestamps"}, wantStatus: "[model:", wantNot: "12:00:00"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -216,11 +216,17 @@ func TestRunTimestampModes(t *testing.T) {
 			if code := run(env); code != ui.ExitOK {
 				t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Fatalf("stdout %q missing %q", out.String(), tc.want)
+			if out.String() != "42\n" {
+				t.Fatalf("stdout = %q, want raw assistant text", out.String())
 			}
-			if tc.wantNot != "" && strings.Contains(out.String(), tc.wantNot) {
-				t.Fatalf("stdout %q should not contain %q", out.String(), tc.wantNot)
+			if strings.Contains(errw.String(), "12:00:00 session:") || strings.Contains(errw.String(), "12:00:00 provider:") {
+				t.Fatalf("startup diagnostics should not be timestamped: %q", errw.String())
+			}
+			if !strings.Contains(errw.String(), tc.wantStatus) {
+				t.Fatalf("stderr %q missing %q", errw.String(), tc.wantStatus)
+			}
+			if tc.wantNot != "" && strings.Contains(errw.String(), tc.wantNot) {
+				t.Fatalf("stderr %q should not contain %q", errw.String(), tc.wantNot)
 			}
 		})
 	}
@@ -809,7 +815,7 @@ func TestRunDelegateToolUsesReadOnlyChildAgent(t *testing.T) {
 	if got := fp.Requests[1].Messages[0].Content[0].Text; got != "inspect only" {
 		t.Fatalf("child task = %q", got)
 	}
-	if !strings.Contains(errw.String(), "[delegate]") {
+	if !strings.Contains(errw.String(), "delegate] task=\"inspect only\"") {
 		t.Fatalf("delegate tool result was not rendered: %q", errw.String())
 	}
 	if !strings.Contains(errw.String(), "60 (60) in / 13 (13) out") {

@@ -936,9 +936,10 @@ backoff allows.
   of each result, dimmed.
 - Per-turn usage line: `[turn: 3 model turns · 12.4k in / 1.8k out · $0.071 · 4.3s]`
   (cost omitted for unknown models).
-- Terminal output lines are prefixed with local time by default: `hh:mm:ss`.
+- Bracketed status lines are prefixed inside the bracket with local time by
+  default, for example `[16:15:34 tool-call: name id=...]`.
   `-timestamps=full` (or `long`) uses `yyyy-mm-dd hh:mm:ss`; `-timestamps=none`
-  or `-no-timestamps` disables prefixes.
+  or `-no-timestamps` disables status timestamps.
 - Dim color only when stdout is a TTY (`os.Stdout.Stat()` mode check); `NO_COLOR` env or
   `-no-color` disables. Everything is legible without color.
 - Startup diagnostics use `log/slog` with a plaintext handler: `[level] [category]
@@ -1025,7 +1026,7 @@ zero for Anthropic sessions.
 -q, --quiet       suppress informational diagnostics
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color
--timestamps <mode>  short (default), full/long, or none
+-timestamps <mode>  status timestamps: short (default), full/long, or none
 -no-timestamps      alias for -timestamps=none
 -config <file>    alternate config path
 ```
@@ -1035,8 +1036,8 @@ zero for Anthropic sessions.
 - Prompt from the flag value; `-p -` or piped stdin reads stdin (both → flag text, then
   stdin — enables `harness -p "summarize:" < notes.txt`).
 - **Assistant text → stdout; model progress, tool-call progress, tool summaries,
-  usage, errors → stderr.** Use `-timestamps=none` when redirecting stdout for
-  machine-readable answer capture.
+  usage, errors → stderr.** Timestamps apply only to bracketed status lines on
+  stderr, not to assistant text.
 - Exit codes: `0` completed, `1` runtime error, `2` usage error, `130` interrupted.
 - Runs exactly one user turn, saves the session, exits.
 

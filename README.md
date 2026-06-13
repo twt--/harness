@@ -82,8 +82,8 @@ REPL.
 
 In one-shot mode (`-p`) the **assistant's text goes to stdout** while model
 progress, tool-call progress, tool summaries, the usage line, notices, and errors
-go to stderr. Terminal output is timestamped by default; disable timestamps when
-capturing only the answer:
+go to stderr. Bracketed status lines are timestamped by default; disable them
+when you want untimestamped diagnostics:
 
 ```sh
 ./harness -model gpt-5.5 -timestamps=none -p "explain this repo in one paragraph" > answer.txt
@@ -116,7 +116,7 @@ interrupted.
 -q, --quiet       suppress informational diagnostics
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color         disable color (also: NO_COLOR env var; color is TTY-only anyway)
--timestamps <mode>  terminal timestamp prefixes: short (default), full/long, or none
+-timestamps <mode>  bracketed status timestamps: short (default), full/long, or none
 -no-timestamps   alias for -timestamps=none
 -prompt <text>    REPL input prompt string (default "> ")
 -config <file>    alternate config path
@@ -270,8 +270,7 @@ underlying tools still assume an external sandbox for real isolation.
   synthesizing an `interrupted` tool result, so the resumed transcript is always
   valid for both APIs.
 - `harness session replay <session-dir>` prints the user-facing session view to
-  stdout for inspection or grep. It accepts `-timestamps=short|full|long|none`
-  and `-no-timestamps`.
+  stdout for inspection or grep.
 
 ## Compaction
 

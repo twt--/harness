@@ -454,8 +454,8 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.quiet = fs.Bool("quiet", false, "suppress informational diagnostics")
 	f.logLevel = fs.String("log-level", logging.LevelInfo, "diagnostic log level: debug, info, warn, error (also LOG_LEVEL)")
 	f.noColor = fs.Bool("no-color", false, "disable color output")
-	f.timestamps = fs.String("timestamps", TimestampShort, "terminal timestamp prefixes: short, full, long, or none")
-	f.noTimestamps = fs.Bool("no-timestamps", false, "disable terminal timestamp prefixes")
+	f.timestamps = fs.String("timestamps", TimestampShort, "bracketed status timestamps: short, full, long, or none")
+	f.noTimestamps = fs.Bool("no-timestamps", false, "disable bracketed status timestamps")
 	f.replPrompt = fs.String("prompt", "> ", "REPL input prompt")
 	// -config is consumed by the caller before Load (it picks the file Load
 	// reads); accepted here so it is not rejected as an unknown flag.

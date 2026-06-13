@@ -19,8 +19,10 @@ import (
 // dim/reset are the only ANSI codes used; rendering is legible without color
 // (design §2, §10). They are emitted only when RenderOptions.Color is set.
 const (
-	ansiDim   = "\x1b[2m"
-	ansiReset = "\x1b[0m"
+	ansiDim              = "\x1b[2m"
+	ansiReset            = "\x1b[0m"
+	TimestampShortLayout = "15:04:05"
+	TimestampFullLayout  = "2006-01-02 15:04:05"
 )
 
 // snippetLines caps the verbose result preview (design §10: "first ~5 lines").
@@ -30,26 +32,28 @@ const snippetLines = 5
 // plus NO_COLOR / -no-color); Now is injected so the per-turn duration is
 // deterministic in tests (design §10, §13).
 type RenderOptions struct {
-	Color      bool
-	Verbose    bool
-	ToolStream bool
-	Model      string
-	Registry   *llm.Registry
-	Now        func() time.Time
+	Color           bool
+	Verbose         bool
+	ToolStream      bool
+	Model           string
+	Registry        *llm.Registry
+	Now             func() time.Time
+	TimestampLayout string
 }
 
 // Renderer implements agent.EventSink: assistant text streams to out, while tool
 // one-liners, the usage line, and notices go to errw so one-shot stdout carries
 // only the model's answer (design §10).
 type Renderer struct {
-	out        io.Writer
-	errw       io.Writer
-	color      bool
-	verbose    bool
-	toolStream bool
-	model      string
-	registry   *llm.Registry
-	now        func() time.Time
+	out             io.Writer
+	errw            io.Writer
+	color           bool
+	verbose         bool
+	toolStream      bool
+	model           string
+	registry        *llm.Registry
+	now             func() time.Time
+	timestampLayout string
 
 	turnStart         time.Time
 	assistantLineOpen bool
@@ -67,15 +71,16 @@ func NewRenderer(out, errw io.Writer, opts RenderOptions) *Renderer {
 		now = time.Now
 	}
 	return &Renderer{
-		out:        out,
-		errw:       errw,
-		color:      opts.Color,
-		verbose:    opts.Verbose,
-		toolStream: opts.ToolStream,
-		model:      opts.Model,
-		registry:   opts.Registry,
-		now:        now,
-		pending:    make(map[string]llm.ToolCall),
+		out:             out,
+		errw:            errw,
+		color:           opts.Color,
+		verbose:         opts.Verbose,
+		toolStream:      opts.ToolStream,
+		model:           opts.Model,
+		registry:        opts.Registry,
+		now:             now,
+		timestampLayout: opts.TimestampLayout,
+		pending:         make(map[string]llm.ToolCall),
 	}
 }
 
@@ -160,11 +165,19 @@ func (r *Renderer) TurnComplete(usage agent.TurnUsage) {
 // enabled.
 func (r *Renderer) dimLine(s string) {
 	r.finishAssistantLine()
+	s = r.timestampStatusLine(s)
 	if r.color {
 		fmt.Fprintf(r.errw, "%s%s%s\n", ansiDim, s, ansiReset)
 		return
 	}
 	fmt.Fprintln(r.errw, s)
+}
+
+func (r *Renderer) timestampStatusLine(s string) string {
+	if r.timestampLayout == "" || !strings.HasPrefix(s, "[") {
+		return s
+	}
+	return "[" + r.now().Format(r.timestampLayout) + " " + strings.TrimPrefix(s, "[")
 }
 
 func (r *Renderer) finishAssistantLine() {

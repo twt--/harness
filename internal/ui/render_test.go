@@ -247,6 +247,39 @@ func TestModelTurnStartGoesToStderr(t *testing.T) {
 	}
 }
 
+func TestTimestampsOnlyBracketedStatusLines(t *testing.T) {
+	var out, errw bytes.Buffer
+	r := NewRenderer(&out, &errw, RenderOptions{
+		Now:             func() time.Time { return time.Date(2026, 6, 13, 16, 15, 34, 0, time.Local) },
+		TimestampLayout: TimestampShortLayout,
+		ToolStream:      true,
+	})
+
+	r.TextDelta("plain assistant text\n")
+	r.ModelTurnStart(1, 1, agent.ContextEstimate{})
+	r.ToolUseStart(llm.ToolCall{ID: "call_1", Name: "read_file"})
+	r.Notice("unbracketed notice")
+	r.Notice("[bracketed notice]")
+
+	if out.String() != "plain assistant text\n" {
+		t.Fatalf("assistant text should stay raw, got %q", out.String())
+	}
+	got := errw.String()
+	for _, want := range []string{
+		"[16:15:34 model: turn 1 waiting]",
+		"[16:15:34 tool-call: read_file id=call_1]",
+		"unbracketed notice\n",
+		"[16:15:34 bracketed notice]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stderr missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "16:15:34 unbracketed notice") {
+		t.Errorf("unbracketed dim lines should not be timestamped:\n%s", got)
+	}
+}
+
 func TestToolUseStreamEnabledWritesProgressOnlyToStderr(t *testing.T) {
 	var out, errw bytes.Buffer
 	r := NewRenderer(&out, &errw, RenderOptions{ToolStream: true})
