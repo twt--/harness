@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"harness/internal/httpx"
 )
 
 const (
@@ -89,7 +91,7 @@ func (webFetch) Run(ctx context.Context, input json.RawMessage) (string, error) 
 	defer resp.Body.Close()
 
 	contentType := resp.Header.Get("Content-Type")
-	mediaType := mediaTypeOf(contentType)
+	mediaType := httpx.MediaType(contentType)
 	if !isTextual(mediaType) {
 		return "", fmt.Errorf("unsupported content type %q (binary content is not fetched as text)", contentType)
 	}
@@ -124,16 +126,6 @@ func validateHTTPURL(raw string) error {
 		return fmt.Errorf("url %q has no host", raw)
 	}
 	return nil
-}
-
-// mediaTypeOf extracts the lowercase media type from a Content-Type header,
-// dropping any parameters (e.g. "; charset=utf-8").
-func mediaTypeOf(contentType string) string {
-	mt := contentType
-	if i := strings.IndexByte(mt, ';'); i >= 0 {
-		mt = mt[:i]
-	}
-	return strings.ToLower(strings.TrimSpace(mt))
 }
 
 // reduceHTML turns an HTML document into readable-ish text (design §9.10): it

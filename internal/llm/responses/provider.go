@@ -37,20 +37,7 @@ type Provider struct {
 }
 
 func New(cfg Config) *Provider {
-	base := cfg.BaseURL
-	if base == "" {
-		base = defaultBaseURL
-	}
-	base = strings.TrimSuffix(base, "/")
-
-	client := cfg.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	sleep := cfg.Sleep
-	if sleep == nil {
-		sleep = time.Sleep
-	}
+	base, client, sleep := llm.HTTPDefaults(cfg.BaseURL, defaultBaseURL, cfg.HTTPClient, cfg.Sleep)
 	return &Provider{apiKey: cfg.APIKey, baseURL: base, client: client, sleep: sleep}
 }
 

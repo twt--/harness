@@ -78,6 +78,64 @@ func (runCommand) Run(ctx context.Context, input json.RawMessage) (string, error
 	return out, nil
 }
 
+type programArgs struct {
+	Args           []string
+	Stdin          string
+	Cwd            string
+	TimeoutSeconds int
+}
+
+func decodeProgramArgs(input json.RawMessage, field string) (programArgs, error) {
+	var bare []string
+	if err := json.Unmarshal(input, &bare); err == nil && bare != nil {
+		return programArgs{Args: bare}, nil
+	}
+
+	var raw struct {
+		Args           []string `json:"args"`
+		Argv           []string `json:"argv"`
+		Stdin          string   `json:"stdin"`
+		Cwd            string   `json:"cwd"`
+		TimeoutSeconds int      `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(input, &raw); err != nil {
+		return programArgs{}, err
+	}
+	args := raw.Args
+	if field == "argv" {
+		args = raw.Argv
+	}
+	return programArgs{Args: args, Stdin: raw.Stdin, Cwd: raw.Cwd, TimeoutSeconds: raw.TimeoutSeconds}, nil
+}
+
+func runProgram(ctx context.Context, program string, args programArgs, displayName string, requireArgs bool) (string, error) {
+	if requireArgs && len(args.Args) == 0 {
+		return "", badArgs("args is required and must be a non-empty array")
+	}
+	if args.TimeoutSeconds < 0 {
+		return "", badArgs("timeout_seconds must be >= 0")
+	}
+	if err := validateCwd(args.Cwd); err != nil {
+		return "", err
+	}
+
+	cmd := exec.Command(program, args.Args...) // nosemgrep: dangerous-exec-command
+	cmd.Dir = args.Cwd
+	if args.Stdin != "" {
+		cmd.Stdin = strings.NewReader(args.Stdin)
+	}
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	out, err := runProcess(ctx, cmd, &buf, args.TimeoutSeconds)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", displayName, err)
+	}
+	return out, nil
+}
+
 // validateCwd checks the optional cwd argument the exec-style tools share: an
 // empty value is fine (inherit the process cwd); a non-empty value must name an
 // existing directory.

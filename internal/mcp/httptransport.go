@@ -9,12 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"mime"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"harness/internal/httpx"
 	"harness/internal/mcp/jsonrpc"
 	"harness/internal/retry"
 	"harness/internal/sse"
@@ -148,7 +148,7 @@ func (t *HTTPTransport) Call(ctx context.Context, method string, params json.Raw
 	}
 	defer resp.Body.Close()
 
-	mediaType := mediaTypeOf(resp.Header.Get("Content-Type"))
+	mediaType := httpx.MediaType(resp.Header.Get("Content-Type"))
 	switch mediaType {
 	case "application/json":
 		return t.readJSONResult(resp, id)
@@ -420,14 +420,4 @@ func resultFor(msg jsonrpc.Message, id jsonrpc.ID) (json.RawMessage, error) {
 // idEqual reports whether a non-nil message id equals id.
 func idEqual(got *jsonrpc.ID, want jsonrpc.ID) bool {
 	return got != nil && got.Equal(want)
-}
-
-// mediaTypeOf extracts the lowercased media type from a Content-Type header,
-// dropping any parameters (e.g. "; charset=utf-8").
-func mediaTypeOf(contentType string) string {
-	mt, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return ""
-	}
-	return mt
 }

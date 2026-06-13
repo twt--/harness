@@ -1,12 +1,8 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"os/exec"
-	"strings"
 )
 
 const searchCommandSchema = `{
@@ -25,56 +21,14 @@ const searchCommandSchema = `{
   "required": ["args"]
 }`
 
-type searchCommandArgs struct {
-	Args           []string `json:"args"`
-	Stdin          string   `json:"stdin"`
-	Cwd            string   `json:"cwd"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
-}
-
 func runSearchCommand(ctx context.Context, input json.RawMessage, displayName, program string) (string, error) {
 	args, err := decodeSearchCommandArgs(input)
 	if err != nil {
 		return "", err
 	}
-	if len(args.Args) == 0 {
-		return "", badArgs("args is required and must be a non-empty array")
-	}
-	if args.TimeoutSeconds < 0 {
-		return "", badArgs("timeout_seconds must be >= 0")
-	}
-	if err := validateCwd(args.Cwd); err != nil {
-		return "", err
-	}
-
-	// These tools intentionally invoke the host search binaries directly; argv
-	// elements are user/model supplied and are passed without a shell.
-	cmd := exec.Command(program, args.Args...) // nosemgrep: dangerous-exec-command
-	cmd.Dir = args.Cwd
-	if args.Stdin != "" {
-		cmd.Stdin = strings.NewReader(args.Stdin)
-	}
-
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-
-	out, err := runProcess(ctx, cmd, &buf, args.TimeoutSeconds)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", displayName, err)
-	}
-	return out, nil
+	return runProgram(ctx, program, args, displayName, true)
 }
 
-func decodeSearchCommandArgs(input json.RawMessage) (searchCommandArgs, error) {
-	var bare []string
-	if err := json.Unmarshal(input, &bare); err == nil && bare != nil {
-		return searchCommandArgs{Args: bare}, nil
-	}
-
-	var args searchCommandArgs
-	if err := json.Unmarshal(input, &args); err != nil {
-		return searchCommandArgs{}, err
-	}
-	return args, nil
+func decodeSearchCommandArgs(input json.RawMessage) (programArgs, error) {
+	return decodeProgramArgs(input, "args")
 }

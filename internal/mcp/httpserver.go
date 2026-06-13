@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -216,23 +215,18 @@ func (h *httpHandler) handleNotification(w http.ResponseWriter, r *http.Request,
 // returns InitializeResult with the session id in the Mcp-Session-Id header.
 // ListChanged is always false: there is no server-push channel over HTTP.
 func (h *httpHandler) handleInitialize(w http.ResponseWriter, id jsonrpc.ID, params json.RawMessage) {
-	var p InitializeParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		h.writeError(w, id, jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "invalid initialize params: %v", err))
+	// Negotiate: echo the client's version if we support it, else offer ours.
+	// The client surfaces a server-selected version it cannot speak as a
+	// VersionError, so offering ours is the correct downgrade signal.
+	_, raw, jerr := initializePayload(params, h.info, false)
+	if jerr != nil {
+		h.writeError(w, id, jerr)
 		return
 	}
 
 	// Deliberate: no cap on session count. An unauthenticated initialize can mint
 	// sessions; we rely on the local-trust/front-proxy boundary plus the 30min
 	// idle TTL (sessionIdleTTL) to bound accumulation rather than a hard limit.
-
-	// Negotiate: echo the client's version if we support it, else offer ours.
-	// The client surfaces a server-selected version it cannot speak as a
-	// VersionError, so offering ours is the correct downgrade signal.
-	version := ProtocolVersion
-	if Supports(p.ProtocolVersion) {
-		version = p.ProtocolVersion
-	}
 
 	sessionID, err := newSessionID()
 	if err != nil {
@@ -246,38 +240,14 @@ func (h *httpHandler) handleInitialize(w http.ResponseWriter, id jsonrpc.ID, par
 	}
 	h.mu.Unlock()
 
-	result := InitializeResult{
-		ProtocolVersion: version,
-		Capabilities: ServerCapabilities{
-			Tools: &ToolsCapability{ListChanged: false},
-		},
-		ServerInfo: h.info,
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		h.writeError(w, id, jsonrpc.Errorf(jsonrpc.CodeInternal, "marshal initialize result: %v", err))
-		return
-	}
 	w.Header().Set(mcpSessionHeader, sessionID)
 	h.writeResult(w, id, raw)
 }
 
 func (h *httpHandler) handleListTools(w http.ResponseWriter, r *http.Request, id jsonrpc.ID, params json.RawMessage) {
-	var p ListToolsParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			h.writeError(w, id, jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "invalid tools/list params: %v", err))
-			return
-		}
-	}
-	result, err := h.provider.ListTools(r.Context(), p.Cursor)
-	if err != nil {
-		h.writeProviderError(w, id, err, "list tools")
-		return
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		h.writeError(w, id, jsonrpc.Errorf(jsonrpc.CodeInternal, "marshal tools/list result: %v", err))
+	raw, jerr := listToolsPayload(r.Context(), h.provider, params)
+	if jerr != nil {
+		h.writeError(w, id, jerr)
 		return
 	}
 	h.writeResult(w, id, raw)
@@ -288,9 +258,9 @@ func (h *httpHandler) handleListTools(w http.ResponseWriter, r *http.Request, id
 // so a notifications/cancelled in a concurrent POST can cancel it (mirroring
 // server.go).
 func (h *httpHandler) handleCallTool(w http.ResponseWriter, r *http.Request, sess *httpSession, id jsonrpc.ID, params json.RawMessage) {
-	var p CallToolParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		h.writeError(w, id, jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "invalid tools/call params: %v", err))
+	p, jerr := decodeCallToolParams(params)
+	if jerr != nil {
+		h.writeError(w, id, jerr)
 		return
 	}
 
@@ -306,14 +276,9 @@ func (h *httpHandler) handleCallTool(w http.ResponseWriter, r *http.Request, ses
 		cancel()
 	}()
 
-	result, err := h.provider.CallTool(callCtx, p.Name, p.Arguments)
-	if err != nil {
-		h.writeProviderError(w, id, err, "call tool")
-		return
-	}
-	raw, mErr := json.Marshal(result)
-	if mErr != nil {
-		h.writeError(w, id, jsonrpc.Errorf(jsonrpc.CodeInternal, "marshal tools/call result: %v", mErr))
+	raw, jerr := callToolPayload(callCtx, h.provider, p)
+	if jerr != nil {
+		h.writeError(w, id, jerr)
 		return
 	}
 	h.writeResult(w, id, raw)
@@ -454,18 +419,6 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-// writeProviderError maps a provider error onto a JSON-RPC error response with
-// the same semantics as server.go: a *jsonrpc.Error becomes the error response
-// verbatim; any other error is CodeInternal with the given context prefix.
-func (h *httpHandler) writeProviderError(w http.ResponseWriter, id jsonrpc.ID, err error, what string) {
-	var je *jsonrpc.Error
-	if errors.As(err, &je) {
-		h.writeError(w, id, je)
-		return
-	}
-	h.writeError(w, id, jsonrpc.Errorf(jsonrpc.CodeInternal, "%s: %v", what, err))
 }
 
 // writeResult writes a JSON-RPC success response (200, application/json).

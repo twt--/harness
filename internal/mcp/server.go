@@ -127,15 +127,10 @@ func (s *server) handlePing(ctx context.Context, params json.RawMessage) (json.R
 }
 
 func (s *server) handleInitialize(ctx context.Context, params json.RawMessage) (json.RawMessage, *jsonrpc.Error) {
-	var p InitializeParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "invalid initialize params: %v", err)
-	}
-
 	// Negotiate: echo the client's version if we support it, else offer ours.
-	version := ProtocolVersion
-	if Supports(p.ProtocolVersion) {
-		version = p.ProtocolVersion
+	p, raw, jerr := initializePayload(params, s.opts.Info, s.opts.ListChanged)
+	if jerr != nil {
+		return nil, jerr
 	}
 
 	s.mu.Lock()
@@ -143,17 +138,6 @@ func (s *server) handleInitialize(ctx context.Context, params json.RawMessage) (
 	s.initialized = true
 	s.mu.Unlock()
 
-	result := InitializeResult{
-		ProtocolVersion: version,
-		Capabilities: ServerCapabilities{
-			Tools: &ToolsCapability{ListChanged: s.opts.ListChanged},
-		},
-		ServerInfo: s.opts.Info,
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInternal, "marshal initialize result: %v", err)
-	}
 	return raw, nil
 }
 
@@ -172,30 +156,16 @@ func (s *server) handleListTools(ctx context.Context, params json.RawMessage) (j
 	if !s.ready() {
 		return nil, jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "server not initialized")
 	}
-	var p ListToolsParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "invalid tools/list params: %v", err)
-		}
-	}
-	result, err := s.opts.Provider.ListTools(ctx, p.Cursor)
-	if err != nil {
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInternal, "list tools: %v", err)
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInternal, "marshal tools/list result: %v", err)
-	}
-	return raw, nil
+	return listToolsPayload(ctx, s.opts.Provider, params)
 }
 
 func (s *server) handleCallTool(ctx context.Context, id jsonrpc.ID, params json.RawMessage) (json.RawMessage, *jsonrpc.Error) {
 	if !s.ready() {
 		return nil, jsonrpc.NewError(jsonrpc.CodeInvalidRequest, "server not initialized")
 	}
-	var p CallToolParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInvalidParams, "invalid tools/call params: %v", err)
+	p, jerr := decodeCallToolParams(params)
+	if jerr != nil {
+		return nil, jerr
 	}
 
 	// Register the call's context so a notifications/cancelled with this id can
@@ -203,6 +173,10 @@ func (s *server) handleCallTool(ctx context.Context, id jsonrpc.ID, params json.
 	// collide.
 	callCtx, cancel := context.WithCancel(ctx)
 	key := id
+	// Best-effort: notifications and requests are dispatched on separate
+	// goroutines, so a cancel that races ahead of handleCallTool registering its
+	// in-flight entry finds no match and is silently dropped. This is acceptable
+	// per the MCP spec (cancellation is advisory); it is not a guarantee.
 	s.mu.Lock()
 	s.inflight[key] = cancel
 	s.mu.Unlock()
@@ -213,21 +187,7 @@ func (s *server) handleCallTool(ctx context.Context, id jsonrpc.ID, params json.
 		cancel()
 	}()
 
-	result, err := s.opts.Provider.CallTool(callCtx, p.Name, p.Arguments)
-	if err != nil {
-		// A *jsonrpc.Error from the provider becomes the error response; any
-		// other error is an internal failure.
-		var je *jsonrpc.Error
-		if errors.As(err, &je) {
-			return nil, je
-		}
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInternal, "call tool: %v", err)
-	}
-	raw, mErr := json.Marshal(result)
-	if mErr != nil {
-		return nil, jsonrpc.Errorf(jsonrpc.CodeInternal, "marshal tools/call result: %v", mErr)
-	}
-	return raw, nil
+	return callToolPayload(callCtx, s.opts.Provider, p)
 }
 
 func (s *server) handleCancelledNotif(ctx context.Context, params json.RawMessage) {
@@ -239,10 +199,6 @@ func (s *server) handleCancelledNotif(ctx context.Context, params json.RawMessag
 	if !ok {
 		return
 	}
-	// Best-effort: notifications and requests are dispatched on separate
-	// goroutines, so a cancel that races ahead of handleCallTool registering its
-	// in-flight entry finds no match and is silently dropped. This is acceptable
-	// per the MCP spec (cancellation is advisory); it is not a guarantee.
 	s.mu.Lock()
 	cancel := s.inflight[id]
 	s.mu.Unlock()

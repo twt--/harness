@@ -1,12 +1,8 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"os/exec"
-	"strings"
 )
 
 const execSchema = `{
@@ -33,13 +29,6 @@ const execSchema = `{
 // output formatting are shared with run_command via runProcess.
 type execTool struct{}
 
-type execArgs struct {
-	Argv           []string `json:"argv"`
-	Stdin          string   `json:"stdin"`
-	Cwd            string   `json:"cwd"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
-}
-
 func (execTool) Name() string { return "exec" }
 
 func (execTool) Description() string {
@@ -55,46 +44,20 @@ func (execTool) Run(ctx context.Context, input json.RawMessage) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if len(args.Argv) == 0 {
+	if len(args.Args) == 0 {
 		return "", badArgs("argv is required and must be a non-empty array")
 	}
-	if args.TimeoutSeconds < 0 {
-		return "", badArgs("timeout_seconds must be >= 0")
-	}
-	if err := validateCwd(args.Cwd); err != nil {
-		return "", err
-	}
-
-	// Running an arbitrary user-supplied program is exec's documented purpose
-	// (design §2 no-sandbox stance, §9.8) — hence the nosemgrep annotation.
-	cmd := exec.Command(args.Argv[0], args.Argv[1:]...) // nosemgrep: dangerous-exec-command
-	cmd.Dir = args.Cwd
-	if args.Stdin != "" {
-		cmd.Stdin = strings.NewReader(args.Stdin)
-	}
-
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-
-	out, err := runProcess(ctx, cmd, &buf, args.TimeoutSeconds)
+	program := args.Args[0]
+	args.Args = args.Args[1:]
+	out, err := runProgram(ctx, program, args, program, false)
 	if err != nil {
 		// Start failures (typically a missing binary) are normal tool errors
 		// naming the program so the model can correct its call.
-		return "", fmt.Errorf("%s: %w", args.Argv[0], err)
+		return "", err
 	}
 	return out, nil
 }
 
-func decodeExecArgs(input json.RawMessage) (execArgs, error) {
-	var bare []string
-	if err := json.Unmarshal(input, &bare); err == nil && bare != nil {
-		return execArgs{Argv: bare}, nil
-	}
-
-	var args execArgs
-	if err := json.Unmarshal(input, &args); err != nil {
-		return execArgs{}, err
-	}
-	return args, nil
+func decodeExecArgs(input json.RawMessage) (programArgs, error) {
+	return decodeProgramArgs(input, "argv")
 }

@@ -29,36 +29,62 @@ func writeConfig(t *testing.T, body string) string {
 	return p
 }
 
+func loadOK(t *testing.T, args []string, getenv func(string) string, configPath string) Config {
+	t.Helper()
+	c, err := Load(args, getenv, configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return c
+}
+
+type precedenceCase[T comparable] struct {
+	file     string
+	env      map[string]string
+	baseArgs []string
+	flagArgs []string
+	got      func(Config) T
+	wantFlag T
+	wantEnv  T
+	wantFile T
+}
+
+func checkPrecedence[T comparable](t *testing.T, tc precedenceCase[T]) {
+	t.Helper()
+	cfgPath := writeConfig(t, tc.file)
+	env := envFrom(tc.env)
+
+	for _, step := range []struct {
+		name string
+		args []string
+		env  func(string) string
+		want T
+	}{
+		{name: "flag", args: append(append([]string{}, tc.baseArgs...), tc.flagArgs...), env: env, want: tc.wantFlag},
+		{name: "env", args: tc.baseArgs, env: env, want: tc.wantEnv},
+		{name: "file", args: tc.baseArgs, env: noEnv, want: tc.wantFile},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			if got := tc.got(loadOK(t, step.args, step.env, cfgPath)); got != step.want {
+				t.Fatalf("%s precedence: got %v, want %v", step.name, got, step.want)
+			}
+		})
+	}
+}
+
 func TestModelPrecedenceFlagBeatsEnvBeatsFileBeatsDefault(t *testing.T) {
-	cfgPath := writeConfig(t, `{"model":"file-model"}`)
-	env := envFrom(map[string]string{"HARNESS_MODEL": "env-model"})
-
 	// Flag wins over env and file.
-	c, err := Load([]string{"-model", "flag-model"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Model != "flag-model" {
-		t.Fatalf("flag precedence: got model %q, want flag-model", c.Model)
-	}
-
 	// Env wins over file when no flag.
-	c, err = Load(nil, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Model != "env-model" {
-		t.Fatalf("env precedence: got model %q, want env-model", c.Model)
-	}
-
 	// File wins over default when no flag and no env.
-	c, err = Load(nil, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Model != "file-model" {
-		t.Fatalf("file precedence: got model %q, want file-model", c.Model)
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"model":"file-model"}`,
+		env:      map[string]string{"HARNESS_MODEL": "env-model"},
+		flagArgs: []string{"-model", "flag-model"},
+		got:      func(c Config) string { return c.Model },
+		wantFlag: "flag-model",
+		wantEnv:  "env-model",
+		wantFile: "file-model",
+	})
 }
 
 // TestLoadSplitsProviderModel pins SplitProviderModel's contract at the Load
@@ -89,61 +115,27 @@ func TestLoadSplitsProviderModel(t *testing.T) {
 }
 
 func TestProviderPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"provider":"openai"}`)
-	env := envFrom(map[string]string{"HARNESS_PROVIDER": "anthropic"})
-
-	c, err := Load([]string{"-provider", "openai"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Provider != "openai" {
-		t.Fatalf("flag precedence: got provider %q", c.Provider)
-	}
-
-	c, err = Load(nil, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Provider != "anthropic" {
-		t.Fatalf("env precedence: got provider %q", c.Provider)
-	}
-
-	c, err = Load(nil, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Provider != "openai" {
-		t.Fatalf("file precedence: got provider %q", c.Provider)
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"provider":"openai"}`,
+		env:      map[string]string{"HARNESS_PROVIDER": "anthropic"},
+		flagArgs: []string{"-provider", "openai"},
+		got:      func(c Config) string { return c.Provider },
+		wantFlag: "openai",
+		wantEnv:  "anthropic",
+		wantFile: "openai",
+	})
 }
 
 func TestModelProxyURLPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"model_proxy_url":"http://file.example"}`)
-	env := envFrom(map[string]string{"HARNESS_MODEL_PROXY_URL": "http://env.example"})
-
-	c, err := Load([]string{"-model-proxy-url", "http://flag.example"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ModelProxyURL != "http://flag.example" {
-		t.Fatalf("flag precedence: got model proxy URL %q", c.ModelProxyURL)
-	}
-
-	c, err = Load(nil, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ModelProxyURL != "http://env.example" {
-		t.Fatalf("env precedence: got model proxy URL %q", c.ModelProxyURL)
-	}
-
-	c, err = Load(nil, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ModelProxyURL != "http://file.example" {
-		t.Fatalf("file precedence: got model proxy URL %q", c.ModelProxyURL)
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"model_proxy_url":"http://file.example"}`,
+		env:      map[string]string{"HARNESS_MODEL_PROXY_URL": "http://env.example"},
+		flagArgs: []string{"-model-proxy-url", "http://flag.example"},
+		got:      func(c Config) string { return c.ModelProxyURL },
+		wantFlag: "http://flag.example",
+		wantEnv:  "http://env.example",
+		wantFile: "http://file.example",
+	})
 }
 
 func TestExplicitProviderIsPreserved(t *testing.T) {
@@ -220,78 +212,42 @@ func TestHarnessEnvMapping(t *testing.T) {
 
 func TestReplPromptPrecedence(t *testing.T) {
 	// Default is "> ".
-	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	c := loadOK(t, []string{"-model", "gpt-5.5"}, noEnv, "")
 	if c.ReplPrompt != "> " {
 		t.Fatalf("default repl prompt %q, want %q", c.ReplPrompt, "> ")
 	}
 
 	// File overrides default.
-	cfgPath := writeConfig(t, `{"prompt":"$ "}`)
-	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ReplPrompt != "$ " {
-		t.Fatalf("file repl prompt %q, want %q", c.ReplPrompt, "$ ")
-	}
-
 	// Env overrides file.
-	env := envFrom(map[string]string{"HARNESS_PROMPT": "# "})
-	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ReplPrompt != "# " {
-		t.Fatalf("env repl prompt %q, want %q", c.ReplPrompt, "# ")
-	}
-
 	// Flag overrides all.
-	c, err = Load([]string{"-model", "gpt-5.5", "-prompt", ">>> "}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ReplPrompt != ">>> " {
-		t.Fatalf("flag repl prompt %q, want %q", c.ReplPrompt, ">>> ")
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"prompt":"$ "}`,
+		env:      map[string]string{"HARNESS_PROMPT": "# "},
+		baseArgs: []string{"-model", "gpt-5.5"},
+		flagArgs: []string{"-prompt", ">>> "},
+		got:      func(c Config) string { return c.ReplPrompt },
+		wantFlag: ">>> ",
+		wantEnv:  "# ",
+		wantFile: "$ ",
+	})
 }
 
 func TestToolStreamPrecedence(t *testing.T) {
-	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	c := loadOK(t, []string{"-model", "gpt-5.5"}, noEnv, "")
 	if !c.ToolStream {
 		t.Fatalf("default tool-stream false, want true")
 	}
 
-	cfgPath := writeConfig(t, `{"tool_stream":false}`)
-	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load file: %v", err)
-	}
-	if c.ToolStream {
-		t.Fatalf("file tool-stream true, want false")
-	}
-
-	env := envFrom(map[string]string{"HARNESS_TOOL_STREAM": "true"})
-	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load env: %v", err)
-	}
-	if !c.ToolStream {
-		t.Fatalf("env tool-stream false, want true")
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5", "-tool-stream=false"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load flag: %v", err)
-	}
-	if c.ToolStream {
-		t.Fatalf("flag tool-stream true, want false")
-	}
+	checkPrecedence(t, precedenceCase[bool]{
+		file:     `{"tool_stream":false}`,
+		env:      map[string]string{"HARNESS_TOOL_STREAM": "true"},
+		baseArgs: []string{"-model", "gpt-5.5"},
+		flagArgs: []string{"-tool-stream=false"},
+		got:      func(c Config) bool { return c.ToolStream },
+		wantFlag: false,
+		wantEnv:  true,
+		wantFile: false,
+	})
 }
 
 // NO_COLOR (the de-facto standard env var) disables color independent of HARNESS_*.
@@ -327,61 +283,29 @@ func TestDefaultContextWindowDefault(t *testing.T) {
 }
 
 func TestDefaultContextWindowPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"default_context_window":300000}`)
-	env := envFrom(map[string]string{"HARNESS_DEFAULT_CONTEXT_WINDOW": "400000"})
-
-	c, err := Load([]string{"-model", "gpt-5.5", "-default-context-window", "500000"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.DefaultContextWindow != 500000 {
-		t.Fatalf("flag precedence: got default context window %d, want 500000", c.DefaultContextWindow)
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.DefaultContextWindow != 400000 {
-		t.Fatalf("env precedence: got default context window %d, want 400000", c.DefaultContextWindow)
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.DefaultContextWindow != 300000 {
-		t.Fatalf("file precedence: got default context window %d, want 300000", c.DefaultContextWindow)
-	}
+	checkPrecedence(t, precedenceCase[int]{
+		file:     `{"default_context_window":300000}`,
+		env:      map[string]string{"HARNESS_DEFAULT_CONTEXT_WINDOW": "400000"},
+		baseArgs: []string{"-model", "gpt-5.5"},
+		flagArgs: []string{"-default-context-window", "500000"},
+		got:      func(c Config) int { return c.DefaultContextWindow },
+		wantFlag: 500000,
+		wantEnv:  400000,
+		wantFile: 300000,
+	})
 }
 
 func TestReasoningEffortPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"reasoning_effort":"low"}`)
-	env := envFrom(map[string]string{"HARNESS_REASONING_EFFORT": "medium"})
-
-	c, err := Load([]string{"-model", "gpt-5.5", "-reasoning-effort", "HIGH"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ReasoningEffort != "high" {
-		t.Fatalf("flag precedence: got reasoning effort %q, want high", c.ReasoningEffort)
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ReasoningEffort != "medium" {
-		t.Fatalf("env precedence: got reasoning effort %q, want medium", c.ReasoningEffort)
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.ReasoningEffort != "low" {
-		t.Fatalf("file precedence: got reasoning effort %q, want low", c.ReasoningEffort)
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"reasoning_effort":"low"}`,
+		env:      map[string]string{"HARNESS_REASONING_EFFORT": "medium"},
+		baseArgs: []string{"-model", "gpt-5.5"},
+		flagArgs: []string{"-reasoning-effort", "HIGH"},
+		got:      func(c Config) string { return c.ReasoningEffort },
+		wantFlag: "high",
+		wantEnv:  "medium",
+		wantFile: "low",
+	})
 }
 
 func TestMaxStepsFlagBeatsFile(t *testing.T) {
@@ -450,32 +374,15 @@ func TestQuietLongFlagParsed(t *testing.T) {
 }
 
 func TestLogLevelPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"log_level":"debug"}`)
-	env := envFrom(map[string]string{"LOG_LEVEL": "error"})
-
-	c, err := Load([]string{"--log-level", "warn"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.LogLevel != "warn" {
-		t.Fatalf("flag precedence: log level %q, want warn", c.LogLevel)
-	}
-
-	c, err = Load(nil, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.LogLevel != "error" {
-		t.Fatalf("env precedence: log level %q, want error", c.LogLevel)
-	}
-
-	c, err = Load(nil, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.LogLevel != "debug" {
-		t.Fatalf("file precedence: log level %q, want debug", c.LogLevel)
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"log_level":"debug"}`,
+		env:      map[string]string{"LOG_LEVEL": "error"},
+		flagArgs: []string{"--log-level", "warn"},
+		got:      func(c Config) string { return c.LogLevel },
+		wantFlag: "warn",
+		wantEnv:  "error",
+		wantFile: "debug",
+	})
 }
 
 func TestInvalidLogLevelIsUsageError(t *testing.T) {
@@ -632,32 +539,16 @@ func TestMissingExplicitConfigFileIsError(t *testing.T) {
 }
 
 func TestModePrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
-	cfgPath := writeConfig(t, `{"mode":"plan"}`)
-	env := envFrom(map[string]string{"HARNESS_MODE": "independent"})
-
-	c, err := Load([]string{"-model", "gpt-5.5", "-mode", "AUTO"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Mode != "auto" {
-		t.Fatalf("flag precedence (lowercased): got mode %q, want auto", c.Mode)
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5"}, env, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Mode != "independent" {
-		t.Fatalf("env precedence: got mode %q, want independent", c.Mode)
-	}
-
-	c, err = Load([]string{"-model", "gpt-5.5"}, noEnv, cfgPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Mode != "plan" {
-		t.Fatalf("file precedence: got mode %q, want plan", c.Mode)
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"mode":"plan"}`,
+		env:      map[string]string{"HARNESS_MODE": "independent"},
+		baseArgs: []string{"-model", "gpt-5.5"},
+		flagArgs: []string{"-mode", "AUTO"},
+		got:      func(c Config) string { return c.Mode },
+		wantFlag: "auto",
+		wantEnv:  "independent",
+		wantFile: "plan",
+	})
 }
 
 // An unspecified mode stays empty so main can distinguish "not specified"
@@ -673,39 +564,22 @@ func TestModeUnspecifiedIsEmpty(t *testing.T) {
 }
 
 func TestOnMaxStepsResolution(t *testing.T) {
-	getenv := func(string) string { return "" }
-
-	c, err := Load(nil, getenv, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := loadOK(t, nil, noEnv, "")
 	if c.OnMaxSteps != "stop" {
 		t.Errorf("default OnMaxSteps = %q, want \"stop\"", c.OnMaxSteps)
 	}
 
-	c, err = Load([]string{"-on-max-steps", "continue"}, getenv, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.OnMaxSteps != "continue" {
-		t.Errorf("flag OnMaxSteps = %q, want \"continue\"", c.OnMaxSteps)
-	}
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"on_max_steps":"stop"}`,
+		env:      map[string]string{"HARNESS_ON_MAX_STEPS": "continue"},
+		flagArgs: []string{"-on-max-steps", "continue"},
+		got:      func(c Config) string { return c.OnMaxSteps },
+		wantFlag: "continue",
+		wantEnv:  "continue",
+		wantFile: "stop",
+	})
 
-	env := func(k string) string {
-		if k == "HARNESS_ON_MAX_STEPS" {
-			return "continue"
-		}
-		return ""
-	}
-	c, err = Load(nil, env, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.OnMaxSteps != "continue" {
-		t.Errorf("env OnMaxSteps = %q, want \"continue\"", c.OnMaxSteps)
-	}
-
-	if _, err := Load([]string{"-on-max-steps", "bogus"}, getenv, ""); err == nil {
+	if _, err := Load([]string{"-on-max-steps", "bogus"}, noEnv, ""); err == nil {
 		t.Error("invalid on-max-steps value should error")
 	}
 }

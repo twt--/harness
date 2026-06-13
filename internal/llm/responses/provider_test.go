@@ -3,7 +3,6 @@ package responses
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,27 +13,9 @@ import (
 	"time"
 
 	"harness/internal/llm"
+	"harness/internal/llm/llmtest"
 	"harness/internal/sse"
 )
-
-func writeBody(w http.ResponseWriter, b []byte) {
-	_, _ = io.Copy(w, strings.NewReader(string(b)))
-}
-
-func serveFixture(t *testing.T, name string) *httptest.Server {
-	t.Helper()
-	body, err := os.ReadFile("testdata/" + name)
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
 
 func testProvider(t *testing.T, srv *httptest.Server, sleep func(time.Duration)) *Provider {
 	t.Helper()
@@ -44,33 +25,11 @@ func testProvider(t *testing.T, srv *httptest.Server, sleep func(time.Duration))
 	return New(Config{APIKey: "test-key", BaseURL: srv.URL, Sleep: sleep})
 }
 
-func simpleRequest() llm.Request {
-	return llm.Request{
-		Model: "gpt-5.4",
-		Messages: []llm.Message{
-			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hi"}}},
-		},
-	}
-}
-
-func drain(stream func(func(llm.StreamEvent, error) bool)) ([]llm.StreamEvent, error) {
-	var events []llm.StreamEvent
-	var lastErr error
-	for ev, err := range stream {
-		if err != nil {
-			lastErr = err
-			break
-		}
-		events = append(events, ev)
-	}
-	return events, lastErr
-}
-
 func TestStreamTextOnly(t *testing.T) {
-	srv := serveFixture(t, "text_only.sse")
+	srv := llmtest.ServeSSEFixture(t, "text_only.sse")
 	p := testProvider(t, srv, nil)
 
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("unexpected terminal error: %v", err)
 	}
@@ -101,23 +60,23 @@ func TestStreamTextOnly(t *testing.T) {
 }
 
 func TestStreamTextOnlyEventOrder(t *testing.T) {
-	srv := serveFixture(t, "text_only.sse")
+	srv := llmtest.ServeSSEFixture(t, "text_only.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	gotKinds := without(kindsOf(events), llm.EventUsage)
+	gotKinds := llmtest.WithoutKind(llmtest.KindsOf(events), llm.EventUsage)
 	wantKinds := []llm.EventKind{llm.EventTextDelta, llm.EventTextDelta, llm.EventDone}
-	if !equalKinds(gotKinds, wantKinds) {
+	if !llmtest.EqualKinds(gotKinds, wantKinds) {
 		t.Errorf("event kinds = %v, want %v", gotKinds, wantKinds)
 	}
 }
 
 func TestStreamToolCall(t *testing.T) {
-	srv := serveFixture(t, "tool_call.sse")
+	srv := llmtest.ServeSSEFixture(t, "tool_call.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -162,9 +121,9 @@ func TestStreamToolCall(t *testing.T) {
 }
 
 func TestStreamParallelTools(t *testing.T) {
-	srv := serveFixture(t, "parallel_tools.sse")
+	srv := llmtest.ServeSSEFixture(t, "parallel_tools.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -192,9 +151,9 @@ func TestStreamParallelTools(t *testing.T) {
 }
 
 func TestStreamEmptyArgs(t *testing.T) {
-	srv := serveFixture(t, "empty_args.sse")
+	srv := llmtest.ServeSSEFixture(t, "empty_args.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -213,9 +172,9 @@ func TestStreamEmptyArgs(t *testing.T) {
 }
 
 func TestStreamInvalidToolJSON(t *testing.T) {
-	srv := serveFixture(t, "invalid_json.sse")
+	srv := llmtest.ServeSSEFixture(t, "invalid_json.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err == nil {
 		t.Fatal("expected stream error from invalid accumulated tool JSON")
 	}
@@ -240,9 +199,9 @@ func TestStreamInvalidToolJSON(t *testing.T) {
 }
 
 func TestStreamFailedEvent(t *testing.T) {
-	srv := serveFixture(t, "failed.sse")
+	srv := llmtest.ServeSSEFixture(t, "failed.sse")
 	p := testProvider(t, srv, nil)
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -256,9 +215,9 @@ func TestStreamFailedEvent(t *testing.T) {
 }
 
 func TestStreamIncompleteMaxOutputTokens(t *testing.T) {
-	srv := serveFixture(t, "incomplete.sse")
+	srv := llmtest.ServeSSEFixture(t, "incomplete.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -274,9 +233,9 @@ func TestStreamIncompleteMaxOutputTokens(t *testing.T) {
 }
 
 func TestStreamTruncated(t *testing.T) {
-	srv := serveFixture(t, "truncated.sse")
+	srv := llmtest.ServeSSEFixture(t, "truncated.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err == nil {
 		t.Fatal("expected truncated-stream error")
 	}
@@ -300,12 +259,12 @@ func TestStreamRetryThenSuccess(t *testing.T) {
 		if calls.Add(1) == 1 {
 			w.Header().Set("Retry-After", "2")
 			w.WriteHeader(http.StatusTooManyRequests)
-			writeBody(w, []byte(`{"error":{"message":"slow down","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}`))
+			llmtest.WriteBody(w, []byte(`{"error":{"message":"slow down","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
+		llmtest.WriteBody(w, body)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -316,7 +275,7 @@ func TestStreamRetryThenSuccess(t *testing.T) {
 		slept = append(slept, d)
 		mu.Unlock()
 	})
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("unexpected error after retry: %v", err)
 	}
@@ -342,13 +301,13 @@ func TestStreamFatalStatusNoRetry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusBadRequest)
-		writeBody(w, []byte(`{"error":{"message":"bad model","type":"invalid_request_error","code":"invalid_request_error"}}`))
+		llmtest.WriteBody(w, []byte(`{"error":{"message":"bad model","type":"invalid_request_error","code":"invalid_request_error"}}`))
 	}))
 	t.Cleanup(srv.Close)
 
 	var slept int
 	p := testProvider(t, srv, func(time.Duration) { slept++ })
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err == nil {
 		t.Fatal("expected APIError for 400")
 	}
@@ -376,7 +335,7 @@ func TestStreamContextCancelMidStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		fl, _ := w.(http.Flusher)
-		writeBody(w, []byte("event: response.output_text.delta\n"+`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hi","sequence_number":1}`+"\n\n"))
+		llmtest.WriteBody(w, []byte("event: response.output_text.delta\n"+`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hi","sequence_number":1}`+"\n\n"))
 		if fl != nil {
 			fl.Flush()
 		}
@@ -390,7 +349,7 @@ func TestStreamContextCancelMidStream(t *testing.T) {
 	defer cancel()
 
 	var lastErr error
-	for _, err := range p.Stream(ctx, simpleRequest()) {
+	for _, err := range p.Stream(ctx, llmtest.SimpleRequest("gpt-5.4")) {
 		if err != nil {
 			lastErr = err
 			break
@@ -409,12 +368,12 @@ func TestStreamSendsHeaders(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		gotContentType = r.Header.Get("content-type")
 		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
+		llmtest.WriteBody(w, body)
 	}))
 	t.Cleanup(srv.Close)
 
 	p := testProvider(t, srv, nil)
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -432,12 +391,12 @@ func TestStreamAppendsResponsesPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
+		llmtest.WriteBody(w, body)
 	}))
 	t.Cleanup(srv.Close)
 
 	p := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1", Sleep: func(time.Duration) {}})
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("gpt-5.4")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -451,34 +410,4 @@ func TestName(t *testing.T) {
 	if p.Name() != "responses" {
 		t.Errorf("Name() = %q", p.Name())
 	}
-}
-
-func kindsOf(events []llm.StreamEvent) []llm.EventKind {
-	out := make([]llm.EventKind, len(events))
-	for i, e := range events {
-		out[i] = e.Kind
-	}
-	return out
-}
-
-func without(kinds []llm.EventKind, drop llm.EventKind) []llm.EventKind {
-	out := kinds[:0:0]
-	for _, k := range kinds {
-		if k != drop {
-			out = append(out, k)
-		}
-	}
-	return out
-}
-
-func equalKinds(a, b []llm.EventKind) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

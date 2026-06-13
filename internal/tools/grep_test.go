@@ -105,17 +105,17 @@ func TestDecodeSearchCommandArgsAcceptsObjectAndBareArray(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
-		want  searchCommandArgs
+		want  programArgs
 	}{
 		{
 			name:  "object",
 			input: `{"args":["-n","needle","."],"cwd":"/tmp","timeout_seconds":5}`,
-			want:  searchCommandArgs{Args: []string{"-n", "needle", "."}, Cwd: "/tmp", TimeoutSeconds: 5},
+			want:  programArgs{Args: []string{"-n", "needle", "."}, Cwd: "/tmp", TimeoutSeconds: 5},
 		},
 		{
 			name:  "bare array",
 			input: `["-n","needle","."]`,
-			want:  searchCommandArgs{Args: []string{"-n", "needle", "."}},
+			want:  programArgs{Args: []string{"-n", "needle", "."}},
 		},
 	}
 

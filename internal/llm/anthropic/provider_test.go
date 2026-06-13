@@ -3,7 +3,6 @@ package anthropic
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,32 +13,9 @@ import (
 	"time"
 
 	"harness/internal/llm"
+	"harness/internal/llm/llmtest"
 	"harness/internal/sse"
 )
-
-// writeBody copies raw bytes to the response without going through
-// http.ResponseWriter.Write directly (which the security scanner flags as an
-// XSS sink); these are static test fixtures.
-func writeBody(w http.ResponseWriter, b []byte) {
-	_, _ = io.Copy(w, strings.NewReader(string(b)))
-}
-
-// serveFixture starts an httptest server that replies with the named SSE
-// fixture as a 200 streaming response.
-func serveFixture(t *testing.T, name string) *httptest.Server {
-	t.Helper()
-	body, err := os.ReadFile("testdata/" + name)
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
 
 func testProvider(t *testing.T, srv *httptest.Server, sleep func(time.Duration)) *Provider {
 	t.Helper()
@@ -53,34 +29,11 @@ func testProvider(t *testing.T, srv *httptest.Server, sleep func(time.Duration))
 	})
 }
 
-func simpleRequest() llm.Request {
-	return llm.Request{
-		Model: "claude-opus-4-8",
-		Messages: []llm.Message{
-			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hi"}}},
-		},
-	}
-}
-
-// drain collects all events and the terminal error from a stream.
-func drain(stream func(func(llm.StreamEvent, error) bool)) ([]llm.StreamEvent, error) {
-	var events []llm.StreamEvent
-	var lastErr error
-	for ev, err := range stream {
-		if err != nil {
-			lastErr = err
-			break
-		}
-		events = append(events, ev)
-	}
-	return events, lastErr
-}
-
 func TestStreamTextOnly(t *testing.T) {
-	srv := serveFixture(t, "text_only.sse")
+	srv := llmtest.ServeSSEFixture(t, "text_only.sse")
 	p := testProvider(t, srv, nil)
 
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("unexpected terminal error: %v", err)
 	}
@@ -114,29 +67,29 @@ func TestStreamTextOnly(t *testing.T) {
 }
 
 func TestStreamTextOnlyEventOrder(t *testing.T) {
-	srv := serveFixture(t, "text_only.sse")
+	srv := llmtest.ServeSSEFixture(t, "text_only.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	gotKinds := kindsOf(events)
+	gotKinds := llmtest.KindsOf(events)
 	wantKinds := []llm.EventKind{
 		llm.EventTextDelta, // Hello
 		llm.EventTextDelta, // !
 		llm.EventDone,
 	}
 	// Usage events may also be emitted; filter to the structural kinds we assert.
-	gotKinds = without(gotKinds, llm.EventUsage)
-	if !equalKinds(gotKinds, wantKinds) {
+	gotKinds = llmtest.WithoutKind(gotKinds, llm.EventUsage)
+	if !llmtest.EqualKinds(gotKinds, wantKinds) {
 		t.Errorf("event kinds = %v, want %v", gotKinds, wantKinds)
 	}
 }
 
 func TestStreamToolCall(t *testing.T) {
-	srv := serveFixture(t, "tool_call.sse")
+	srv := llmtest.ServeSSEFixture(t, "tool_call.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -184,9 +137,9 @@ func TestStreamToolCall(t *testing.T) {
 }
 
 func TestStreamParallelTools(t *testing.T) {
-	srv := serveFixture(t, "parallel_tools.sse")
+	srv := llmtest.ServeSSEFixture(t, "parallel_tools.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -215,9 +168,9 @@ func TestStreamParallelTools(t *testing.T) {
 }
 
 func TestStreamEmptyArgs(t *testing.T) {
-	srv := serveFixture(t, "empty_args.sse")
+	srv := llmtest.ServeSSEFixture(t, "empty_args.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -236,9 +189,9 @@ func TestStreamEmptyArgs(t *testing.T) {
 }
 
 func TestStreamInvalidToolJSON(t *testing.T) {
-	srv := serveFixture(t, "invalid_json.sse")
+	srv := llmtest.ServeSSEFixture(t, "invalid_json.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err == nil {
 		t.Fatal("expected stream error from invalid accumulated tool JSON")
 	}
@@ -264,9 +217,9 @@ func TestStreamInvalidToolJSON(t *testing.T) {
 }
 
 func TestStreamErrorFrame(t *testing.T) {
-	srv := serveFixture(t, "error_frame.sse")
+	srv := llmtest.ServeSSEFixture(t, "error_frame.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err == nil {
 		t.Fatal("expected terminal error from mid-stream error frame")
 	}
@@ -293,9 +246,9 @@ func TestStreamErrorFrame(t *testing.T) {
 }
 
 func TestStreamTruncated(t *testing.T) {
-	srv := serveFixture(t, "truncated.sse")
+	srv := llmtest.ServeSSEFixture(t, "truncated.sse")
 	p := testProvider(t, srv, nil)
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err == nil {
 		t.Fatal("expected truncated-stream error")
 	}
@@ -319,12 +272,12 @@ func TestStreamRetryThenSuccess(t *testing.T) {
 		if calls.Add(1) == 1 {
 			w.Header().Set("Retry-After", "2")
 			w.WriteHeader(http.StatusTooManyRequests)
-			writeBody(w, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			llmtest.WriteBody(w, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
+		llmtest.WriteBody(w, body)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -336,7 +289,7 @@ func TestStreamRetryThenSuccess(t *testing.T) {
 		mu.Unlock()
 	})
 
-	events, err := drain(p.Stream(context.Background(), simpleRequest()))
+	events, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("unexpected error after retry: %v", err)
 	}
@@ -366,13 +319,13 @@ func TestStreamFatalStatusNoRetry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusBadRequest)
-		writeBody(w, []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad model"}}`))
+		llmtest.WriteBody(w, []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad model"}}`))
 	}))
 	t.Cleanup(srv.Close)
 
 	var slept int
 	p := testProvider(t, srv, func(time.Duration) { slept++ })
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err == nil {
 		t.Fatal("expected APIError for 400")
 	}
@@ -399,13 +352,13 @@ func TestStreamRetryBudgetExhausted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		writeBody(w, []byte(`{"type":"error","error":{"type":"overloaded_error","message":"try later"}}`))
+		llmtest.WriteBody(w, []byte(`{"type":"error","error":{"type":"overloaded_error","message":"try later"}}`))
 	}))
 	t.Cleanup(srv.Close)
 
 	var slept int
 	p := testProvider(t, srv, func(time.Duration) { slept++ })
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err == nil {
 		t.Fatal("expected error after budget exhaustion")
 	}
@@ -433,7 +386,7 @@ func TestStreamContextCancelMidStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		fl, _ := w.(http.Flusher)
-		writeBody(w, []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"x\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-8\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+		llmtest.WriteBody(w, []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"x\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-8\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
 		if fl != nil {
 			fl.Flush()
 		}
@@ -447,7 +400,7 @@ func TestStreamContextCancelMidStream(t *testing.T) {
 	defer cancel()
 
 	var lastErr error
-	for _, err := range p.Stream(ctx, simpleRequest()) {
+	for _, err := range p.Stream(ctx, llmtest.SimpleRequest("claude-opus-4-8")) {
 		if err != nil {
 			lastErr = err
 			break
@@ -468,12 +421,12 @@ func TestStreamSendsHeaders(t *testing.T) {
 		gotVersion = r.Header.Get("anthropic-version")
 		gotContentType = r.Header.Get("content-type")
 		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
+		llmtest.WriteBody(w, body)
 	}))
 	t.Cleanup(srv.Close)
 
 	p := testProvider(t, srv, nil)
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -494,13 +447,13 @@ func TestStreamAppendsMessagesPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
-		writeBody(w, body)
+		llmtest.WriteBody(w, body)
 	}))
 	t.Cleanup(srv.Close)
 
 	// Custom base URL with a prefix; the dialect appends /v1/messages.
 	p := New(Config{APIKey: "k", BaseURL: srv.URL + "/anthropic", Sleep: func(time.Duration) {}})
-	_, err := drain(p.Stream(context.Background(), simpleRequest()))
+	_, err := llmtest.Drain(p.Stream(context.Background(), llmtest.SimpleRequest("claude-opus-4-8")))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -551,7 +504,7 @@ func TestMidStreamErrorFrameRetryability(t *testing.T) {
 				`data: {"type":"error","error":{"type":"` + tc.errType + `","message":"x"}}` + "\n\n"
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("content-type", "text/event-stream")
-				writeBody(w, []byte(body))
+				llmtest.WriteBody(w, []byte(body))
 			}))
 			defer srv.Close()
 
@@ -571,36 +524,4 @@ func TestMidStreamErrorFrameRetryability(t *testing.T) {
 			}
 		})
 	}
-}
-
-// --- helpers ---
-
-func kindsOf(events []llm.StreamEvent) []llm.EventKind {
-	out := make([]llm.EventKind, len(events))
-	for i, e := range events {
-		out[i] = e.Kind
-	}
-	return out
-}
-
-func without(kinds []llm.EventKind, drop llm.EventKind) []llm.EventKind {
-	out := kinds[:0:0]
-	for _, k := range kinds {
-		if k != drop {
-			out = append(out, k)
-		}
-	}
-	return out
-}
-
-func equalKinds(a, b []llm.EventKind) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

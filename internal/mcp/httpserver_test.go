@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"harness/internal/httpx"
 	"harness/internal/mcp/jsonrpc"
 )
 
@@ -747,7 +748,7 @@ func TestHTTPServerResponseBodyIsJSON(t *testing.T) {
 	session, _ := initSession(t, srv)
 	resp := postJSON(t, srv, `{"jsonrpc":"2.0","id":2,"method":"ping"}`, session, ProtocolVersion)
 	defer resp.Body.Close()
-	if ct := mediaTypeOf(resp.Header.Get("Content-Type")); ct != "application/json" {
+	if ct := httpx.MediaType(resp.Header.Get("Content-Type")); ct != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", ct)
 	}
 }

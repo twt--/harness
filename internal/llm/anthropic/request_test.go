@@ -7,82 +7,11 @@ import (
 	"testing"
 
 	"harness/internal/llm"
+	"harness/internal/llm/llmtest"
 )
 
-func floatPtr(f float64) *float64 { return &f }
-
-// basicRequest is the canonical request exercised by the golden test and reused
-// by request-building unit assertions.
 func basicRequest() llm.Request {
-	return llm.Request{
-		Model:  "claude-opus-4-8",
-		System: "You are a helpful coding assistant.",
-		Messages: []llm.Message{
-			{
-				Role: llm.RoleUser,
-				Content: []llm.ContentBlock{
-					{Kind: llm.BlockText, Text: "What is the weather in SF and NYC?"},
-				},
-			},
-			{
-				Role: llm.RoleAssistant,
-				Content: []llm.ContentBlock{
-					{Kind: llm.BlockText, Text: "Let me check both cities."},
-					{
-						Kind:      llm.BlockToolUse,
-						ToolUseID: "toolu_01A",
-						ToolName:  "get_weather",
-						ToolInput: json.RawMessage(`{"location": "San Francisco, CA"}`),
-					},
-					{
-						Kind:      llm.BlockToolUse,
-						ToolUseID: "toolu_01B",
-						ToolName:  "get_weather",
-						ToolInput: json.RawMessage(`{"location": "New York, NY"}`),
-					},
-				},
-			},
-			{
-				Role: llm.RoleUser,
-				Content: []llm.ContentBlock{
-					{
-						Kind:        llm.BlockToolResult,
-						ResultForID: "toolu_01A",
-						ResultText:  "59F and foggy",
-					},
-					{
-						Kind:        llm.BlockToolResult,
-						ResultForID: "toolu_01B",
-						ResultText:  "could not reach weather service",
-						ResultError: true,
-					},
-				},
-			},
-		},
-		Tools: []llm.ToolSchema{
-			{
-				Name:        "get_weather",
-				Description: "Get the current weather for a location.",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"location": {"type": "string", "description": "City and state, e.g. San Francisco, CA"}
-					},
-					"required": ["location"]
-				}`),
-			},
-			{
-				Name:        "list_dir",
-				Description: "List directory entries.",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {"path": {"type": "string"}}
-				}`),
-			},
-		},
-		// MaxTokens unset: default policy min(8192, contextWindow/4).
-		// Temperature nil: omitted.
-	}
+	return llmtest.WeatherToolRequest("claude-opus-4-8", "toolu_", false)
 }
 
 func TestBuildRequestGolden(t *testing.T) {
@@ -104,8 +33,8 @@ func TestBuildRequestGolden(t *testing.T) {
 		t.Fatalf("read golden: %v", err)
 	}
 
-	if !jsonEqual(t, got, want) {
-		t.Errorf("request JSON mismatch.\n got: %s\nwant: %s", canonical(t, got), canonical(t, want))
+	if !llmtest.JSONEqual(t, got, want) {
+		t.Errorf("request JSON mismatch.\n got: %s\nwant: %s", llmtest.CanonicalJSON(t, got), llmtest.CanonicalJSON(t, want))
 	}
 }
 
@@ -137,7 +66,7 @@ func TestBuildRequestTemperatureOmittedWhenNil(t *testing.T) {
 		t.Errorf("temperature present in body though Temperature is nil: %s", b)
 	}
 
-	req.Temperature = floatPtr(0)
+	req.Temperature = llmtest.FloatPtr(0)
 	b, err = json.Marshal(buildRequest(req, 1_000_000))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -205,29 +134,4 @@ func TestBuildRequestNoToolsNoBreakpointPanic(t *testing.T) {
 	if len(w.Tools) != 0 {
 		t.Fatalf("unexpected tools: %+v", w.Tools)
 	}
-}
-
-// jsonEqual reports whether two JSON documents are semantically equal.
-func jsonEqual(t *testing.T, a, b []byte) bool {
-	t.Helper()
-	var av, bv any
-	if err := json.Unmarshal(a, &av); err != nil {
-		t.Fatalf("unmarshal a: %v\n%s", err, a)
-	}
-	if err := json.Unmarshal(b, &bv); err != nil {
-		t.Fatalf("unmarshal b: %v\n%s", err, b)
-	}
-	ab, _ := json.Marshal(av)
-	bb, _ := json.Marshal(bv)
-	return bytes.Equal(ab, bb)
-}
-
-func canonical(t *testing.T, b []byte) string {
-	t.Helper()
-	var v any
-	if err := json.Unmarshal(b, &v); err != nil {
-		return string(b)
-	}
-	out, _ := json.MarshalIndent(v, "", "  ")
-	return string(out)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"harness/internal/retry"
@@ -22,6 +23,22 @@ type ConnectOptions struct {
 	Header     func(*http.Request)            // sets dialect-specific headers (auth, version)
 	ParseError func(*http.Response) *APIError // maps a non-200 response onto an APIError
 	Sleep      func(time.Duration)
+}
+
+// HTTPDefaults normalizes the transport knobs every HTTP dialect exposes:
+// empty BaseURL gets the dialect default, trailing slashes are removed before
+// appending the endpoint path, and nil Client/Sleep use the process defaults.
+func HTTPDefaults(baseURL, defaultBaseURL string, client *http.Client, sleep func(time.Duration)) (string, *http.Client, func(time.Duration)) {
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	return strings.TrimSuffix(baseURL, "/"), client, sleep
 }
 
 // Connect POSTs body to opts.URL with the retry-before-first-byte loop every

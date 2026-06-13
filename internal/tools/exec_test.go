@@ -120,17 +120,17 @@ func TestDecodeExecArgsAcceptsObjectAndBareArray(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
-		want  execArgs
+		want  programArgs
 	}{
 		{
 			name:  "object",
 			input: `{"argv":["echo","hello"],"cwd":"/tmp","timeout_seconds":5}`,
-			want:  execArgs{Argv: []string{"echo", "hello"}, Cwd: "/tmp", TimeoutSeconds: 5},
+			want:  programArgs{Args: []string{"echo", "hello"}, Cwd: "/tmp", TimeoutSeconds: 5},
 		},
 		{
 			name:  "bare array",
 			input: `["echo","hello"]`,
-			want:  execArgs{Argv: []string{"echo", "hello"}},
+			want:  programArgs{Args: []string{"echo", "hello"}},
 		},
 	}
 
@@ -140,7 +140,7 @@ func TestDecodeExecArgsAcceptsObjectAndBareArray(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decodeExecArgs: %v", err)
 			}
-			if !slices.Equal(got.Argv, tt.want.Argv) || got.Cwd != tt.want.Cwd || got.TimeoutSeconds != tt.want.TimeoutSeconds {
+			if !slices.Equal(got.Args, tt.want.Args) || got.Cwd != tt.want.Cwd || got.TimeoutSeconds != tt.want.TimeoutSeconds {
 				t.Errorf("decodeExecArgs() = %+v, want %+v", got, tt.want)
 			}
 		})
