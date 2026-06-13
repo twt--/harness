@@ -160,6 +160,7 @@ func TestHarnessEnvMapping(t *testing.T) {
 		"HARNESS_SYSTEM":                 "env system note",
 		"HARNESS_NO_ENV":                 "true",
 		"HARNESS_NO_COLOR":               "true",
+		"HARNESS_TIMESTAMPS":             "full",
 		"HARNESS_VERBOSE":                "true",
 		"HARNESS_TOOL_STREAM":            "false",
 		"HARNESS_PROMPT":                 "env> ",
@@ -196,6 +197,9 @@ func TestHarnessEnvMapping(t *testing.T) {
 	if !c.NoColor {
 		t.Fatalf("no-color false, want true")
 	}
+	if c.TimestampMode != TimestampFull {
+		t.Fatalf("timestamp mode %q, want full", c.TimestampMode)
+	}
 	if !c.Verbose {
 		t.Fatalf("verbose false, want true")
 	}
@@ -207,6 +211,34 @@ func TestHarnessEnvMapping(t *testing.T) {
 	}
 	if c.ReplPrompt != "env> " {
 		t.Fatalf("repl prompt %q, want env> ", c.ReplPrompt)
+	}
+}
+
+func TestTimestampsPrecedenceAndAliases(t *testing.T) {
+	checkPrecedence(t, precedenceCase[string]{
+		file:     `{"timestamps":"none"}`,
+		env:      map[string]string{"HARNESS_TIMESTAMPS": "long"},
+		flagArgs: []string{"-timestamps", "short"},
+		got:      func(c Config) string { return c.TimestampMode },
+		wantFlag: TimestampShort,
+		wantEnv:  TimestampFull,
+		wantFile: TimestampNone,
+	})
+
+	c := loadOK(t, []string{"-no-timestamps"}, noEnv, "")
+	if c.TimestampMode != TimestampNone {
+		t.Fatalf("-no-timestamps mode %q, want none", c.TimestampMode)
+	}
+
+	c = loadOK(t, nil, envFrom(map[string]string{"HARNESS_NO_TIMESTAMPS": "true"}), "")
+	if c.TimestampMode != TimestampNone {
+		t.Fatalf("HARNESS_NO_TIMESTAMPS mode %q, want none", c.TimestampMode)
+	}
+}
+
+func TestTimestampsRejectsInvalidMode(t *testing.T) {
+	if _, err := Load([]string{"-timestamps", "verbose"}, noEnv, ""); err == nil {
+		t.Fatalf("expected invalid timestamp mode to fail")
 	}
 }
 

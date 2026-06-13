@@ -20,6 +20,7 @@
   "tool_stream": true,
   "log_level": "info",
   "no_color": false,
+  "timestamps": "short",
   "prompt": "> ",
   "mode": "auto",
   "modes": {

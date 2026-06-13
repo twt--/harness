@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -84,6 +85,13 @@ func run(env environment) int {
 		now = time.Now
 	}
 	if len(args) > 0 && args[0] == "session" {
+		mode, sessionArgs, err := sessionTimestampArgs(args[1:], getenv)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness: %v\n", err)
+			return ui.ExitUsage
+		}
+		stdout, stderr = wrapTimestampWriters(stdout, stderr, now, mode)
+		args = append([]string{"session"}, sessionArgs...)
 		return runSessionCommand(args[1:], stdout, stderr)
 	}
 
@@ -100,6 +108,7 @@ func run(env environment) int {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
 	}
+	stdout, stderr = wrapTimestampWriters(stdout, stderr, now, cfg.TimestampMode)
 	logger, err := logging.NewLogger(stderr, cfg.LogLevel, cfg.Quiet)
 	if err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
@@ -385,6 +394,7 @@ func run(env environment) int {
 		ContextWindow:             cfg.ContextWindow,
 		Registry:                  modelRegistry,
 		Reasoning:                 reasoning,
+		Now:                       now,
 		CompactKeepTurns:          cfg.CompactKeepTurns,
 		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
 		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,
@@ -562,6 +572,81 @@ func runSessionCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: harness session replay <session-dir>")
 		return ui.ExitUsage
 	}
+}
+
+func wrapTimestampWriters(stdout, stderr io.Writer, now func() time.Time, mode string) (io.Writer, io.Writer) {
+	layout := timestampLayout(mode)
+	if layout == "" {
+		return stdout, stderr
+	}
+	return ui.NewTimestampedWriter(stdout, now, layout), ui.NewTimestampedWriter(stderr, now, layout)
+}
+
+func timestampLayout(mode string) string {
+	switch mode {
+	case config.TimestampNone:
+		return ""
+	case config.TimestampFull:
+		return ui.TimestampFullLayout
+	default:
+		return ui.TimestampShortLayout
+	}
+}
+
+func sessionTimestampArgs(args []string, getenv func(string) string) (string, []string, error) {
+	mode := config.TimestampShort
+	if getenv != nil {
+		if s := getenv("HARNESS_TIMESTAMPS"); s != "" {
+			normalized, err := config.NormalizeTimestampMode(s)
+			if err != nil {
+				return "", nil, err
+			}
+			mode = normalized
+		}
+		if s := getenv("HARNESS_NO_TIMESTAMPS"); s != "" {
+			disabled, err := strconv.ParseBool(s)
+			if err != nil {
+				return "", nil, fmt.Errorf("HARNESS_NO_TIMESTAMPS: %w", err)
+			}
+			if disabled {
+				mode = config.TimestampNone
+			}
+		}
+	}
+
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-no-timestamps" || arg == "--no-timestamps":
+			mode = config.TimestampNone
+		case arg == "-timestamps" || arg == "--timestamps":
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("%s requires a value", arg)
+			}
+			normalized, err := config.NormalizeTimestampMode(args[i+1])
+			if err != nil {
+				return "", nil, err
+			}
+			mode = normalized
+			i++
+		case strings.HasPrefix(arg, "-timestamps="):
+			normalized, err := config.NormalizeTimestampMode(strings.TrimPrefix(arg, "-timestamps="))
+			if err != nil {
+				return "", nil, err
+			}
+			mode = normalized
+		case strings.HasPrefix(arg, "--timestamps="):
+			normalized, err := config.NormalizeTimestampMode(strings.TrimPrefix(arg, "--timestamps="))
+			if err != nil {
+				return "", nil, err
+			}
+			mode = normalized
+		default:
+			out = append(out, arg)
+		}
+	}
+	return mode, out, nil
 }
 
 func defaultTerminalRows() int {

@@ -75,6 +75,8 @@ type Options struct {
 	// Reasoning is forwarded to every model request. Empty means provider
 	// default.
 	Reasoning llm.ReasoningConfig
+	// Now stamps transcript messages. Nil defaults to time.Now.
+	Now func() time.Time
 	// CompactKeepTurns controls how many whole recent turns remain verbatim after
 	// compaction. Zero uses the default.
 	CompactKeepTurns int
@@ -97,6 +99,7 @@ type Agent struct {
 	maxTurns                  int
 	contextWindow             int // -context-window override; 0 = use the registry default
 	reasoning                 llm.ReasoningConfig
+	now                       func() time.Time
 	sleep                     func(time.Duration) // mid-stream retry backoff; nil-free, set in New
 	compactKeepTurns          int
 	compactSummaryMaxTokens   int
@@ -110,6 +113,10 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 	if modelRegistry == nil {
 		modelRegistry = llm.NewRegistry(nil)
 	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &Agent{
 		provider:                  provider,
 		tools:                     registry,
@@ -118,6 +125,7 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		maxTurns:                  opts.MaxTurns,
 		contextWindow:             opts.ContextWindow,
 		reasoning:                 opts.Reasoning,
+		now:                       now,
 		sleep:                     time.Sleep,
 		compactKeepTurns:          opts.CompactKeepTurns,
 		compactSummaryMaxTokens:   opts.CompactSummaryMaxTokens,
@@ -214,7 +222,7 @@ type modelTurnResult struct {
 // mid-stream applies the §4 cancel repair and returns ctx.Err(); the transcript
 // is left valid (re-sendable) in every exit path.
 func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) error {
-	a.transcript = append(a.transcript, textMessage(llm.RoleUser, userText))
+	a.transcript = append(a.transcript, a.textMessage(llm.RoleUser, userText))
 
 	var total llm.Usage
 	var lastInput int // input tokens the final model turn reported (drives the trigger)
@@ -256,7 +264,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			// assistant message; drop the message entirely if nothing streamed.
 			// Un-executed tool calls are never appended.
 			if res.text != "" {
-				a.transcript = append(a.transcript, textMessage(llm.RoleAssistant, res.text))
+				a.transcript = append(a.transcript, a.textMessage(llm.RoleAssistant, res.text))
 			}
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				sink.Notice("[cancelled]")
@@ -265,7 +273,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			return err
 		}
 
-		a.transcript = append(a.transcript, assistantMessage(res))
+		a.transcript = append(a.transcript, a.assistantMessage(res))
 
 		if res.stopReason != llm.StopToolUse {
 			break
@@ -275,6 +283,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 		total = add(total, toolUsage)
 		a.transcript = append(a.transcript, llm.Message{
 			Role:    llm.RoleUser,
+			Time:    a.now(),
 			Content: results,
 		})
 
@@ -431,15 +440,19 @@ func (a *Agent) stream(ctx context.Context, req llm.Request, sink EventSink) (mo
 	return res, nil
 }
 
-// textMessage builds the single-text-block message shape shared by user
-// prompts, cancel repair, and compaction summaries.
-func textMessage(role llm.Role, text string) llm.Message {
-	return llm.Message{Role: role, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: text}}}
+// textMessage builds the single-text-block message shape shared by user prompts
+// and cancel repair.
+func (a *Agent) textMessage(role llm.Role, text string) llm.Message {
+	return textMessageAt(a.now(), role, text)
+}
+
+func textMessageAt(at time.Time, role llm.Role, text string) llm.Message {
+	return llm.Message{Role: role, Time: at, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: text}}}
 }
 
 // assistantMessage builds the assistant message for a completed model turn: the text
 // block (if any) first, then tool_use blocks in emission order (design §8.1).
-func assistantMessage(res modelTurnResult) llm.Message {
+func (a *Agent) assistantMessage(res modelTurnResult) llm.Message {
 	content := make([]llm.ContentBlock, 0, 1+len(res.toolCalls))
 	if res.text != "" {
 		content = append(content, llm.ContentBlock{Kind: llm.BlockText, Text: res.text})
@@ -452,7 +465,7 @@ func assistantMessage(res modelTurnResult) llm.Message {
 			ToolInput: call.Input,
 		})
 	}
-	return llm.Message{Role: llm.RoleAssistant, Content: content}
+	return llm.Message{Role: llm.RoleAssistant, Time: a.now(), Content: content}
 }
 
 // maxTurnsNotice is the exact guard message printed when the model-turn budget is

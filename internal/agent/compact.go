@@ -116,7 +116,7 @@ func (a *Agent) Compact(ctx context.Context, sink EventSink) (llm.Usage, error) 
 
 	collapsed := len(older)
 	compacted := make([]llm.Message, 0, 1+len(kept))
-	compacted = append(compacted, summaryMessage(summary))
+	compacted = append(compacted, a.summaryMessage(summary))
 	compacted = append(compacted, kept...)
 
 	// Degradation ladder: shrink further while the estimate still overflows
@@ -145,7 +145,7 @@ func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm
 			return "", llm.Usage{}, err
 		}
 		total = add(total, usage)
-		summaries = append(summaries, textMessage(llm.RoleUser, fmt.Sprintf("Chunk %d summary:\n%s", i+1, summary)))
+		summaries = append(summaries, textMessageAt(a.now(), llm.RoleUser, fmt.Sprintf("Chunk %d summary:\n%s", i+1, summary)))
 	}
 	final, usage, err := a.summarizeOne(ctx, summaries)
 	if err != nil {
@@ -224,7 +224,7 @@ func prepareSummaryMessages(msgs []llm.Message, maxToolResultBytes int) []llm.Me
 	}
 	out := make([]llm.Message, len(msgs))
 	for i, m := range msgs {
-		out[i] = llm.Message{Role: m.Role, Content: make([]llm.ContentBlock, len(m.Content))}
+		out[i] = llm.Message{Role: m.Role, Time: m.Time, Content: make([]llm.ContentBlock, len(m.Content))}
 		copy(out[i].Content, m.Content)
 		for j, b := range out[i].Content {
 			if b.Kind != llm.BlockToolResult || len(b.ResultText) <= maxToolResultBytes {
@@ -320,8 +320,8 @@ func hasNonResult(m llm.Message) bool {
 	return len(m.Content) == 0
 }
 
-func summaryMessage(summary string) llm.Message {
-	return textMessage(llm.RoleUser, summaryHeader+summary)
+func (a *Agent) summaryMessage(summary string) llm.Message {
+	return a.textMessage(llm.RoleUser, summaryHeader+summary)
 }
 
 // minTruncResult is the smallest tool_result worth shrinking; below it the saving

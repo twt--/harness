@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 // tool_use/tool_result pair, so ValidateTranscript passes before any mutation.
 func sampleSession() Session {
 	created := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
+	msgTime := created.Add(time.Minute)
 	return Session{
 		Version:  Version,
 		Provider: "anthropic",
@@ -24,17 +26,17 @@ func sampleSession() Session {
 		Updated:  created.Add(2 * time.Minute),
 		System:   "be terse",
 		Messages: []llm.Message{
-			{Role: llm.RoleUser, Content: []llm.ContentBlock{
+			{Role: llm.RoleUser, Time: msgTime, Content: []llm.ContentBlock{
 				{Kind: llm.BlockText, Text: "list the dir"},
 			}},
-			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+			{Role: llm.RoleAssistant, Time: msgTime, Content: []llm.ContentBlock{
 				{Kind: llm.BlockText, Text: "sure"},
 				{Kind: llm.BlockToolUse, ToolUseID: "call_1", ToolName: "list_dir", ToolInput: json.RawMessage(`{"path":"."}`)},
 			}},
-			{Role: llm.RoleUser, Content: []llm.ContentBlock{
+			{Role: llm.RoleUser, Time: msgTime, Content: []llm.ContentBlock{
 				{Kind: llm.BlockToolResult, ResultForID: "call_1", ResultText: "main.go"},
 			}},
-			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+			{Role: llm.RoleAssistant, Time: msgTime, Content: []llm.ContentBlock{
 				{Kind: llm.BlockText, Text: "done"},
 			}},
 		},
@@ -42,6 +44,43 @@ func sampleSession() Session {
 			Usage:   llm.Usage{InputTokens: 1200, OutputTokens: 340, CacheReadTokens: 800, CacheWriteTokens: 0},
 			CostUSD: 0.0123,
 		},
+	}
+}
+
+func TestSaveBackfillsMissingMessageTimestamps(t *testing.T) {
+	s := sampleSession()
+	s.Messages[0].Time = time.Time{}
+	path := filepath.Join(t.TempDir(), "session")
+	if err := s.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Messages[0].Time.IsZero() {
+		t.Fatalf("missing message timestamp was not backfilled")
+	}
+	if !got.Messages[0].Time.Equal(s.Updated) {
+		t.Fatalf("backfilled timestamp = %s, want updated %s", got.Messages[0].Time, s.Updated)
+	}
+}
+
+func TestAppendEventStampsMissingTime(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "session")
+	if err := AppendEvent(dir, Event{Type: EventUser, Turn: 1, Text: "hello"}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "raw.ndjson"))
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	var ev Event
+	if err := json.Unmarshal(bytes.TrimSpace(data), &ev); err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	if ev.Time.IsZero() {
+		t.Fatalf("event time was not stamped")
 	}
 }
 

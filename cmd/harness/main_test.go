@@ -192,6 +192,40 @@ func TestRunOneShotAssistantToStdout(t *testing.T) {
 	}
 }
 
+func TestRunTimestampModes(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		want    string
+		wantNot string
+	}{
+		{name: "default short", args: nil, want: "12:00:00 42"},
+		{name: "full", args: []string{"-timestamps=full"}, want: "2026-06-09 12:00:00 42"},
+		{name: "long alias", args: []string{"-timestamps=long"}, want: "2026-06-09 12:00:00 42"},
+		{name: "none", args: []string{"-timestamps=none"}, want: "42", wantNot: "12:00:00"},
+		{name: "no timestamps alias", args: []string{"-no-timestamps"}, want: "42", wantNot: "12:00:00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := llmtest.New("fake", llmtest.Step{
+				Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "42"}},
+				Stop:   llm.StopEndTurn,
+			})
+			args := append([]string{"-model", "claude-opus-4-8", "-p", "what is the answer"}, tc.args...)
+			env, out, errw, _ := fakeProviderEnv(t, args, fp, "")
+			if code := run(env); code != ui.ExitOK {
+				t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("stdout %q missing %q", out.String(), tc.want)
+			}
+			if tc.wantNot != "" && strings.Contains(out.String(), tc.wantNot) {
+				t.Fatalf("stdout %q should not contain %q", out.String(), tc.wantNot)
+			}
+		})
+	}
+}
+
 func TestRunREPLModelCommandSwitchesProvider(t *testing.T) {
 	fp := llmtest.New("fake", okStep())
 	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
@@ -1027,7 +1061,7 @@ func TestRunREPLToolsCommandListsTools(t *testing.T) {
 
 func toolsOutputHasDescribedTool(output, name string) bool {
 	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "  "+name) && strings.Contains(line, " - ") {
+		if strings.Contains(line, "  "+name) && strings.Contains(line, " - ") {
 			return true
 		}
 	}

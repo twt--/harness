@@ -65,12 +65,13 @@ type Config struct {
 	PromptSet bool   // -p was supplied (distinguishes "" from absent)
 
 	// UI.
-	Verbose    bool   // -v
-	ToolStream bool   // -tool-stream: show live tool-call progress
-	Quiet      bool   // -q / --quiet: suppress slog-backed diagnostics
-	LogLevel   string // --log-level / LOG_LEVEL: debug, info, warn, error
-	NoColor    bool   // -no-color or NO_COLOR
-	ReplPrompt string // -prompt: REPL input prompt (default "> ")
+	Verbose       bool   // -v
+	ToolStream    bool   // -tool-stream: show live tool-call progress
+	Quiet         bool   // -q / --quiet: suppress slog-backed diagnostics
+	LogLevel      string // --log-level / LOG_LEVEL: debug, info, warn, error
+	NoColor       bool   // -no-color or NO_COLOR
+	TimestampMode string // -timestamps: short, full, or none
+	ReplPrompt    string // -prompt: REPL input prompt (default "> ")
 
 	// MCP proxy integration (opt-in). Proxy is the HTTP proxy URL; an empty
 	// Proxy means "use the shared default", which main resolves at connect
@@ -98,6 +99,9 @@ const (
 	defaultMaxTurns         = 250
 	defaultContextWindow    = 256_000
 	defaultDelegateMaxTurns = 20
+	TimestampShort          = "short"
+	TimestampFull           = "full"
+	TimestampNone           = "none"
 )
 
 // FileModeConfig is one entry of the config file's "modes" object. It mirrors
@@ -133,6 +137,8 @@ type fileConfig struct {
 	ToolStream                *bool                     `json:"tool_stream"`
 	LogLevel                  string                    `json:"log_level"`
 	NoColor                   *bool                     `json:"no_color"`
+	Timestamps                string                    `json:"timestamps"`
+	NoTimestamps              *bool                     `json:"no_timestamps"`
 	Prompt                    string                    `json:"prompt"`
 	Mode                      string                    `json:"mode"`
 	Modes                     map[string]FileModeConfig `json:"modes"`
@@ -174,7 +180,9 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	fResume, fSession := f.resume, f.session
 	fMaxTurns, fDefaultContextWindow, fContextWindow := f.maxTurns, f.defaultContextWindow, f.contextWindow
 	fReasoningEffort := f.reasoningEffort
-	fPrompt, fReplPrompt, fVerbose, fToolStream, fNoColor := f.prompt, f.replPrompt, f.verbose, f.toolStream, f.noColor
+	fPrompt, fReplPrompt := f.prompt, f.replPrompt
+	fVerbose, fToolStream, fNoColor := f.verbose, f.toolStream, f.noColor
+	fTimestamps, fNoTimestamps := f.timestamps, f.noTimestamps
 
 	// set records which flags were explicitly provided, so a flag only overrides
 	// env/file when actually present (flag defaults must not beat lower sources).
@@ -254,6 +262,20 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	c.LogLevel = canonicalLogLevel
 	c.NoColor = resolveBool(set["no-color"], *fNoColor,
 		getenv("HARNESS_NO_COLOR"), fc.NoColor, false)
+	c.TimestampMode, err = resolveTimestampMode(timestampInputs{
+		flagSet:      set["timestamps"],
+		flagValue:    *fTimestamps,
+		noFlagSet:    set["no-timestamps"],
+		noFlagValue:  *fNoTimestamps,
+		envValue:     getenv("HARNESS_TIMESTAMPS"),
+		noEnvValue:   getenv("HARNESS_NO_TIMESTAMPS"),
+		fileValue:    fc.Timestamps,
+		noFileValue:  fc.NoTimestamps,
+		defaultValue: TimestampShort,
+	})
+	if err != nil {
+		return Config{}, err
+	}
 	c.ReplPrompt = resolveString(set["prompt"], *fReplPrompt,
 		getenv("HARNESS_PROMPT"), fc.Prompt, "> ")
 
@@ -399,8 +421,10 @@ type flags struct {
 	prompt                         *string
 	replPrompt                     *string
 	logLevel                       *string
+	timestamps                     *string
 	verbose, toolStream            *bool
 	noColor                        *bool
+	noTimestamps                   *bool
 	quietShort, quiet              *bool
 	config                         *string
 }
@@ -430,6 +454,8 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.quiet = fs.Bool("quiet", false, "suppress informational diagnostics")
 	f.logLevel = fs.String("log-level", logging.LevelInfo, "diagnostic log level: debug, info, warn, error (also LOG_LEVEL)")
 	f.noColor = fs.Bool("no-color", false, "disable color output")
+	f.timestamps = fs.String("timestamps", TimestampShort, "terminal timestamp prefixes: short, full, long, or none")
+	f.noTimestamps = fs.Bool("no-timestamps", false, "disable terminal timestamp prefixes")
 	f.replPrompt = fs.String("prompt", "> ", "REPL input prompt")
 	// -config is consumed by the caller before Load (it picks the file Load
 	// reads); accepted here so it is not rejected as an unknown flag.
@@ -571,6 +597,71 @@ func intValue(v *int, def int) int {
 		return def
 	}
 	return *v
+}
+
+type timestampInputs struct {
+	flagSet      bool
+	flagValue    string
+	noFlagSet    bool
+	noFlagValue  bool
+	envValue     string
+	noEnvValue   string
+	fileValue    string
+	noFileValue  *bool
+	defaultValue string
+}
+
+func resolveTimestampMode(in timestampInputs) (string, error) {
+	value := in.defaultValue
+	if in.fileValue != "" {
+		value = in.fileValue
+	}
+	if in.noFileValue != nil && *in.noFileValue {
+		value = TimestampNone
+	}
+	if in.envValue != "" {
+		value = in.envValue
+	}
+	if disabled, err := parseOptionalBool(in.noEnvValue); err != nil {
+		return "", fmt.Errorf("HARNESS_NO_TIMESTAMPS: %w", err)
+	} else if disabled {
+		value = TimestampNone
+	}
+	if in.flagSet {
+		value = in.flagValue
+	}
+	if in.noFlagSet && in.noFlagValue {
+		value = TimestampNone
+	}
+	mode, err := NormalizeTimestampMode(value)
+	if err != nil {
+		return "", err
+	}
+	return mode, nil
+}
+
+func NormalizeTimestampMode(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", TimestampShort:
+		return TimestampShort, nil
+	case TimestampFull, "long":
+		return TimestampFull, nil
+	case TimestampNone, "off", "false", "disabled":
+		return TimestampNone, nil
+	default:
+		return "", fmt.Errorf("timestamps must be short, full, long, or none")
+	}
+}
+
+func parseOptionalBool(s string) (bool, error) {
+	if strings.TrimSpace(s) == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(s)
+	if err != nil {
+		return false, err
+	}
+	return b, nil
 }
 
 // resolveBool mirrors resolveString for booleans. fileVal of nil means unset.

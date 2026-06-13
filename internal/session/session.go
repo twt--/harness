@@ -61,6 +61,7 @@ func (s Session) Save(dir string) error {
 		return fmt.Errorf("session: create dir: %w", err)
 	}
 	s.Version = Version
+	s.Messages = stampMissingMessageTimes(s.Messages, sessionTimestamp(s.Updated, s.Created))
 
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -122,6 +123,9 @@ const (
 func AppendEvent(dir string, ev Event) error {
 	if dir == "" {
 		return nil
+	}
+	if ev.Time.IsZero() {
+		ev.Time = time.Now()
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("session: create dir: %w", err)
@@ -401,7 +405,28 @@ func repair(msgs []llm.Message) []llm.Message {
 	if len(results) == 0 {
 		return msgs
 	}
-	return append(msgs, llm.Message{Role: llm.RoleUser, Content: results})
+	return append(msgs, llm.Message{Role: llm.RoleUser, Time: time.Now(), Content: results})
+}
+
+func stampMissingMessageTimes(msgs []llm.Message, at time.Time) []llm.Message {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	out := make([]llm.Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		if out[i].Time.IsZero() {
+			out[i].Time = at
+		}
+	}
+	return out
+}
+
+func sessionTimestamp(updated, created time.Time) time.Time {
+	if !updated.IsZero() {
+		return updated
+	}
+	return created
 }
 
 // DefaultPath returns <stateDir>/harness/sessions/<timestamp>/.

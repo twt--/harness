@@ -3,7 +3,10 @@
 // shared by the agent loop and the concrete provider dialects.
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Role identifies the author of a message. The internal model is
 // Anthropic-shaped: there is deliberately no tool role (tool results are
@@ -22,6 +25,7 @@ const (
 // content blocks.
 type Message struct {
 	Role    Role           `json:"role"`
+	Time    time.Time      `json:"time,omitempty"`
 	Content []ContentBlock `json:"content"`
 }
 

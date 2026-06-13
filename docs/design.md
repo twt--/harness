@@ -110,6 +110,7 @@ const (
 
 type Message struct {
     Role    Role           `json:"role"`
+    Time    time.Time      `json:"time,omitempty"`
     Content []ContentBlock `json:"content"`
 }
 
@@ -438,8 +439,10 @@ to validate known provider/model reasoning support and effort values.
 Precedence: **flags > environment > config file > built-in defaults.**
 
 - Environment: `HARNESS_MODEL_PROXY_URL`, `HARNESS_PROVIDER`, `HARNESS_MODEL`, plus
-  `HARNESS_*` equivalents for user-facing flags. Provider API keys and provider base
-  URLs are resolved only by `harness-model-proxy`.
+  `HARNESS_*` equivalents for user-facing flags. `HARNESS_TIMESTAMPS` accepts
+  `short`, `full`/`long`, or `none`; `HARNESS_NO_TIMESTAMPS=true` is an alias for
+  `none`. Provider API keys and provider base URLs are resolved only by
+  `harness-model-proxy`.
 - Config file (optional): `~/.config/harness/config.json` — provider, model,
   model_proxy_url, run modes, flag defaults, and config-only context-efficiency knobs:
   `agents_md_warn_bytes`, `tool_result_max_bytes`, `tool_result_max_lines`,
@@ -933,6 +936,9 @@ backoff allows.
   of each result, dimmed.
 - Per-turn usage line: `[turn: 3 model turns · 12.4k in / 1.8k out · $0.071 · 4.3s]`
   (cost omitted for unknown models).
+- Terminal output lines are prefixed with local time by default: `hh:mm:ss`.
+  `-timestamps=full` (or `long`) uses `yyyy-mm-dd hh:mm:ss`; `-timestamps=none`
+  or `-no-timestamps` disables prefixes.
 - Dim color only when stdout is a TTY (`os.Stdout.Stat()` mode check); `NO_COLOR` env or
   `-no-color` disables. Everything is legible without color.
 - Startup diagnostics use `log/slog` with a plaintext handler: `[level] [category]
@@ -1019,6 +1025,8 @@ zero for Anthropic sessions.
 -q, --quiet       suppress informational diagnostics
 --log-level <level>  diagnostic log level: debug, info, warn, error (also LOG_LEVEL)
 -no-color
+-timestamps <mode>  short (default), full/long, or none
+-no-timestamps      alias for -timestamps=none
 -config <file>    alternate config path
 ```
 
@@ -1027,8 +1035,8 @@ zero for Anthropic sessions.
 - Prompt from the flag value; `-p -` or piped stdin reads stdin (both → flag text, then
   stdin — enables `harness -p "summarize:" < notes.txt`).
 - **Assistant text → stdout; model progress, tool-call progress, tool summaries,
-  usage, errors → stderr.** So
-  `harness -p "…" > answer.txt` captures exactly the model's answer.
+  usage, errors → stderr.** Use `-timestamps=none` when redirecting stdout for
+  machine-readable answer capture.
 - Exit codes: `0` completed, `1` runtime error, `2` usage error, `130` interrupted.
 - Runs exactly one user turn, saves the session, exits.
 
@@ -1059,6 +1067,7 @@ type UsageTotals struct {
   from active context, and `artifacts/tool-results/` stores full truncated tool output.
 - **Saved after every turn**, atomically (write `state.json.tmp`, `os.Rename`). Cheap
   relative to a model call; crash-safe for long sessions.
+- Every saved message and append-only replay event carries a timestamp.
 - Auto-save to `~/.local/state/harness/sessions/<timestamp>`; the path is printed at
   startup. `-session` chooses a directory; `-resume` loads `state.json` (applying the
   dangling-tool-use repair, §4). `/clear` rotates to a fresh directory.
