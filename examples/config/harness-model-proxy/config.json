@@ -1,0 +1,6 @@
+{
+  "provider_configs": [
+    "providers.json"
+  ],
+  "default_context_window": 256000
+}

@@ -1,0 +1,37 @@
+{
+  "provider": "",
+  "model": "",
+  "model_proxy_url": "http://127.0.0.1:8765",
+  "system": "",
+  "no_env": false,
+  "max_steps": 50,
+  "default_context_window": 256000,
+  "context_window": 0,
+  "reasoning_effort": "",
+  "on_max_steps": "stop",
+  "agents_md_warn_bytes": 8192,
+  "tool_result_max_bytes": 65536,
+  "tool_result_max_lines": 1000,
+  "read_file_default_limit": 1000,
+  "compact_keep_turns": 4,
+  "compact_summary_max_tokens": 2048,
+  "compact_tool_result_max_bytes": 4096,
+  "delegate_max_steps": 20,
+  "verbose": false,
+  "tool_stream": true,
+  "log_level": "info",
+  "no_color": false,
+  "prompt": "> ",
+  "mode": "auto",
+  "modes": {
+    "example_review": {
+      "allowed_tools": ["read_file", "list_dir", "grep", "git_readonly"],
+      "prompt": "Review the current changes and report only concrete findings with file and line references."
+    }
+  },
+  "mcp": {
+    "enable": false,
+    "proxy": "http://127.0.0.1:8766",
+    "headers": {}
+  }
+}

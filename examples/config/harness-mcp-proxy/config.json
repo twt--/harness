@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "example_fs": {
+      "type": "stdio",
+      "command": "example-mcp-filesystem-server",
+      "args": ["--root", "/srv/example-data", "--readonly"],
+      "env": {
+        "LOG_LEVEL": "info",
+        "EXAMPLE_FS_TOKEN": "${EXAMPLE_FS_TOKEN:-dev-token}"
+      }
+    },
+    "example_search": {
+      "type": "streamable-http",
+      "url": "https://mcp-search.example.test/mcp",
+      "headers": {
+        "Authorization": "Bearer ${EXAMPLE_SEARCH_TOKEN:-dev-token}",
+        "X-Workspace": "example"
+      }
+    }
+  },
+  "proxy": {
+    "listen": "127.0.0.1:8766",
+    "logFile": "",
+    "logLevel": "info"
+  }
+}
