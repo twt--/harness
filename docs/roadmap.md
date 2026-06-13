@@ -34,8 +34,8 @@ line-level claims before starting one.
 7. **Proactive compaction.** The model-turn loop estimates the transcript before
    every request and compacts mid-turn at the same 78% threshold; the
    reported-tokens signal now counts cached tokens too.
-8. **max-turns auto-continue.** `on_max_turns = continue` grants up to 3 fresh
-   model-turn budgets before stopping; default behavior is unchanged.
+8. **Unlimited max-turns mode.** `max_turns <= 0` disables the model-turn guard;
+   positive values stop at the configured cap.
 9. **Parallel dispatch of read-only tool calls.** Model turns whose calls are all
    read-only dispatch concurrently (bounded at 8); ordering of sink events,
    results, and transcript blocks is unchanged. Mixed turns stay sequential.

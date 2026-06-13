@@ -423,6 +423,9 @@ func TestMaxTurnsStop(t *testing.T) {
 			if !strings.Contains(n, "(3)") {
 				t.Errorf("max-turns notice should name the limit: %q", n)
 			}
+			if strings.Contains(n, "continue") {
+				t.Errorf("max-turns notice should only report stop: %q", n)
+			}
 		}
 	}
 	if !sawMaxTurns {
@@ -430,25 +433,26 @@ func TestMaxTurnsStop(t *testing.T) {
 	}
 }
 
-func TestAutoContinuePastMaxTurns(t *testing.T) {
+func TestNonPositiveMaxTurnsIsUnlimited(t *testing.T) {
+	const defaultConfigMaxTurns = 250
+
 	tool := &recordTool{name: "loop", run: func(_ context.Context, _ json.RawMessage) (string, error) {
 		return "again", nil
 	}}
 	reg := &tools.Registry{}
 	reg.Register(tool)
 
-	// Every model turn asks for a tool; with MaxTurns 2 and 3 auto-continues the
-	// loop runs 2*(1+3)=8 model turns, then stops with the final notice.
-	always := llmtest.Step{
+	toolUse := llmtest.Step{
 		Events: []llm.StreamEvent{toolDone(0, "id", "loop", `{}`)},
 		Stop:   llm.StopToolUse,
 	}
-	modelTurns := make([]llmtest.Step, 10)
-	for i := range modelTurns {
-		modelTurns[i] = always
+	modelTurns := make([]llmtest.Step, defaultConfigMaxTurns+2)
+	for i := 0; i < defaultConfigMaxTurns+1; i++ {
+		modelTurns[i] = toolUse
 	}
+	modelTurns[len(modelTurns)-1] = llmtest.Step{Events: []llm.StreamEvent{textDelta("done")}, Stop: llm.StopEndTurn}
 	fp := llmtest.New("fake", modelTurns...)
-	a := newAgent(fp, reg, Options{MaxTurns: 2, AutoContinue: true})
+	a := newAgent(fp, reg, Options{MaxTurns: 0})
 	sink := &recordSink{}
 
 	if err := a.RunTurn(context.Background(), "go", sink); err != nil {
@@ -456,26 +460,16 @@ func TestAutoContinuePastMaxTurns(t *testing.T) {
 	}
 	mustValid(t, a.Transcript())
 
-	if len(fp.Requests) != 8 {
-		t.Errorf("provider called %d times, want 8 (4 budgets of 2)", len(fp.Requests))
+	if len(fp.Requests) != defaultConfigMaxTurns+2 {
+		t.Errorf("provider called %d times, want %d (past default cap)", len(fp.Requests), defaultConfigMaxTurns+2)
 	}
-	if sink.turnUsage[0].ModelTurns != 8 {
-		t.Errorf("TurnComplete model turns = %d, want 8", sink.turnUsage[0].ModelTurns)
+	if sink.turnUsage[0].ModelTurns != defaultConfigMaxTurns+2 {
+		t.Errorf("TurnComplete model turns = %d, want %d", sink.turnUsage[0].ModelTurns, defaultConfigMaxTurns+2)
 	}
-	var continues, stops int
 	for _, n := range sink.notices {
-		if strings.Contains(n, "auto-continuing") {
-			continues++
+		if strings.Contains(n, "max turns") {
+			t.Errorf("unlimited max turns should not emit stop notice, got %q", n)
 		}
-		if strings.Contains(n, "say \"continue\"") {
-			stops++
-		}
-	}
-	if continues != 3 {
-		t.Errorf("want 3 auto-continue notices, got %d (%v)", continues, sink.notices)
-	}
-	if stops != 1 {
-		t.Errorf("want the final stop notice once, got %d (%v)", stops, sink.notices)
 	}
 }
 

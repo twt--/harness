@@ -327,6 +327,33 @@ func TestMaxTurnsFlagBeatsFile(t *testing.T) {
 	}
 }
 
+func TestMaxTurnsAllowsNonPositiveUnlimited(t *testing.T) {
+	c, err := Load([]string{"-max-turns", "0"}, noEnv, "")
+	if err != nil {
+		t.Fatalf("Load flag: %v", err)
+	}
+	if c.MaxTurns != 0 {
+		t.Fatalf("flag max-turns %d, want 0", c.MaxTurns)
+	}
+
+	c, err = Load(nil, envFrom(map[string]string{"HARNESS_MAX_TURNS": "-1"}), "")
+	if err != nil {
+		t.Fatalf("Load env: %v", err)
+	}
+	if c.MaxTurns != -1 {
+		t.Fatalf("env max-turns %d, want -1", c.MaxTurns)
+	}
+
+	cfgPath := writeConfig(t, `{"max_turns":0}`)
+	c, err = Load(nil, noEnv, cfgPath)
+	if err != nil {
+		t.Fatalf("Load file: %v", err)
+	}
+	if c.MaxTurns != 0 {
+		t.Fatalf("file max-turns %d, want 0", c.MaxTurns)
+	}
+}
+
 func TestDelegateMaxTurnsConfigOnly(t *testing.T) {
 	c, err := Load(nil, noEnv, "")
 	if err != nil {
@@ -560,27 +587,6 @@ func TestModeUnspecifiedIsEmpty(t *testing.T) {
 	}
 	if c.Mode != "" {
 		t.Fatalf("mode %q, want empty when unspecified", c.Mode)
-	}
-}
-
-func TestOnMaxTurnsResolution(t *testing.T) {
-	c := loadOK(t, nil, noEnv, "")
-	if c.OnMaxTurns != "stop" {
-		t.Errorf("default OnMaxTurns = %q, want \"stop\"", c.OnMaxTurns)
-	}
-
-	checkPrecedence(t, precedenceCase[string]{
-		file:     `{"on_max_turns":"stop"}`,
-		env:      map[string]string{"HARNESS_ON_MAX_TURNS": "continue"},
-		flagArgs: []string{"-on-max-turns", "continue"},
-		got:      func(c Config) string { return c.OnMaxTurns },
-		wantFlag: "continue",
-		wantEnv:  "continue",
-		wantFile: "stop",
-	})
-
-	if _, err := Load([]string{"-on-max-turns", "bogus"}, noEnv, ""); err == nil {
-		t.Error("invalid on-max-turns value should error")
 	}
 }
 

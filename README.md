@@ -105,8 +105,7 @@ interrupted.
 -no-env           omit the environment context block (cwd/os/date/git)
 -resume <file>    load a session transcript and continue
 -session <file>   explicit session save path
--max-turns <n>    model turns per user prompt (default 250)
--on-max-turns <action>  when the model-turn budget is hit: stop (default) or continue (up to 3 fresh budgets)
+-max-turns <n>    model turns per user prompt; <=0 means unlimited (default 250)
 -default-context-window <n>   fallback window for unknown/unconfigured models (default 256000)
 -context-window <n>   override the model's context window (tokens)
 -reasoning-effort <level>   reasoning/thinking effort when supported

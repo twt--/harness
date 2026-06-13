@@ -480,7 +480,7 @@ One user prompt runs model turns until the model stops asking for tools:
 
 ```
 append user message
-for modelTurn := 0; modelTurn < maxTurns; modelTurn++ { // -max-turns, default 250
+for modelTurn := 0; maxTurns <= 0 || modelTurn < maxTurns; modelTurn++ { // -max-turns, default 250; <=0 unlimited
     stream := provider.Stream(ctx, request)
     accumulate: print text deltas live; collect assembled tool calls;
                 capture usage + stop reason
@@ -503,9 +503,10 @@ print turn usage line; save session
 - **Metered tools:** tools may optionally report token usage (currently `delegate`).
   The agent adds that usage to the turn/session total, while the normal tool result
   remains the only child output added to the parent transcript.
-- **Max-turns guard:** on hit, print
-  `[stopped: reached max turns (250); say "continue" to keep going]`, keep the
-  transcript (it is valid — the last model turn's results are appended), return to the prompt.
+- **Max-turns guard:** when `max_turns` is positive, on hit print
+  `[stopped: reached max turns (250)]`, keep the transcript (it is valid — the
+  last model turn's results are appended), and return to the prompt. A
+  non-positive `max_turns` disables this guard.
 
 ### 8.2 Tool failure handling
 
@@ -1009,7 +1010,7 @@ zero for Anthropic sessions.
 -no-env           omit environment context block
 -resume <file>    load a session transcript and continue
 -session <file>   explicit session save path
--max-turns <n>    model turns per user prompt (default 250)
+-max-turns <n>    model turns per user prompt; <=0 means unlimited (default 250)
 -default-context-window <n>
 -context-window <n>
 -reasoning-effort <level>

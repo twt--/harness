@@ -385,7 +385,6 @@ func run(env environment) int {
 		ContextWindow:             cfg.ContextWindow,
 		Registry:                  modelRegistry,
 		Reasoning:                 reasoning,
-		AutoContinue:              cfg.OnMaxTurns == "continue",
 		CompactKeepTurns:          cfg.CompactKeepTurns,
 		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
 		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,

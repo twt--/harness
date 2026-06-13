@@ -46,15 +46,14 @@ type Config struct {
 	DefaultContextWindow      int // -default-context-window, fallback for unknown/unconfigured models
 	ContextWindow             int // -context-window, 0 = registry/default
 	ReasoningEffort           string
-	OnMaxTurns                string // -on-max-turns: "stop" (default) or "continue"
-	AgentsMDWarnBytes         int    // config-only warning threshold in bytes; default 8192, explicit 0 disables
-	ToolResultMaxBytes        int    // config-only; 0 = tool default
-	ToolResultMaxLines        int    // config-only; 0 = tool default
-	ReadFileDefaultLimit      int    // config-only; 0 = tool default
-	CompactKeepTurns          int    // config-only; 0 = agent default
-	CompactSummaryMaxTokens   int    // config-only; 0 = agent default
-	CompactToolResultMaxBytes int    // config-only; 0 = agent default, negative disables
-	DelegateMaxTurns          int    // config-only; default 20, per delegate call cap
+	AgentsMDWarnBytes         int // config-only warning threshold in bytes; default 8192, explicit 0 disables
+	ToolResultMaxBytes        int // config-only; 0 = tool default
+	ToolResultMaxLines        int // config-only; 0 = tool default
+	ReadFileDefaultLimit      int // config-only; 0 = tool default
+	CompactKeepTurns          int // config-only; 0 = agent default
+	CompactSummaryMaxTokens   int // config-only; 0 = agent default
+	CompactToolResultMaxBytes int // config-only; 0 = agent default, negative disables
+	DelegateMaxTurns          int // config-only; default 20, per delegate call cap
 
 	// Run mode. Empty means "not specified" so main can let a resumed
 	// session supply the mode before falling back to the default.
@@ -122,7 +121,6 @@ type fileConfig struct {
 	DefaultContextWindow      *int                      `json:"default_context_window"`
 	ContextWindow             *int                      `json:"context_window"`
 	ReasoningEffort           string                    `json:"reasoning_effort"`
-	OnMaxTurns                string                    `json:"on_max_turns"`
 	AgentsMDWarnBytes         *int                      `json:"agents_md_warn_bytes"`
 	ToolResultMaxBytes        *int                      `json:"tool_result_max_bytes"`
 	ToolResultMaxLines        *int                      `json:"tool_result_max_lines"`
@@ -225,11 +223,6 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 		getenv("HARNESS_CONTEXT_WINDOW"), fc.ContextWindow, 0)
 	c.ReasoningEffort = strings.ToLower(strings.TrimSpace(resolveString(set["reasoning-effort"], *fReasoningEffort,
 		getenv("HARNESS_REASONING_EFFORT"), fc.ReasoningEffort, "")))
-	c.OnMaxTurns = strings.ToLower(strings.TrimSpace(resolveString(set["on-max-turns"], *f.onMaxTurns,
-		getenv("HARNESS_ON_MAX_TURNS"), fc.OnMaxTurns, "stop")))
-	if c.OnMaxTurns != "stop" && c.OnMaxTurns != "continue" {
-		return Config{}, fmt.Errorf("invalid -on-max-turns %q (valid: stop, continue)", c.OnMaxTurns)
-	}
 	c.AgentsMDWarnBytes = intValue(fc.AgentsMDWarnBytes, 8192)
 	c.ToolResultMaxBytes = intValue(fc.ToolResultMaxBytes, 0)
 	c.ToolResultMaxLines = intValue(fc.ToolResultMaxLines, 0)
@@ -402,7 +395,6 @@ type flags struct {
 	defaultContextWindow           *int
 	contextWindow                  *int
 	reasoningEffort                *string
-	onMaxTurns                     *string
 	mode                           *string
 	prompt                         *string
 	replPrompt                     *string
@@ -427,11 +419,10 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.noEnv = fs.Bool("no-env", false, "omit the environment context block")
 	f.resume = fs.String("resume", "", "load a session transcript and continue")
 	f.session = fs.String("session", "", "explicit session save path")
-	f.maxTurns = fs.Int("max-turns", defaultMaxTurns, "model turns per user prompt")
+	f.maxTurns = fs.Int("max-turns", defaultMaxTurns, "model turns per user prompt; <=0 means unlimited")
 	f.defaultContextWindow = fs.Int("default-context-window", defaultContextWindow, "default context window for unknown/unconfigured models (tokens)")
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
 	f.reasoningEffort = fs.String("reasoning-effort", "", "reasoning/thinking effort (provider/model dependent)")
-	f.onMaxTurns = fs.String("on-max-turns", "", "when the model-turn budget is hit: stop (default) or continue (up to 3 fresh budgets)")
 	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.toolStream = fs.Bool("tool-stream", true, "show live tool-call progress")

@@ -16,17 +16,10 @@ import (
 	"harness/internal/tools"
 )
 
-// defaultMaxTurns caps model turns per user prompt (design §8.1).
-const defaultMaxTurns = 250
-
 // streamRetries is the per-model-turn mid-stream retry budget: a model turn whose stream
 // fails after the first byte may be re-requested this many times (spec §2).
 // Retries do not consume the maxTurns budget.
 const streamRetries = 2
-
-// maxAutoContinues bounds AutoContinue budgets per turn so a pathological
-// loop still terminates (spec §5).
-const maxAutoContinues = 3
 
 // maxParallelTools bounds concurrent read-only dispatch (spec §8).
 const maxParallelTools = 8
@@ -61,8 +54,8 @@ type ContextEstimate struct {
 	Messages int
 }
 
-// Options configures an Agent. The zero value is valid; MaxTurns falls back to
-// the default.
+// Options configures an Agent. The zero value is valid; MaxTurns <= 0 means
+// unlimited.
 type Options struct {
 	MaxTurns int
 	// Model is the resolved model id stamped onto every request. The agent loop
@@ -82,9 +75,6 @@ type Options struct {
 	// Reasoning is forwarded to every model request. Empty means provider
 	// default.
 	Reasoning llm.ReasoningConfig
-	// AutoContinue grants up to maxAutoContinues fresh model-turn budgets when the
-	// model still wants tools at the cap, instead of stopping (spec §5).
-	AutoContinue bool
 	// CompactKeepTurns controls how many whole recent turns remain verbatim after
 	// compaction. Zero uses the default.
 	CompactKeepTurns int
@@ -107,7 +97,6 @@ type Agent struct {
 	maxTurns                  int
 	contextWindow             int // -context-window override; 0 = use the registry default
 	reasoning                 llm.ReasoningConfig
-	autoContinue              bool                // grant fresh model-turn budgets at the cap (spec §5)
 	sleep                     func(time.Duration) // mid-stream retry backoff; nil-free, set in New
 	compactKeepTurns          int
 	compactSummaryMaxTokens   int
@@ -115,12 +104,8 @@ type Agent struct {
 	archiveCompaction         CompactionArchiver
 }
 
-// New constructs an Agent. A non-positive Options.MaxTurns uses the default.
+// New constructs an Agent. A non-positive Options.MaxTurns means unlimited.
 func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
-	maxTurns := opts.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = defaultMaxTurns
-	}
 	modelRegistry := opts.Registry
 	if modelRegistry == nil {
 		modelRegistry = llm.NewRegistry(nil)
@@ -130,10 +115,9 @@ func New(provider llm.Provider, registry *tools.Registry, opts Options) *Agent {
 		tools:                     registry,
 		registry:                  modelRegistry,
 		model:                     opts.Model,
-		maxTurns:                  maxTurns,
+		maxTurns:                  opts.MaxTurns,
 		contextWindow:             opts.ContextWindow,
 		reasoning:                 opts.Reasoning,
-		autoContinue:              opts.AutoContinue,
 		sleep:                     time.Sleep,
 		compactKeepTurns:          opts.CompactKeepTurns,
 		compactSummaryMaxTokens:   opts.CompactSummaryMaxTokens,
@@ -236,10 +220,9 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 	var lastInput int // input tokens the final model turn reported (drives the trigger)
 	var lastContext ContextEstimate
 	modelTurns := 0
-	budget := a.maxTurns
-	continues := 0
+	unlimited := a.maxTurns <= 0
 
-	for modelTurns < budget {
+	for unlimited || modelTurns < a.maxTurns {
 		lastContext = a.EstimateContext()
 		// Proactive trigger (spec §4): a turn whose tool results balloon the
 		// context compacts before the next request, not after the turn. The
@@ -295,15 +278,9 @@ func (a *Agent) RunTurn(ctx context.Context, userText string, sink EventSink) er
 			Content: results,
 		})
 
-		if modelTurns >= budget {
-			if a.autoContinue && continues < maxAutoContinues {
-				continues++
-				budget += a.maxTurns
-				sink.Notice(fmt.Sprintf("[max turns reached; auto-continuing (%d/%d)]", continues, maxAutoContinues))
-			} else {
-				sink.Notice(maxTurnsNotice(a.maxTurns))
-				break
-			}
+		if !unlimited && modelTurns >= a.maxTurns {
+			sink.Notice(maxTurnsNotice(a.maxTurns))
+			break
 		}
 	}
 
@@ -481,7 +458,7 @@ func assistantMessage(res modelTurnResult) llm.Message {
 // maxTurnsNotice is the exact guard message printed when the model-turn budget is
 // exhausted (design §8.1).
 func maxTurnsNotice(maxTurns int) string {
-	return fmt.Sprintf("[stopped: reached max turns (%d); say \"continue\" to keep going]", maxTurns)
+	return fmt.Sprintf("[stopped: reached max turns (%d)]", maxTurns)
 }
 
 func add(a, b llm.Usage) llm.Usage {
