@@ -15,8 +15,9 @@ const (
 )
 
 type promptLineEditor struct {
-	r *bufio.Reader
-	w io.Writer
+	r       *bufio.Reader
+	w       io.Writer
+	history []string
 }
 
 func newPromptLineEditor(in io.Reader, w io.Writer) *promptLineEditor {
@@ -28,6 +29,7 @@ func newPromptLineEditor(in io.Reader, w io.Writer) *promptLineEditor {
 
 func (e *promptLineEditor) read(prompt string) (replInput, bool, error) {
 	state := lineEditState{prompt: prompt}
+	history := e.historyState()
 	if err := state.redraw(e.w); err != nil {
 		return replInput{}, false, err
 	}
@@ -49,11 +51,13 @@ func (e *promptLineEditor) read(prompt string) (replInput, bool, error) {
 			if _, err := fmt.Fprint(e.w, "\n"); err != nil {
 				return replInput{}, false, err
 			}
+			e.addHistory(string(state.buf))
 			return replInput{text: string(state.buf)}, true, nil
 		case rune(lineTermEdit):
 			if _, err := fmt.Fprint(e.w, "\n"); err != nil {
 				return replInput{}, false, err
 			}
+			e.addHistory(string(state.buf))
 			return replInput{text: string(state.buf), edit: true}, true, nil
 		case ctrlD:
 			if len(state.buf) == 0 {
@@ -79,11 +83,16 @@ func (e *promptLineEditor) read(prompt string) (replInput, bool, error) {
 				state.right()
 			case lineEditDelete:
 				state.delete()
+			case lineEditHistoryPrev:
+				history.prev(&state)
+			case lineEditHistoryNext:
+				history.next(&state)
 			case lineEditPaste:
 				if len(state.buf) == 0 {
 					if _, err := fmt.Fprintf(e.w, "\r\x1b[2K%s%s\n", prompt, text); err != nil {
 						return replInput{}, false, err
 					}
+					e.addHistory(text)
 					return replInput{text: text, pasted: true}, true, nil
 				}
 				state.insertString(text)
@@ -110,6 +119,8 @@ const (
 	lineEditRight
 	lineEditDelete
 	lineEditPaste
+	lineEditHistoryPrev
+	lineEditHistoryNext
 )
 
 func (e *promptLineEditor) readEscape() (lineEditAction, string, error) {
@@ -124,6 +135,10 @@ func (e *promptLineEditor) readEscape() (lineEditAction, string, error) {
 			return lineEditIgnore, "", err
 		}
 		switch seq {
+		case "A":
+			return lineEditHistoryPrev, "", nil
+		case "B":
+			return lineEditHistoryNext, "", nil
 		case "C":
 			return lineEditRight, "", nil
 		case "D":
@@ -145,6 +160,10 @@ func (e *promptLineEditor) readEscape() (lineEditAction, string, error) {
 			return lineEditIgnore, "", err
 		}
 		switch c {
+		case 'A':
+			return lineEditHistoryPrev, "", nil
+		case 'B':
+			return lineEditHistoryNext, "", nil
 		case 'C':
 			return lineEditRight, "", nil
 		case 'D':
@@ -186,6 +205,60 @@ func (e *promptLineEditor) readBracketedPaste() (string, error) {
 	}
 }
 
+func (e *promptLineEditor) addHistory(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if strings.ContainsAny(text, "\r\n") {
+		return
+	}
+	if len(e.history) > 0 && e.history[len(e.history)-1] == text {
+		return
+	}
+	e.history = append(e.history, text)
+}
+
+func (e *promptLineEditor) historyState() lineEditHistory {
+	return lineEditHistory{index: len(e.history), items: e.history}
+}
+
+type lineEditHistory struct {
+	index int
+	draft string
+	seen  bool
+	items []string
+}
+
+func (h *lineEditHistory) prev(s *lineEditState) {
+	if len(h.items) == 0 {
+		return
+	}
+	if !h.seen {
+		h.draft = string(s.buf)
+		h.index = len(h.items)
+		h.seen = true
+	}
+	if h.index == 0 {
+		return
+	}
+	h.index--
+	s.setText(h.items[h.index])
+}
+
+func (h *lineEditHistory) next(s *lineEditState) {
+	if !h.seen {
+		return
+	}
+	if h.index < len(h.items)-1 {
+		h.index++
+		s.setText(h.items[h.index])
+		return
+	}
+	h.index = len(h.items)
+	h.seen = false
+	s.setText(h.draft)
+}
+
 type lineEditState struct {
 	prompt string
 	buf    []rune
@@ -203,6 +276,11 @@ func (s *lineEditState) insertString(text string) {
 	for _, r := range text {
 		s.insert(r)
 	}
+}
+
+func (s *lineEditState) setText(text string) {
+	s.buf = []rune(text)
+	s.cursor = len(s.buf)
 }
 
 func (s *lineEditState) left() {

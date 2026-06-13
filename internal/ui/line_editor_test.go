@@ -12,6 +12,24 @@ func readEditedInput(t *testing.T, input string) (replInput, bool, error) {
 	return newPromptLineEditor(strings.NewReader(input), &out).read("> ")
 }
 
+func readEditedInputs(t *testing.T, input string, count int) []replInput {
+	t.Helper()
+	var out bytes.Buffer
+	editor := newPromptLineEditor(strings.NewReader(input), &out)
+	inputs := make([]replInput, 0, count)
+	for range count {
+		input, ok, err := editor.read("> ")
+		if err != nil {
+			t.Fatalf("read = %v", err)
+		}
+		if !ok {
+			t.Fatal("read returned ok=false")
+		}
+		inputs = append(inputs, input)
+	}
+	return inputs
+}
+
 func TestPromptLineEditorInsertsAtCursor(t *testing.T) {
 	input, ok, err := readEditedInput(t, "abc\x1b[D\x1b[DX\n")
 	if err != nil {
@@ -61,6 +79,38 @@ func TestPromptLineEditorCursorBoundariesAreNoops(t *testing.T) {
 	}
 	if input.text != "aX" {
 		t.Fatalf("input text = %q, want aX", input.text)
+	}
+}
+
+func TestPromptLineEditorArrowUpRecallsHistory(t *testing.T) {
+	inputs := readEditedInputs(t, "first\nsecond\n\x1b[A\n", 3)
+
+	if inputs[2].text != "second" {
+		t.Fatalf("history recall = %q, want second", inputs[2].text)
+	}
+}
+
+func TestPromptLineEditorArrowUpDownRestoresDraft(t *testing.T) {
+	inputs := readEditedInputs(t, "first\nsecond\ndra\x1b[A\x1b[A\x1b[B\x1b[Bft\n", 3)
+
+	if inputs[2].text != "draft" {
+		t.Fatalf("draft after history navigation = %q, want draft", inputs[2].text)
+	}
+}
+
+func TestPromptLineEditorRecalledHistoryCanBeEdited(t *testing.T) {
+	inputs := readEditedInputs(t, "hello\n\x1b[A!\n", 2)
+
+	if inputs[1].text != "hello!" {
+		t.Fatalf("edited history recall = %q, want hello!", inputs[1].text)
+	}
+}
+
+func TestPromptLineEditorSS3ArrowUpRecallsHistory(t *testing.T) {
+	inputs := readEditedInputs(t, "first\n\x1bOA\n", 2)
+
+	if inputs[1].text != "first" {
+		t.Fatalf("SS3 history recall = %q, want first", inputs[1].text)
 	}
 }
 
@@ -124,6 +174,18 @@ func TestPromptLineEditorBracketedPasteSubmitsEmptyPrompt(t *testing.T) {
 	}
 	if !input.pasted || input.text != pasted {
 		t.Fatalf("input = %+v, want pasted %q", input, pasted)
+	}
+}
+
+func TestPromptLineEditorMultilinePasteIsNotAddedToHistory(t *testing.T) {
+	pasted := "first line\nsecond line"
+	inputs := readEditedInputs(t, bracketedPasteStart+pasted+bracketedPasteEnd+"\x1b[A\n", 2)
+
+	if !inputs[0].pasted || inputs[0].text != pasted {
+		t.Fatalf("first input = %+v, want pasted %q", inputs[0], pasted)
+	}
+	if inputs[1].text != "" {
+		t.Fatalf("history after multiline paste = %q, want empty", inputs[1].text)
 	}
 }
 
