@@ -187,6 +187,7 @@ by a delimiter; only text written after the delimiter is sent as the next prompt
 | `/clear` | reset the conversation; rotate to a fresh session directory |
 | `/compact` | force compaction now |
 | `/usage` | cumulative session tokens and cost |
+| `/tools` | list enabled built-in and MCP tools, plus disabled optional tools |
 | `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
 | `/model` | choose a configured provider, then choose one of its configured models |
@@ -311,7 +312,8 @@ unless `-q`/`--quiet` or `--log-level error` suppresses the warning. `grep`,
 [MCP servers](#mcp-servers-optional) integration is enabled, downstream MCP tools
 also appear, namespaced as `mcp__<server>__<tool>`. See
 [`docs/design.md`](docs/design.md) §9 for each tool's schema and exact
-behavior.
+behavior. In the REPL, `/tools` lists the active mode's enabled built-in and MCP
+tools, followed by optional built-ins that are currently disabled.
 
 Tool results are centrally capped (default 64 KB or 1000 lines; configurable via
 `tool_result_max_bytes` / `tool_result_max_lines`). Truncated results include a

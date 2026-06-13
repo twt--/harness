@@ -107,6 +107,10 @@ type App struct {
 	// used by /skills to group output by source location.
 	SkillDirs []skills.Dir
 
+	// DisabledTools lists optional built-in tools that could not be registered
+	// (e.g., rg when ripgrep is not installed). Used by /tools.
+	DisabledTools []tools.DisabledTool
+
 	usage session.UsageTotals // cumulative across the session
 }
 
@@ -117,6 +121,7 @@ const helpText = `commands:
   /clear           reset conversation; rotate to a fresh session file
   /compact         force compaction now
   /usage           cumulative session tokens and cost
+  /tools           list available tools (built-in, MCP, and disabled)
   /edit [draft]    open $VISUAL/$EDITOR (or vi) for a multi-line prompt
   /save [file]     force save (optionally elsewhere)
   /model [model]   pick a configured provider/model, or switch directly
@@ -652,6 +657,8 @@ func (app *App) command(line string, readCommandLine func(string) (string, error
 		}
 	case "/skills":
 		fmt.Fprintln(app.Errw, app.skillsSummary())
+	case "/tools":
+		fmt.Fprintln(app.Errw, app.toolsSummary())
 	default:
 		fmt.Fprintf(app.Errw, "unknown command %q; type /help\n", cmd)
 	}
@@ -1042,6 +1049,88 @@ func (app *App) skillsSummary() string {
 	}
 
 	return b.String()
+}
+
+// toolsSummary renders the available tools for /tools: enabled built-in tools,
+// enabled MCP tools (grouped by server), and disabled built-in tools with reasons.
+func (app *App) toolsSummary() string {
+	enabled := app.Agent.ToolNames()
+
+	var builtins, mcps []string
+	for _, name := range enabled {
+		if isMCPToolName(name) {
+			mcps = append(mcps, name)
+		} else {
+			builtins = append(builtins, name)
+		}
+	}
+
+	var b strings.Builder
+
+	// Enabled built-in tools
+	if len(builtins) > 0 {
+		b.WriteString("built-in tools:\n")
+		for _, name := range builtins {
+			fmt.Fprintf(&b, "  %s\n", name)
+		}
+	}
+
+	// Enabled MCP tools, grouped by server
+	if len(mcps) > 0 {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		byServer := make(map[string][]string)
+		for _, name := range mcps {
+			label := mcpServerLabel(name)
+			byServer[label] = append(byServer[label], name)
+		}
+		// Sort server labels for stable output
+		labels := make([]string, 0, len(byServer))
+		for l := range byServer {
+			labels = append(labels, l)
+		}
+		sort.Strings(labels)
+		b.WriteString("mcp tools:\n")
+		for _, label := range labels {
+			fmt.Fprintf(&b, "  [%s]\n", label)
+			for _, name := range byServer[label] {
+				fmt.Fprintf(&b, "    %s\n", name)
+			}
+		}
+	}
+
+	// Disabled tools
+	if len(app.DisabledTools) > 0 {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("disabled tools:\n")
+		for _, d := range app.DisabledTools {
+			fmt.Fprintf(&b, "  %s  (%s)\n", d.Name, d.Reason)
+		}
+	}
+
+	if b.Len() == 0 {
+		return "[no tools available]"
+	}
+	return b.String()
+}
+
+// mcpServerLabel extracts a display-friendly server label from an MCP tool
+// name of the form mcp__<server>__<tool>. It mirrors mcptools.serverLabel.
+func mcpServerLabel(name string) string {
+	const prefix = "mcp__"
+	rest, _ := strings.CutPrefix(name, prefix)
+	label, _, _ := strings.Cut(rest, "__")
+	if label == "" {
+		return "(unknown)"
+	}
+	return label
+}
+
+func isMCPToolName(name string) bool {
+	return strings.HasPrefix(name, "mcp__")
 }
 
 // accumulatingSink forwards events to the renderer while accumulating cumulative

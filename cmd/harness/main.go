@@ -469,6 +469,7 @@ func run(env environment) int {
 		Prompt:          cfg.ReplPrompt,
 		Skills:          discoveredSkills,
 		SkillDirs:       skillDirs,
+		DisabledTools:   disabledTools,
 	}
 	if resumed != nil {
 		app.Turn = resumed.Turn

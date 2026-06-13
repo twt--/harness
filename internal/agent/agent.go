@@ -155,6 +155,10 @@ func (a *Agent) window() int {
 // SetSystem sets the system prompt sent on every request.
 func (a *Agent) SetSystem(system string) { a.system = system }
 
+// ToolNames returns the names of tools in the agent's active registry in
+// registration order.
+func (a *Agent) ToolNames() []string { return a.tools.Names() }
+
 // SetTools replaces the tool registry used for subsequent requests. Because the
 // agent advertises (Specs) and dispatches from the same registry, swapping it
 // changes both what the model sees and what it can call — the hook a run-mode

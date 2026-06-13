@@ -986,6 +986,45 @@ func TestRunResumeRestoresMode(t *testing.T) {
 	}
 }
 
+// TestRunREPLToolsCommandListsTools verifies that /tools prints built-in tools
+// (always including read_file and delegate), identifies disabled tools (rg when
+// unavailable), and does not trigger any model request.
+func TestRunREPLToolsCommandListsTools(t *testing.T) {
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
+	env, _, errw, _ := fakeProviderEnv(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
+		"/tools\n/exit\n",
+	)
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	// /tools is a meta-command — it must not trigger a model request.
+	if len(fp.Requests) != 0 {
+		t.Errorf("want 0 requests, got %d", len(fp.Requests))
+	}
+	out := errw.String()
+	if !strings.Contains(out, "built-in tools:") {
+		t.Errorf("/tools output missing built-in heading, got:\n%s", out)
+	}
+	for _, name := range tools.DefaultNames() {
+		if !strings.Contains(out, "  "+name) {
+			t.Errorf("/tools output missing built-in tool %q, got:\n%s", name, out)
+		}
+	}
+	if !strings.Contains(out, "  delegate") {
+		t.Errorf("/tools output missing delegate, got:\n%s", out)
+	}
+	if !tools.RipgrepAvailable() {
+		if !strings.Contains(out, "disabled tools:") {
+			t.Errorf("/tools output missing disabled section when rg unavailable, got:\n%s", out)
+		}
+		if !strings.Contains(out, "rg") {
+			t.Errorf("/tools output missing disabled rg entry, got:\n%s", out)
+		}
+	}
+}
+
 func expectedPlanToolNames() []string {
 	names := []string{"read_file", "list_dir", "grep"}
 	if tools.RipgrepAvailable() {

@@ -230,6 +230,43 @@ func TestREPLUsageCumulative(t *testing.T) {
 	}
 }
 
+func TestREPLToolsCommandListsBuiltInMCPAndDisabledTools(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	reg := tools.Default()
+	reg.Register(mcpRefreshTool{name: "mcp__search__lookup"})
+	reg.Register(mcpRefreshTool{name: "mcp__files__read"})
+	app.Agent.SetTools(reg)
+	app.DisabledTools = []tools.DisabledTool{
+		{Name: "rg", Reason: `"rg" binary not found`},
+	}
+
+	in := strings.NewReader("/tools\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(fp.Requests) != 0 {
+		t.Fatalf("/tools should not invoke the agent, got %d requests", len(fp.Requests))
+	}
+	got := errw.String()
+	for _, want := range []string{
+		"built-in tools:",
+		"  read_file",
+		"mcp tools:",
+		"  [files]",
+		"    mcp__files__read",
+		"  [search]",
+		"    mcp__search__lookup",
+		"disabled tools:",
+		`  rg  ("rg" binary not found)`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("/tools output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestREPLUsageLineSeedsFromSavedUsage(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake",

@@ -982,6 +982,7 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 | `/clear` | reset conversation; rotate to a fresh session file |
 | `/compact` | force compaction now |
 | `/usage` | cumulative session tokens + cost |
+| `/tools` | list enabled built-in and MCP tools, plus disabled optional tools |
 | `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
 | `/model` | choose a configured provider, then choose one of its configured models |
