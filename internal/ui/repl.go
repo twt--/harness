@@ -1054,14 +1054,16 @@ func (app *App) skillsSummary() string {
 // toolsSummary renders the available tools for /tools: enabled built-in tools,
 // enabled MCP tools (grouped by server), and disabled built-in tools with reasons.
 func (app *App) toolsSummary() string {
-	enabled := app.Agent.ToolNames()
+	specs := app.Agent.ToolSpecs()
 
 	var builtins, mcps []string
-	for _, name := range enabled {
-		if isMCPToolName(name) {
-			mcps = append(mcps, name)
+	descriptions := make(map[string]string, len(specs))
+	for _, spec := range specs {
+		descriptions[spec.Name] = spec.Description
+		if isMCPToolName(spec.Name) {
+			mcps = append(mcps, spec.Name)
 		} else {
-			builtins = append(builtins, name)
+			builtins = append(builtins, spec.Name)
 		}
 	}
 
@@ -1071,7 +1073,7 @@ func (app *App) toolsSummary() string {
 	if len(builtins) > 0 {
 		b.WriteString("built-in tools:\n")
 		for _, name := range builtins {
-			fmt.Fprintf(&b, "  %s\n", name)
+			writeToolSummaryLine(&b, "  ", name, descriptions[name])
 		}
 	}
 
@@ -1095,7 +1097,7 @@ func (app *App) toolsSummary() string {
 		for _, label := range labels {
 			fmt.Fprintf(&b, "  [%s]\n", label)
 			for _, name := range byServer[label] {
-				fmt.Fprintf(&b, "    %s\n", name)
+				writeToolSummaryLine(&b, "    ", name, descriptions[name])
 			}
 		}
 	}
@@ -1115,6 +1117,14 @@ func (app *App) toolsSummary() string {
 		return "[no tools available]"
 	}
 	return b.String()
+}
+
+func writeToolSummaryLine(b *strings.Builder, indent, name, description string) {
+	if description == "" {
+		fmt.Fprintf(b, "%s%s\n", indent, name)
+		return
+	}
+	fmt.Fprintf(b, "%s%s - %s\n", indent, name, description)
 }
 
 // mcpServerLabel extracts a display-friendly server label from an MCP tool

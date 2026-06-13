@@ -252,12 +252,12 @@ func TestREPLToolsCommandListsBuiltInMCPAndDisabledTools(t *testing.T) {
 	got := errw.String()
 	for _, want := range []string{
 		"built-in tools:",
-		"  read_file",
+		"  read_file - Read a file from disk.",
 		"mcp tools:",
 		"  [files]",
-		"    mcp__files__read",
+		"    mcp__files__read - refreshed tool",
 		"  [search]",
-		"    mcp__search__lookup",
+		"    mcp__search__lookup - refreshed tool",
 		"disabled tools:",
 		`  rg  ("rg" binary not found)`,
 	} {

@@ -1008,11 +1008,11 @@ func TestRunREPLToolsCommandListsTools(t *testing.T) {
 		t.Errorf("/tools output missing built-in heading, got:\n%s", out)
 	}
 	for _, name := range tools.DefaultNames() {
-		if !strings.Contains(out, "  "+name) {
+		if !strings.Contains(out, "  "+name+" - ") {
 			t.Errorf("/tools output missing built-in tool %q, got:\n%s", name, out)
 		}
 	}
-	if !strings.Contains(out, "  delegate") {
+	if !strings.Contains(out, "  delegate - Run a read-only delegate sub-agent") {
 		t.Errorf("/tools output missing delegate, got:\n%s", out)
 	}
 	if !tools.RipgrepAvailable() {
