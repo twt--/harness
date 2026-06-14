@@ -500,8 +500,9 @@ func TestREPLAgentCommandLists(t *testing.T) {
 	app.AgentName = "plan"
 	app.AvailableAgents = []AgentSummary{
 		{Name: "auto", Description: "Default agent"},
-		{Name: "independent", Description: "Work independently"},
-		{Name: "plan", Description: "Plan changes"},
+		{Name: "independent", Description: "Work independently", Provider: "openai"},
+		{Name: "plan", Description: "Plan changes", Provider: "anthropic", Model: "claude-opus-4-8"},
+		{Name: "style", Description: "Style review", Model: "gpt-5.5"},
 	}
 
 	in := strings.NewReader("/agent\n/exit\n")
@@ -519,6 +520,17 @@ func TestREPLAgentCommandLists(t *testing.T) {
 	}
 	if !strings.Contains(got, "Plan changes") {
 		t.Errorf("/agent should include descriptions, errw=%q", got)
+	}
+	for _, want := range []string{
+		"current agent: plan [anthropic/claude-opus-4-8]",
+		"auto           [inherit current]",
+		"independent    [openai/inherit current model]",
+		"plan (current) [anthropic/claude-opus-4-8]",
+		"style          [inherit provider/gpt-5.5]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("/agent output missing %q, errw=%q", want, got)
+		}
 	}
 }
 

@@ -684,7 +684,13 @@ func agentSummaries(agents map[string]agentdef.Definition) []ui.AgentSummary {
 	names := agentdef.Names(agents)
 	out := make([]ui.AgentSummary, 0, len(names))
 	for _, name := range names {
-		out = append(out, ui.AgentSummary{Name: name, Description: agents[name].Description})
+		a := agents[name]
+		out = append(out, ui.AgentSummary{
+			Name:        name,
+			Description: a.Description,
+			Provider:    a.Provider,
+			Model:       a.Model,
+		})
 	}
 	return out
 }

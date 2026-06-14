@@ -1006,6 +1006,41 @@ func TestRunConfigAgentCanSetProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestRunREPLAgentListShowsProviderModelConfig(t *testing.T) {
+	fp := llmtest.New("fake")
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := `{
+		"agents":{
+			"security":{
+				"description":"Security review",
+				"provider":"openai",
+				"model":"gpt-5.5",
+				"allowed_tools":["read_file"],
+				"prompt":"SECURITY"
+			}
+		}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-model", "claude-opus-4-8"}, fp, "/agent\n/exit\n")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	got := errw.String()
+	if !strings.Contains(got, "security       [openai/gpt-5.5] - Security review") {
+		t.Fatalf("/agent output missing configured provider/model, stderr=%q", got)
+	}
+	if !strings.Contains(got, "current agent: auto [anthropic/claude-opus-4-8]") ||
+		!strings.Contains(got, "auto (current) [inherit current]") {
+		t.Fatalf("/agent output missing inherited provider/model, stderr=%q", got)
+	}
+	if len(fp.Requests) != 0 {
+		t.Fatalf("/agent listing should not call model, got %d requests", len(fp.Requests))
+	}
+}
+
 func TestRunDelegateNamedAgentUsesDefinition(t *testing.T) {
 	fp := llmtest.New("fake",
 		llmtest.Step{

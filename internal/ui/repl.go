@@ -39,6 +39,8 @@ type ModelSelection struct {
 type AgentSummary struct {
 	Name        string
 	Description string
+	Provider    string
+	Model       string
 }
 
 // AgentSelection is the runtime agent bundle returned by App.SwitchAgent: the
@@ -839,24 +841,55 @@ func (app *App) switchModel(model string) {
 // marking the current one.
 func (app *App) agentSummary() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "current agent: %s\n", app.AgentName)
+	fmt.Fprintf(&b, "current agent: %s [%s]\n", app.AgentName, app.currentAgentModelSummary())
 	b.WriteString("available agents:")
 	if len(app.AvailableAgents) == 0 {
 		b.WriteString(" none configured")
 		return b.String()
 	}
-	for _, a := range app.AvailableAgents {
-		current := ""
+	labels := make([]string, len(app.AvailableAgents))
+	labelWidth := 0
+	for i, a := range app.AvailableAgents {
+		label := a.Name
 		if a.Name == app.AgentName {
-			current = " (current)"
+			label += " (current)"
 		}
+		labels[i] = label
+		if len(label) > labelWidth {
+			labelWidth = len(label)
+		}
+	}
+	for i, a := range app.AvailableAgents {
+		modelInfo := app.agentModelSummary(a)
 		if a.Description != "" {
-			fmt.Fprintf(&b, "\n  %s%s - %s", a.Name, current, a.Description)
+			fmt.Fprintf(&b, "\n  %-*s [%s] - %s", labelWidth, labels[i], modelInfo, a.Description)
 		} else {
-			fmt.Fprintf(&b, "\n  %s%s", a.Name, current)
+			fmt.Fprintf(&b, "\n  %-*s [%s]", labelWidth, labels[i], modelInfo)
 		}
 	}
 	return b.String()
+}
+
+func (app *App) currentAgentModelSummary() string {
+	if app.Provider != "" || app.Model != "" {
+		return fmt.Sprintf("%s/%s", app.Provider, app.Model)
+	}
+	return "unknown"
+}
+
+func (app *App) agentModelSummary(a AgentSummary) string {
+	provider := strings.TrimSpace(a.Provider)
+	model := strings.TrimSpace(a.Model)
+	switch {
+	case provider == "" && model == "":
+		return "inherit current"
+	case provider == "":
+		return fmt.Sprintf("inherit provider/%s", model)
+	case model == "":
+		return fmt.Sprintf("%s/inherit current model", provider)
+	default:
+		return fmt.Sprintf("%s/%s", provider, model)
+	}
 }
 
 func (app *App) switchAgent(name string) {
