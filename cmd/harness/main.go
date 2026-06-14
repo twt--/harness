@@ -605,7 +605,7 @@ func run(env environment) int {
 			return ui.ExitRuntime
 		}
 		fmt.Fprintf(stderr, "session: %s\n", sessionPath)
-		fmt.Fprintf(stderr, "provider: %s  model: %s\n", cfg.Provider, cfg.Model)
+		fmt.Fprintln(stderr, startupProviderLine(cfg.Provider, cfg.Model, registryModel, reasoning, modelRegistry))
 		code := ui.OneShot(app, prompt)
 		select {
 		case <-exitCh:
@@ -619,7 +619,7 @@ func run(env environment) int {
 	// including SIGINT, so the exit-save never races an in-flight turn's own save
 	// or usage update (design §8.4); main only forwards the exit request.
 	fmt.Fprintf(stderr, "session: %s\n", sessionPath)
-	fmt.Fprintf(stderr, "provider: %s  model: %s\n", cfg.Provider, cfg.Model)
+	fmt.Fprintln(stderr, startupProviderLine(cfg.Provider, cfg.Model, registryModel, reasoning, modelRegistry))
 	return ui.Run(stdin, app, exitCh)
 }
 
@@ -1043,6 +1043,51 @@ func formatPickerPrice(p llm.Price) string {
 		return ""
 	}
 	return fmt.Sprintf("$%s/$%s", formatPriceComponent(p.Input), formatPriceComponent(p.Output))
+}
+
+func startupProviderLine(provider, model, registryModel string, reasoning llm.ReasoningConfig, registry *llm.Registry) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "provider: %s  model: %s  reasoning: effort=%s", provider, model, startupReasoningEffort(reasoning))
+	if price := startupModelPricing(registry, registryModel); price != "" {
+		fmt.Fprintf(&b, "  pricing: %s", price)
+	}
+	return b.String()
+}
+
+func startupReasoningEffort(reasoning llm.ReasoningConfig) string {
+	effort := strings.TrimSpace(reasoning.Effort)
+	if effort == "" {
+		return "default"
+	}
+	return effort
+}
+
+func startupModelPricing(registry *llm.Registry, model string) string {
+	if registry == nil {
+		return ""
+	}
+	info, ok := registry.Lookup(model)
+	if !ok {
+		return ""
+	}
+	return formatStartupPrice(info.Price)
+}
+
+func formatStartupPrice(p llm.Price) string {
+	var parts []string
+	if p.Input != 0 {
+		parts = append(parts, "in=$"+formatPriceComponent(p.Input)+"/M")
+	}
+	if p.Output != 0 {
+		parts = append(parts, "out=$"+formatPriceComponent(p.Output)+"/M")
+	}
+	if p.CacheRead != 0 {
+		parts = append(parts, "cache-read=$"+formatPriceComponent(p.CacheRead)+"/M")
+	}
+	if p.CacheWrite != 0 {
+		parts = append(parts, "cache-write=$"+formatPriceComponent(p.CacheWrite)+"/M")
+	}
+	return strings.Join(parts, " ")
 }
 
 func formatPriceComponent(v float64) string {
