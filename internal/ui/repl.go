@@ -82,7 +82,7 @@ type App struct {
 	PickModel              func(PickerIO) (string, error)
 	PickerPageSize         int
 	SetReasoning           func(model string, reasoning llm.ReasoningConfig) error
-	SaveDefaultModel       func(provider, model string) error
+	SaveDefaultModel       func(provider, model, reasoningEffort string) error
 	PromptDefaultModelSave bool
 
 	AgentName       string         // current agent definition name
@@ -887,7 +887,7 @@ func (app *App) promptSaveDefaultModel(readLine func(string) (string, error)) {
 	if !save {
 		return
 	}
-	if err := app.SaveDefaultModel(app.Provider, app.Model); err != nil {
+	if err := app.SaveDefaultModel(app.Provider, app.Model, app.Reasoning.Effort); err != nil {
 		fmt.Fprintf(app.Errw, "[default model save failed: %v]\n", err)
 		return
 	}

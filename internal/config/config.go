@@ -503,9 +503,10 @@ func readConfigFile(path string) (fileConfig, error) {
 	return fc, nil
 }
 
-// SaveSelectedModel writes provider/model into the harness config file,
-// preserving any existing top-level keys. Missing files are created atomically.
-func SaveSelectedModel(path, provider, model string) error {
+// SaveSelectedModel writes provider/model/reasoning effort into the harness
+// config file, preserving any existing top-level keys. Missing files are
+// created atomically.
+func SaveSelectedModel(path, provider, model, reasoningEffort string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("config path is required")
 	}
@@ -528,8 +529,13 @@ func SaveSelectedModel(path, provider, model string) error {
 	if err != nil {
 		return err
 	}
+	reasoningEffortJSON, err := json.Marshal(strings.ToLower(strings.TrimSpace(reasoningEffort)))
+	if err != nil {
+		return err
+	}
 	raw["provider"] = providerJSON
 	raw["model"] = modelJSON
+	raw["reasoning_effort"] = reasoningEffortJSON
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err

@@ -225,7 +225,7 @@ func run(env environment) int {
 		}
 		if saveDefault {
 			configPath := writableConfigPath(args, getenv)
-			if err := config.SaveSelectedModel(configPath, selection.Provider, selection.Model); err != nil {
+			if err := config.SaveSelectedModel(configPath, selection.Provider, selection.Model, reasoning.Effort); err != nil {
 				fmt.Fprintf(stderr, "harness: save selected model: %v\n", err)
 				return ui.ExitRuntime
 			}
@@ -548,8 +548,8 @@ func run(env environment) int {
 			delegateState.Set(snap)
 			return nil
 		},
-		SaveDefaultModel: func(provider, model string) error {
-			return config.SaveSelectedModel(writableConfigPath(args, getenv), provider, model)
+		SaveDefaultModel: func(provider, model, reasoningEffort string) error {
+			return config.SaveSelectedModel(writableConfigPath(args, getenv), provider, model, reasoningEffort)
 		},
 		AgentName:       agentName,
 		AvailableAgents: agentSummaries(agents),

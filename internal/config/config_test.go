@@ -530,7 +530,7 @@ func TestModelColonWithoutProviderQualifierStaysModel(t *testing.T) {
 
 func TestSaveSelectedModelCreatesConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
-	if err := SaveSelectedModel(path, "openai", "gpt-5.5"); err != nil {
+	if err := SaveSelectedModel(path, "openai", "gpt-5.5", "HIGH"); err != nil {
 		t.Fatalf("SaveSelectedModel: %v", err)
 	}
 	c, err := Load(nil, noEnv, path)
@@ -540,11 +540,14 @@ func TestSaveSelectedModelCreatesConfig(t *testing.T) {
 	if c.Provider != "openai" || c.Model != "gpt-5.5" {
 		t.Fatalf("provider/model = %q/%q, want openai/gpt-5.5", c.Provider, c.Model)
 	}
+	if c.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort = %q, want high", c.ReasoningEffort)
+	}
 }
 
 func TestSaveSelectedModelPreservesOtherConfigKeys(t *testing.T) {
-	path := writeConfig(t, `{"agent":"plan","max_turns":7,"provider":"old","model":"old-model"}`)
-	if err := SaveSelectedModel(path, "anthropic", "claude-opus-4-8"); err != nil {
+	path := writeConfig(t, `{"agent":"plan","max_turns":7,"provider":"old","model":"old-model","reasoning_effort":"max"}`)
+	if err := SaveSelectedModel(path, "anthropic", "claude-opus-4-8", ""); err != nil {
 		t.Fatalf("SaveSelectedModel: %v", err)
 	}
 	c, err := Load(nil, noEnv, path)
@@ -556,6 +559,9 @@ func TestSaveSelectedModelPreservesOtherConfigKeys(t *testing.T) {
 	}
 	if c.Agent != "plan" || c.MaxTurns != 7 {
 		t.Fatalf("preserved agent/max_turns = %q/%d, want plan/7", c.Agent, c.MaxTurns)
+	}
+	if c.ReasoningEffort != "" {
+		t.Fatalf("reasoning effort = %q, want empty default", c.ReasoningEffort)
 	}
 }
 
