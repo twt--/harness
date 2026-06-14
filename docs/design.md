@@ -716,25 +716,24 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.6 `apply_patch`
 
-> Apply a unified-diff patch. May span multiple files; supports create, delete, and rename.
+> Apply a Codex-format patch. Supports add, delete, update, and move.
 
 | param | type | notes |
 |---|---|---|
-| `patch` | string, required | full unified diff text |
+| `patch` | string, required | full `*** Begin Patch` / `*** End Patch` text |
 
-- Hand-written parser: `--- a/x` / `+++ b/y` headers, `@@ -l,s +l,s @@` hunks,
-  `--- /dev/null` create, `+++ /dev/null` delete, git extended `rename from/to`.
-- **Per-hunk matching, three levels tried in order:**
-  1. exact match at the header's stated position;
-  2. offset search — same lines found within ±200 lines (later hunks shift accordingly);
-  3. whitespace-normalized comparison (leading/trailing whitespace stripped), applied
-     while preserving the file's actual lines.
-- **Atomic per file, best-effort across files:** all of a file's hunks apply to an
-  in-memory copy; any hunk failure leaves that file untouched and rejected. Other files
-  still apply. The result lists `applied: …` and `rejected: <file> (hunk i of n did not
-  match)` so the model can retry just the failures. Per-file atomicity prevents
-  half-edited files; cross-file best-effort keeps the model's correct work.
-- Create-where-exists, delete-content-mismatch, missing target → that file rejected.
+- Parser accepts Codex patch operations only: `*** Add File: <path>`,
+  `*** Delete File: <path>`, `*** Update File: <path>`, and optional
+  `*** Move to: <path>` immediately after an update header. Classic `---` / `+++`
+  unified diffs are not accepted by this tool.
+- Update hunks use Codex's headerless body lines: `@@` chunk markers are optional,
+  context lines start with a space, deletions with `-`, and additions with `+`.
+- Matching tries exact lines first, then whitespace-normalized comparison, scanning
+  forward from the current file cursor. Pure insertion update hunks insert at EOF.
+- Patches apply in file order and stop at the first rejected file. Files applied
+  before the rejection remain changed; the rejected file is left untouched.
+- Success reports `Success. Updated the following files:` followed by `A`, `M`, or
+  `D` status lines.
 
 ### 9.7 `run_command`
 
@@ -1126,7 +1125,7 @@ injectable), the retry clock, and `ValidateTranscript`.
 | `internal/sse` | frame parsing tables; huge frames; truncated input |
 | providers | `httptest.Server` replaying `.sse` golden fixtures per dialect → assert ordered events; golden request-JSON tests (Responses input items, Chat role:tool hoisting, args-string vs object, system placement, `stream_options`, cache_control); tool-call reassembly tables (fragment splits, empty args → `{}`, interleaved parallel calls, invalid tail → retryable stream error); truncated stream; mid-stream cancellation; retry loop via injected sleeper (429-then-200, 400 immediate failure, budget exhaustion) |
 | `internal/retry` | `Next`: jitter bounds, 30s cap, Retry-After floor |
-| tools | table-driven against `t.TempDir()`; `grep` wrapper against the host CLI; optional `rg` registration with a fake executable on PATH; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` table: exact/offset/whitespace fuzz, create, delete, rename, multi-file with one rejected file (rejected file untouched) |
+| tools | table-driven against `t.TempDir()`; `grep` wrapper against the host CLI; optional `rg` registration with a fake executable on PATH; `git` against a scratch `git init` repo (skipped if git absent); `run_command` timeout via `sleep`; `apply_patch` coverage for Codex add, update, delete, move, and first-rejection stop behavior |
 | agent loop | `FakeProvider` scripts: multi-tool batches, error-result feedback (next request carries the error), max-turns stop, cancellation → transcript still re-sendable |
 | delegate | child-agent request shape, read-only child tools, no recursive delegate exposure, metered usage folded into parent turn totals |
 | session | save→load→save round-trip; atomic rename leaves no `.tmp`; resume repair; cross-provider resume |

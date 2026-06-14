@@ -1,7 +1,6 @@
-// Package patch implements a hand-written unified-diff parser and a fuzzy
-// applier (design §9.6). It supports multi-file patches with create, delete,
-// and rename, and applies each file's hunks atomically against an in-memory
-// copy so a failing hunk leaves the file untouched.
+// Package patch implements patch parsers and a fuzzy applier. The tool-facing
+// parser accepts Codex apply_patch envelopes; the older unified-diff parser is
+// retained for internal callers.
 package patch
 
 import (

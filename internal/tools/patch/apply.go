@@ -158,6 +158,10 @@ func applyHunks(content string, hunks []Hunk) (string, error) {
 		// position adjusted by the running offset.
 		want := h.OldStart - 1 + offset
 		switch {
+		case h.OldStart < 0 && len(from) == 0:
+			want = len(lines)
+		case h.OldStart < 0:
+			want = cursor
 		case h.OldStart == 0:
 			want = len(lines) // pure insertion at EOF for an empty old side
 		case len(from) == 0:
@@ -167,7 +171,7 @@ func applyHunks(content string, hunks []Hunk) (string, error) {
 			want = h.OldStart + offset
 		}
 
-		pos, ok := locate(lines, from, want, cursor)
+		pos, ok := locate(lines, from, want, cursor, h.OldStart < 0)
 		if !ok {
 			return "", fmt.Errorf("hunk %d of %d did not match", idx+1, len(hunks))
 		}
@@ -214,7 +218,7 @@ func hunkOldLines(h Hunk) []string {
 // whitespace-normalized within ±radius. It returns the match index and whether
 // one was found. An empty from (pure insertion) matches at want clamped into
 // range.
-func locate(lines, from []string, want, cursor int) (int, bool) {
+func locate(lines, from []string, want, cursor int, unbounded bool) (int, bool) {
 	if len(from) == 0 {
 		pos := want
 		if pos < cursor {
@@ -236,16 +240,28 @@ func locate(lines, from []string, want, cursor int) (int, bool) {
 	}
 
 	// Level 2: exact match within ±radius, nearest first.
-	if pos, ok := searchNearest(lines, from, want, cursor, false); ok {
-		return pos, true
+	if unbounded {
+		if pos, ok := searchForward(lines, from, cursor, false); ok {
+			return pos, true
+		}
+	} else {
+		if pos, ok := searchNearest(lines, from, want, cursor, false); ok {
+			return pos, true
+		}
 	}
 
 	// Level 3: whitespace-normalized match within ±radius, nearest first.
 	if matchAt(lines, from, want, true) {
 		return want, true
 	}
-	if pos, ok := searchNearest(lines, from, want, cursor, true); ok {
-		return pos, true
+	if unbounded {
+		if pos, ok := searchForward(lines, from, cursor, true); ok {
+			return pos, true
+		}
+	} else {
+		if pos, ok := searchNearest(lines, from, want, cursor, true); ok {
+			return pos, true
+		}
 	}
 
 	return 0, false
@@ -260,6 +276,15 @@ func searchNearest(lines, from []string, want, cursor int, normalize bool) (int,
 		}
 		if p := want + d; matchAt(lines, from, p, normalize) {
 			return p, true
+		}
+	}
+	return 0, false
+}
+
+func searchForward(lines, from []string, cursor int, normalize bool) (int, bool) {
+	for pos := cursor; pos+len(from) <= len(lines); pos++ {
+		if matchAt(lines, from, pos, normalize) {
+			return pos, true
 		}
 	}
 	return 0, false
