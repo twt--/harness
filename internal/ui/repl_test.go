@@ -16,6 +16,7 @@ import (
 	"harness/internal/llm"
 	"harness/internal/llm/llmtest"
 	"harness/internal/session"
+	"harness/internal/skills"
 	"harness/internal/tools"
 )
 
@@ -281,13 +282,13 @@ func TestREPLToolsCommandListsBuiltInMCPAndDisabledTools(t *testing.T) {
 	got := errw.String()
 	for _, want := range []string{
 		"built-in tools:",
-		"  read_file    - Read a file from disk.",
-		"  list_dir     - List directory entries",
+		"  read_file    Read a file from disk.",
+		"  list_dir     List directory entries",
 		"mcp tools:",
 		"  [files]",
-		"    mcp__files__read  - refreshed tool",
+		"    mcp__files__read  refreshed tool",
 		"  [search]",
-		"    mcp__search__lookup  - refreshed tool",
+		"    mcp__search__lookup  refreshed tool",
 		"disabled tools:",
 		`  rg  ("rg" binary not found)`,
 	} {
@@ -300,11 +301,49 @@ func TestREPLToolsCommandListsBuiltInMCPAndDisabledTools(t *testing.T) {
 	}
 }
 
+func TestREPLSkillsCommandAlignsAndWrapsDescriptions(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.SummaryWidth = func() int { return 42 }
+	app.Skills = map[string]skills.Skill{
+		"alpha": {
+			Name:        "alpha",
+			Description: "short description",
+			Scope:       skills.ScopeProject,
+		},
+		"beta-long": {
+			Name:        "beta-long",
+			Description: "one two three four five six seven",
+			Scope:       skills.ScopeProject,
+		},
+	}
+
+	if code := Run(strings.NewReader("/skills\n/exit\n"), app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := errw.String()
+	for _, want := range []string{
+		"local skills:",
+		"  $alpha      short description",
+		"  $beta-long  one two three four five six",
+		"              seven",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("/skills output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func toolSummarySeparatorColumn(t *testing.T, summary, name string) int {
 	t.Helper()
 	for _, line := range strings.Split(summary, "\n") {
 		if strings.Contains(line, name) {
-			return strings.Index(line, " - ")
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				t.Fatalf("summary line for %q has no description:\n%s", name, summary)
+			}
+			return strings.Index(line, fields[1])
 		}
 	}
 	t.Fatalf("summary missing tool %q:\n%s", name, summary)
@@ -523,13 +562,39 @@ func TestREPLAgentCommandLists(t *testing.T) {
 	}
 	for _, want := range []string{
 		"current agent: plan [anthropic/claude-opus-4-8]",
-		"auto           [inherit current]",
-		"independent    [openai/inherit current model]",
-		"plan (current) [anthropic/claude-opus-4-8]",
-		"style          [inherit provider/gpt-5.5]",
+		"auto            [inherit current] Default agent",
+		"independent     [openai/inherit current model] Work independently",
+		"plan (current)  [anthropic/claude-opus-4-8] Plan changes",
+		"style           [inherit provider/gpt-5.5] Style review",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("/agent output missing %q, errw=%q", want, got)
+		}
+	}
+}
+
+func TestREPLAgentCommandAlignsAndWrapsDescriptions(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.AgentName = "auto"
+	app.SummaryWidth = func() int { return 54 }
+	app.AvailableAgents = []AgentSummary{
+		{Name: "auto", Description: "one two three four five six"},
+		{Name: "review", Description: "short", Provider: "openai", Model: "gpt-5.5"},
+	}
+
+	if code := Run(strings.NewReader("/agent\n/exit\n"), app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	got := errw.String()
+	for _, want := range []string{
+		"  auto (current)  [inherit current] one two three four",
+		"                  five six",
+		"  review          [openai/gpt-5.5] short",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("/agent output missing %q:\n%s", want, got)
 		}
 	}
 }

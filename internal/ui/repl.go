@@ -125,6 +125,10 @@ type App struct {
 	// (e.g., rg when ripgrep is not installed). Used by /tools.
 	DisabledTools []tools.DisabledTool
 
+	// SummaryWidth returns the terminal width for command summaries. nil or a
+	// non-positive value disables forced wrapping.
+	SummaryWidth func() int
+
 	usage session.UsageTotals // cumulative across the session
 }
 
@@ -848,26 +852,28 @@ func (app *App) agentSummary() string {
 		return b.String()
 	}
 	labels := make([]string, len(app.AvailableAgents))
-	labelWidth := 0
 	for i, a := range app.AvailableAgents {
 		label := a.Name
 		if a.Name == app.AgentName {
 			label += " (current)"
 		}
 		labels[i] = label
-		if len(label) > labelWidth {
-			labelWidth = len(label)
-		}
 	}
+	rows := make([]NameDescription, 0, len(app.AvailableAgents))
 	for i, a := range app.AvailableAgents {
 		modelInfo := app.agentModelSummary(a)
-		if a.Description != "" {
-			fmt.Fprintf(&b, "\n  %-*s [%s] - %s", labelWidth, labels[i], modelInfo, a.Description)
-		} else {
-			fmt.Fprintf(&b, "\n  %-*s [%s]", labelWidth, labels[i], modelInfo)
+		description := "[" + modelInfo + "]"
+		if strings.TrimSpace(a.Description) != "" {
+			description += "  " + a.Description
 		}
+		rows = append(rows, NameDescription{
+			Name:        labels[i],
+			Description: description,
+		})
 	}
-	return b.String()
+	b.WriteByte('\n')
+	WriteNameDescriptionList(&b, rows, NameDescriptionListOptions{Indent: "  ", Width: app.summaryWidth()})
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func (app *App) currentAgentModelSummary() string {
@@ -1196,10 +1202,16 @@ func (app *App) skillsSummary() string {
 			fmt.Fprintf(&b, "user skills (%s):\n", dirLabel(scope))
 		}
 
+		rows := make([]NameDescription, 0, len(names))
 		for _, name := range names {
 			s := app.Skills[name]
-			fmt.Fprintf(&b, "  $%s - %s\n", name, s.Description)
+			rows = append(rows, NameDescription{Name: name, Description: s.Description})
 		}
+		WriteNameDescriptionList(&b, rows, NameDescriptionListOptions{
+			Indent:     "  ",
+			NamePrefix: "$",
+			Width:      app.summaryWidth(),
+		})
 	}
 
 	return b.String()
@@ -1226,10 +1238,11 @@ func (app *App) toolsSummary() string {
 	// Enabled built-in tools
 	if len(builtins) > 0 {
 		b.WriteString("built-in tools:\n")
-		width := maxStringLen(builtins)
+		rows := make([]NameDescription, 0, len(builtins))
 		for _, name := range builtins {
-			writeToolSummaryLine(&b, "  ", name, descriptions[name], width)
+			rows = append(rows, NameDescription{Name: name, Description: descriptions[name]})
 		}
+		WriteNameDescriptionList(&b, rows, NameDescriptionListOptions{Indent: "  ", Width: app.summaryWidth()})
 	}
 
 	// Enabled MCP tools, grouped by server
@@ -1251,10 +1264,11 @@ func (app *App) toolsSummary() string {
 		b.WriteString("mcp tools:\n")
 		for _, label := range labels {
 			fmt.Fprintf(&b, "  [%s]\n", label)
-			width := maxStringLen(byServer[label])
+			rows := make([]NameDescription, 0, len(byServer[label]))
 			for _, name := range byServer[label] {
-				writeToolSummaryLine(&b, "    ", name, descriptions[name], width)
+				rows = append(rows, NameDescription{Name: name, Description: descriptions[name]})
 			}
+			WriteNameDescriptionList(&b, rows, NameDescriptionListOptions{Indent: "    ", Width: app.summaryWidth()})
 		}
 	}
 
@@ -1275,24 +1289,6 @@ func (app *App) toolsSummary() string {
 	return b.String()
 }
 
-func writeToolSummaryLine(b *strings.Builder, indent, name, description string, width int) {
-	if description == "" {
-		fmt.Fprintf(b, "%s%s\n", indent, name)
-		return
-	}
-	fmt.Fprintf(b, "%s%-*s  - %s\n", indent, width, name, description)
-}
-
-func maxStringLen(values []string) int {
-	maxLen := 0
-	for _, value := range values {
-		if len(value) > maxLen {
-			maxLen = len(value)
-		}
-	}
-	return maxLen
-}
-
 // mcpServerLabel extracts a display-friendly server label from an MCP tool
 // name of the form mcp__<server>__<tool>. It mirrors mcptools.serverLabel.
 func mcpServerLabel(name string) string {
@@ -1307,6 +1303,13 @@ func mcpServerLabel(name string) string {
 
 func isMCPToolName(name string) bool {
 	return strings.HasPrefix(name, "mcp__")
+}
+
+func (app *App) summaryWidth() int {
+	if app.SummaryWidth == nil {
+		return 0
+	}
+	return app.SummaryWidth()
 }
 
 // accumulatingSink forwards events to the renderer while accumulating cumulative

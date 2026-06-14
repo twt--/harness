@@ -50,6 +50,7 @@ func main() {
 		stdinPiped:   pipedStdin(os.Stdin),
 		sigCh:        sigCh,
 		terminalRows: defaultTerminalRows,
+		terminalCols: defaultTerminalCols,
 	}))
 }
 
@@ -69,6 +70,7 @@ type environment struct {
 	sigCh      chan os.Signal
 
 	terminalRows func() int
+	terminalCols func() int
 }
 
 // run wires everything together and returns the process exit code (design §10
@@ -506,6 +508,7 @@ func run(env environment) int {
 		Skills:          discoveredSkills,
 		SkillDirs:       skillDirs,
 		DisabledTools:   disabledTools,
+		SummaryWidth:    env.terminalCols,
 	}
 	if resumed != nil {
 		app.Turn = resumed.Turn
@@ -606,6 +609,14 @@ func defaultTerminalRows() int {
 		return 0
 	}
 	return rows
+}
+
+func defaultTerminalCols() int {
+	_, cols, ok := term.Size()
+	if !ok {
+		return 0
+	}
+	return cols
 }
 
 type catalogSelection struct {

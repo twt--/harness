@@ -11,6 +11,7 @@ import (
 
 	"harness/internal/mcp"
 	"harness/internal/mcpproxy"
+	"harness/internal/ui"
 )
 
 var toolsCommandTimeout = 10 * time.Second
@@ -82,9 +83,9 @@ func resolveToolsProxy(env environment, fs *flag.FlagSet, proxyFlag, configFlag 
 	return mcpproxy.URLForListen(cfg.Listen), exitOK
 }
 
-// printToolTable writes one line per tool as "NAME\tDESCRIPTION-first-line",
-// preceded by a count header ("N tools" or "no tools"). Tools arrive sorted by
-// name from the proxy, so no local sort is needed.
+// printToolTable writes an aligned name/description list preceded by a count
+// header ("N tools" or "no tools"). Tools arrive sorted by name from the proxy,
+// so no local sort is needed.
 func printToolTable(w io.Writer, tools []mcp.Tool) {
 	if len(tools) == 0 {
 		fmt.Fprintln(w, "no tools")
@@ -95,9 +96,11 @@ func printToolTable(w io.Writer, tools []mcp.Tool) {
 		noun = "tool"
 	}
 	fmt.Fprintf(w, "%d %s\n", len(tools), noun)
+	rows := make([]ui.NameDescription, 0, len(tools))
 	for _, t := range tools {
-		fmt.Fprintf(w, "%s\t%s\n", t.Name, firstLine(t.Description))
+		rows = append(rows, ui.NameDescription{Name: t.Name, Description: firstLine(t.Description)})
 	}
+	ui.WriteNameDescriptionList(w, rows, ui.NameDescriptionListOptions{})
 }
 
 // firstLine returns the first line of s with surrounding whitespace trimmed, so

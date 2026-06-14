@@ -1029,11 +1029,11 @@ func TestRunREPLAgentListShowsProviderModelConfig(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
 	got := errw.String()
-	if !strings.Contains(got, "security       [openai/gpt-5.5] - Security review") {
+	if !strings.Contains(got, "security        [openai/gpt-5.5] Security review") {
 		t.Fatalf("/agent output missing configured provider/model, stderr=%q", got)
 	}
 	if !strings.Contains(got, "current agent: auto [anthropic/claude-opus-4-8]") ||
-		!strings.Contains(got, "auto (current) [inherit current]") {
+		!strings.Contains(got, "auto (current)  [inherit current]") {
 		t.Fatalf("/agent output missing inherited provider/model, stderr=%q", got)
 	}
 	if len(fp.Requests) != 0 {
@@ -1179,7 +1179,7 @@ func TestRunREPLToolsCommandListsTools(t *testing.T) {
 			t.Errorf("/tools output missing built-in tool %q, got:\n%s", name, out)
 		}
 	}
-	if !strings.Contains(out, "  delegate     - Run a configured delegate agent") {
+	if !strings.Contains(out, "delegate") || !strings.Contains(out, "Run a configured delegate agent") {
 		t.Errorf("/tools output missing delegate, got:\n%s", out)
 	}
 	if !tools.RipgrepAvailable() {
@@ -1194,7 +1194,8 @@ func TestRunREPLToolsCommandListsTools(t *testing.T) {
 
 func toolsOutputHasDescribedTool(output, name string) bool {
 	for _, line := range strings.Split(output, "\n") {
-		if strings.Contains(line, "  "+name) && strings.Contains(line, " - ") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == name {
 			return true
 		}
 	}
