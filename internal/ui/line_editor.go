@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"unicode"
+
+	"harness/internal/term"
 )
 
 const (
@@ -17,20 +19,26 @@ const (
 type promptLineEditor struct {
 	r       *bufio.Reader
 	w       io.Writer
+	columns func() int
 	history []string
 }
 
 func newPromptLineEditor(in io.Reader, w io.Writer) *promptLineEditor {
+	return newPromptLineEditorWithReader(bufio.NewReader(in), w)
+}
+
+func newPromptLineEditorWithReader(r *bufio.Reader, w io.Writer) *promptLineEditor {
 	return &promptLineEditor{
-		r: bufio.NewReader(in),
-		w: w,
+		r:       r,
+		w:       w,
+		columns: promptEditorColumns,
 	}
 }
 
 func (e *promptLineEditor) read(prompt string) (replInput, bool, error) {
 	state := lineEditState{prompt: prompt}
 	history := e.historyState()
-	if err := state.redraw(e.w); err != nil {
+	if err := state.redraw(e.w, e.terminalColumns()); err != nil {
 		return replInput{}, false, err
 	}
 
@@ -65,7 +73,7 @@ func (e *promptLineEditor) read(prompt string) (replInput, bool, error) {
 			}
 		case '\b', del:
 			state.backspace()
-			if err := state.redraw(e.w); err != nil {
+			if err := state.redraw(e.w, e.terminalColumns()); err != nil {
 				return replInput{}, false, err
 			}
 		case rune(lineTermEscape):
@@ -97,18 +105,33 @@ func (e *promptLineEditor) read(prompt string) (replInput, bool, error) {
 				}
 				state.insertString(text)
 			}
-			if err := state.redraw(e.w); err != nil {
+			if err := state.redraw(e.w, e.terminalColumns()); err != nil {
 				return replInput{}, false, err
 			}
 		default:
 			if r == '\t' || unicode.IsPrint(r) {
 				state.insert(r)
-				if err := state.redraw(e.w); err != nil {
+				if err := state.redraw(e.w, e.terminalColumns()); err != nil {
 					return replInput{}, false, err
 				}
 			}
 		}
 	}
+}
+
+func (e *promptLineEditor) terminalColumns() int {
+	if e.columns == nil {
+		return 0
+	}
+	return e.columns()
+}
+
+func promptEditorColumns() int {
+	_, cols, ok := term.Size()
+	if !ok {
+		return 0
+	}
+	return cols
 }
 
 type lineEditAction int
@@ -260,9 +283,11 @@ func (h *lineEditHistory) next(s *lineEditState) {
 }
 
 type lineEditState struct {
-	prompt string
-	buf    []rune
-	cursor int
+	prompt     string
+	buf        []rune
+	cursor     int
+	savedStart bool
+	lastRows   int
 }
 
 func (s *lineEditState) insert(r rune) {
@@ -312,7 +337,53 @@ func (s *lineEditState) delete() {
 	s.buf = s.buf[:len(s.buf)-1]
 }
 
-func (s *lineEditState) redraw(w io.Writer) error {
+func (s *lineEditState) redraw(w io.Writer, cols int) error {
+	if cols <= 0 {
+		return s.redrawSingleLine(w)
+	}
+	if !s.savedStart {
+		if _, err := fmt.Fprint(w, "\x1b7"); err != nil {
+			return err
+		}
+		s.savedStart = true
+	} else {
+		if _, err := fmt.Fprint(w, "\x1b8"); err != nil {
+			return err
+		}
+		if err := clearPromptRows(w, s.lastRows); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprint(w, "\x1b8"); err != nil {
+			return err
+		}
+	}
+
+	if _, err := fmt.Fprintf(w, "%s%s", s.prompt, string(s.buf)); err != nil {
+		return err
+	}
+
+	cursorCells := displayCells(s.prompt) + displayCells(string(s.buf[:s.cursor]))
+	cursorRow := cursorCells / cols
+	cursorCol := cursorCells % cols
+	s.lastRows = max(occupiedRows(displayCells(s.prompt)+displayCells(string(s.buf)), cols), cursorRow+1)
+
+	if _, err := fmt.Fprint(w, "\x1b8"); err != nil {
+		return err
+	}
+	if cursorRow > 0 {
+		if _, err := fmt.Fprintf(w, "\x1b[%dB", cursorRow); err != nil {
+			return err
+		}
+	}
+	if cursorCol > 0 {
+		if _, err := fmt.Fprintf(w, "\x1b[%dC", cursorCol); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *lineEditState) redrawSingleLine(w io.Writer) error {
 	if _, err := fmt.Fprintf(w, "\r\x1b[2K%s%s", s.prompt, string(s.buf)); err != nil {
 		return err
 	}
@@ -322,4 +393,32 @@ func (s *lineEditState) redraw(w io.Writer) error {
 		}
 	}
 	return nil
+}
+
+func clearPromptRows(w io.Writer, rows int) error {
+	if rows < 1 {
+		rows = 1
+	}
+	for i := 0; i < rows; i++ {
+		if _, err := fmt.Fprint(w, "\r\x1b[2K"); err != nil {
+			return err
+		}
+		if i < rows-1 {
+			if _, err := fmt.Fprint(w, "\x1b[B"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func occupiedRows(cells, cols int) int {
+	if cells <= 0 || cols <= 0 {
+		return 1
+	}
+	return ((cells - 1) / cols) + 1
+}
+
+func displayCells(s string) int {
+	return len([]rune(s))
 }

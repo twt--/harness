@@ -575,7 +575,7 @@ func newREPLReader(in io.Reader, promptWriter io.Writer, promptEditor bool) *rep
 	r := bufio.NewReader(in)
 	rr := &replReader{r: r}
 	if promptEditor {
-		rr.editor = &promptLineEditor{r: r, w: promptWriter}
+		rr.editor = newPromptLineEditorWithReader(r, promptWriter)
 	}
 	return rr
 }

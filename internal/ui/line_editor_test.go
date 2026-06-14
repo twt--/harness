@@ -204,3 +204,26 @@ func TestPromptLineEditorBracketedPasteInsertsAtCursor(t *testing.T) {
 		t.Fatalf("input text = %q, want aXb", input.text)
 	}
 }
+
+func TestPromptLineEditorRedrawClearsWrappedRows(t *testing.T) {
+	var out bytes.Buffer
+	editor := newPromptLineEditor(strings.NewReader("abcde\n"), &out)
+	editor.columns = func() int { return 6 }
+
+	input, ok, err := editor.read("> ")
+	if err != nil {
+		t.Fatalf("read = %v", err)
+	}
+	if !ok {
+		t.Fatal("read returned ok=false")
+	}
+	if input.text != "abcde" {
+		t.Fatalf("input text = %q, want abcde", input.text)
+	}
+
+	got := out.String()
+	want := "\x1b8\r\x1b[2K\x1b[B\r\x1b[2K\x1b8> abcde"
+	if !strings.Contains(got, want) {
+		t.Fatalf("wrapped redraw should clear both prompt rows before repainting\nwant fragment: %q\ngot: %q", want, got)
+	}
+}
