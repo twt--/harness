@@ -33,6 +33,7 @@ type ModelSelection struct {
 	BaseURL       string
 	Runtime       llm.Provider
 	ContextWindow int // agent override; 0 means use the registry
+	Reasoning     llm.ReasoningConfig
 }
 
 // AgentSummary is one configured agent row for /agent listing.
@@ -74,11 +75,13 @@ type App struct {
 	BaseURL       string
 	Registry      *llm.Registry
 	System        string
+	Reasoning     llm.ReasoningConfig
 
 	AvailableModels []string
-	SwitchModel     func(model string) (ModelSelection, error)
+	SwitchModel     func(model string, reasoning llm.ReasoningConfig) (ModelSelection, error)
 	PickModel       func(PickerIO) (string, error)
 	PickerPageSize  int
+	SetReasoning    func(model string, reasoning llm.ReasoningConfig) error
 
 	AgentName       string         // current agent definition name
 	AvailableAgents []AgentSummary // sorted agent names/descriptions for /agent listing
@@ -143,6 +146,7 @@ const helpText = `commands:
   /edit [draft]    open $VISUAL/$EDITOR (or vi) for a multi-line prompt
   /save [file]     force save (optionally elsewhere)
   /model [model]   pick a configured provider/model, or switch directly
+  /effort [level]  list or set reasoning effort for the current model
   /agent [name]    list agents, or switch to agent
   /mode [name]     alias for /agent
   /skills          list available skills
@@ -725,8 +729,10 @@ func (app *App) command(line string, readCommandLine func(string) (string, error
 		if arg == "" {
 			app.pickModel(readCommandLine)
 		} else {
-			app.switchModel(arg)
+			app.switchModel(arg, app.Reasoning)
 		}
+	case "/effort":
+		app.effort(arg)
 	case "/agent", "/mode":
 		if arg == "" {
 			fmt.Fprintln(app.Errw, app.agentSummary())
@@ -762,7 +768,16 @@ func (app *App) pickModel(readLine func(string) (string, error)) {
 		fmt.Fprintf(app.Errw, "[model selection failed: %v]\n", err)
 		return
 	}
-	app.switchModel(model)
+	reasoning, err := app.promptReasoningEffort(model, app.Reasoning, readLine)
+	if err != nil {
+		if errors.Is(err, ErrPickerCancelled) {
+			fmt.Fprintln(app.Errw, "[model selection cancelled]")
+			return
+		}
+		fmt.Fprintf(app.Errw, "[model selection failed: %v]\n", err)
+		return
+	}
+	app.switchModel(model, reasoning)
 }
 
 // modelSummary renders the current model plus the configured models available
@@ -808,12 +823,12 @@ func uniqueModels(models []string, current string) []string {
 	return out
 }
 
-func (app *App) switchModel(model string) {
+func (app *App) switchModel(model string, reasoning llm.ReasoningConfig) {
 	if app.SwitchModel == nil {
 		fmt.Fprintln(app.Errw, "[model switch unavailable]")
 		return
 	}
-	selection, err := app.SwitchModel(model)
+	selection, err := app.SwitchModel(model, reasoning)
 	if err != nil {
 		fmt.Fprintf(app.Errw, "[model switch failed: %v]\n", err)
 		return
@@ -828,8 +843,12 @@ func (app *App) switchModel(model string) {
 	if selection.Provider == "" {
 		selection.Provider = app.Provider
 	}
+	if selection.Reasoning.Empty() && !reasoning.Empty() {
+		selection.Reasoning = reasoning
+	}
 	app.Agent.SetProvider(selection.Runtime)
 	app.Agent.SetModel(selection.Model, selection.ContextWindow)
+	app.Agent.SetReasoning(selection.Reasoning)
 	if selection.RegistryModel == "" {
 		selection.RegistryModel = selection.Model
 	}
@@ -838,7 +857,226 @@ func (app *App) switchModel(model string) {
 	app.Model = selection.Model
 	app.RegistryModel = selection.RegistryModel
 	app.BaseURL = selection.BaseURL
-	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s proxy-url=%s]\n", app.Provider, app.Model, app.BaseURL)
+	app.Reasoning = selection.Reasoning
+	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s proxy-url=%s effort=%s]\n", app.Provider, app.Model, app.BaseURL, app.reasoningEffortLabel())
+}
+
+func (app *App) effort(arg string) {
+	if arg == "" {
+		fmt.Fprintln(app.Errw, app.effortSummary())
+		return
+	}
+	reasoning := app.Reasoning
+	effort, ok := normalizeEffortInput(arg)
+	if !ok {
+		fmt.Fprintf(app.Errw, "[reasoning effort failed: invalid effort %q for model %q]\n", arg, app.currentRegistryModel())
+		return
+	}
+	reasoning.Effort = effort
+	if err := app.validateEffortForModel(app.currentRegistryModel(), effort); err != nil {
+		fmt.Fprintf(app.Errw, "[reasoning effort failed: %v]\n", err)
+		return
+	}
+	if err := app.setReasoning(reasoning); err != nil {
+		fmt.Fprintf(app.Errw, "[reasoning effort failed: %v]\n", err)
+		return
+	}
+	fmt.Fprintf(app.Errw, "[reasoning effort: %s]\n", app.reasoningEffortLabel())
+}
+
+func (app *App) setReasoning(reasoning llm.ReasoningConfig) error {
+	if app.SetReasoning != nil {
+		if err := app.SetReasoning(app.currentRegistryModel(), reasoning); err != nil {
+			return err
+		}
+	}
+	app.Reasoning = reasoning
+	if app.Agent != nil {
+		app.Agent.SetReasoning(reasoning)
+	}
+	return nil
+}
+
+func (app *App) effortSummary() string {
+	model := app.currentRegistryModel()
+	var b strings.Builder
+	fmt.Fprintf(&b, "current reasoning effort: %s\n", app.reasoningEffortLabel())
+	info, ok := app.reasoningInfoForModel(model)
+	if !ok {
+		fmt.Fprintf(&b, "available efforts for %s: unknown", model)
+		return b.String()
+	}
+	if !info.Supported {
+		fmt.Fprintf(&b, "available efforts for %s: none (model does not support reasoning)", model)
+		return b.String()
+	}
+	values, hasEffort := info.EffortValues()
+	if !hasEffort {
+		fmt.Fprintf(&b, "available efforts for %s: none (catalog lists no effort levels)", model)
+		return b.String()
+	}
+	if len(values) == 0 {
+		fmt.Fprintf(&b, "available efforts for %s: provider-defined (catalog lists no fixed levels)", model)
+		return b.String()
+	}
+	fmt.Fprintf(&b, "available efforts for %s:", model)
+	app.writeEffortRows(&b, values)
+	return b.String()
+}
+
+func (app *App) writeEffortRows(b *strings.Builder, values []string) {
+	current := strings.ToLower(strings.TrimSpace(app.Reasoning.Effort))
+	if current == "" {
+		b.WriteString("\n  provider default (current)")
+	} else {
+		b.WriteString("\n  provider default")
+	}
+	for _, value := range values {
+		fmt.Fprintf(b, "\n  %s", value)
+		if strings.EqualFold(value, current) {
+			b.WriteString(" (current)")
+		}
+	}
+}
+
+func (app *App) promptReasoningEffort(model string, reasoning llm.ReasoningConfig, readLine func(string) (string, error)) (llm.ReasoningConfig, error) {
+	info, ok := app.reasoningInfoForModel(model)
+	if !ok || !info.Supported {
+		return reasoning, nil
+	}
+	values, hasEffort := info.EffortValues()
+	if !hasEffort || len(values) == 0 {
+		return reasoning, nil
+	}
+	current := strings.TrimSpace(reasoning.Effort)
+	currentValid := current == "" || info.SupportsEffort(current)
+	for {
+		prompt := fmt.Sprintf("Reasoning effort (default/%s; current: %s): ", strings.Join(values, "/"), effortPromptCurrent(current, currentValid))
+		input, err := readLine(prompt)
+		if err != nil {
+			return reasoning, err
+		}
+		input = strings.TrimSpace(input)
+		if input == "" {
+			if currentValid {
+				return reasoning, nil
+			}
+			reasoning.Effort = ""
+			return reasoning, nil
+		}
+		if strings.EqualFold(input, "q") {
+			return reasoning, ErrPickerCancelled
+		}
+		effort, ok := normalizeEffortInput(input)
+		if !ok || (effort != "" && !info.SupportsEffort(effort)) {
+			fmt.Fprintf(app.Errw, "Invalid reasoning effort %q (supported: default, %s)\n", input, strings.Join(values, ", "))
+			continue
+		}
+		reasoning.Effort = effort
+		return reasoning, nil
+	}
+}
+
+func effortPromptCurrent(current string, valid bool) string {
+	if strings.TrimSpace(current) == "" {
+		return "provider default"
+	}
+	if valid {
+		return current
+	}
+	return current + " (not valid for this model; Enter uses provider default)"
+}
+
+func normalizeEffortInput(input string) (string, bool) {
+	effort := strings.ToLower(strings.TrimSpace(input))
+	switch effort {
+	case "":
+		return "", false
+	case "default", "none", "provider-default":
+		return "", true
+	default:
+		return effort, true
+	}
+}
+
+func (app *App) validateEffortForModel(model, effort string) error {
+	if effort == "" {
+		return nil
+	}
+	info, ok := app.reasoningInfoForModel(model)
+	if !ok {
+		return nil
+	}
+	if info.SupportsEffort(effort) {
+		return nil
+	}
+	if !info.Supported {
+		return fmt.Errorf("model %q does not support reasoning effort", model)
+	}
+	if values, ok := info.EffortValues(); ok && len(values) > 0 {
+		return fmt.Errorf("model %q does not support reasoning effort %q (supported: %s)", model, effort, strings.Join(values, ", "))
+	}
+	return fmt.Errorf("model %q does not support reasoning effort", model)
+}
+
+func (app *App) reasoningInfoForModel(model string) (*llm.ReasoningInfo, bool) {
+	if app.Registry == nil {
+		return nil, false
+	}
+	for _, key := range app.reasoningLookupKeys(model) {
+		info, ok := app.Registry.Lookup(key)
+		if ok && info.Reasoning != nil {
+			return info.Reasoning, true
+		}
+	}
+	return nil, false
+}
+
+func (app *App) reasoningLookupKeys(model string) []string {
+	var keys []string
+	add := func(key string) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return
+		}
+		for _, existing := range keys {
+			if existing == key {
+				return
+			}
+		}
+		keys = append(keys, key)
+	}
+	add(model)
+	add(app.currentRegistryModel())
+	if app.Provider != "" {
+		add(app.Provider + ":" + model)
+		add(app.Provider + ":" + app.Model)
+	}
+	return keys
+}
+
+func (app *App) currentRegistryModel() string {
+	if app.RegistryModel != "" {
+		return app.RegistryModel
+	}
+	if app.Provider != "" && app.Model != "" {
+		if app.Registry != nil {
+			if _, ok := app.Registry.Lookup(app.Provider + ":" + app.Model); ok {
+				return app.Provider + ":" + app.Model
+			}
+		}
+	}
+	if app.Model != "" {
+		return app.Model
+	}
+	return "unknown"
+}
+
+func (app *App) reasoningEffortLabel() string {
+	if strings.TrimSpace(app.Reasoning.Effort) == "" {
+		return "provider default"
+	}
+	return app.Reasoning.Effort
 }
 
 // agentSummary renders the current agent plus available agents and descriptions,

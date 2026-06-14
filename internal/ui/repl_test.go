@@ -499,15 +499,16 @@ func TestREPLModelCommandSwitchesNextTurn(t *testing.T) {
 		Stop:   llm.StopEndTurn,
 	})
 	app := newTestApp(t, &out, &errw, initial)
-	app.SwitchModel = func(model string) (ModelSelection, error) {
+	app.SwitchModel = func(model string, reasoning llm.ReasoningConfig) (ModelSelection, error) {
 		if model != "gpt-5.5" {
 			t.Fatalf("switch model = %q, want gpt-5.5", model)
 		}
 		return ModelSelection{
-			Provider: "openai",
-			Model:    model,
-			BaseURL:  "https://api.openai.com/v1",
-			Runtime:  switched,
+			Provider:  "openai",
+			Model:     model,
+			BaseURL:   "https://api.openai.com/v1",
+			Runtime:   switched,
+			Reasoning: reasoning,
 		}, nil
 	}
 
@@ -529,6 +530,80 @@ func TestREPLModelCommandSwitchesNextTurn(t *testing.T) {
 	}
 	if !strings.Contains(errw.String(), "model switched") {
 		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
+	}
+}
+
+func TestREPLEffortCommandListsAndSwitchesNextTurn(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("ok")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	app.RegistryModel = "anthropic:claude-opus-4-8"
+	app.Registry = llm.NewRegistryWithQualified(nil, map[string]llm.ModelInfo{
+		"anthropic:claude-opus-4-8": {
+			Reasoning: &llm.ReasoningInfo{
+				Supported: true,
+				Options:   []llm.ReasoningOption{{Type: "effort", Values: []string{"low", "medium", "high"}}},
+			},
+		},
+	})
+
+	in := strings.NewReader("/effort\n/effort high\nhello\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	got := errw.String()
+	for _, want := range []string{
+		"available efforts for anthropic:claude-opus-4-8:",
+		"provider default (current)",
+		"high",
+		"[reasoning effort: high]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("/effort output missing %q:\n%s", want, got)
+		}
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(fp.Requests))
+	}
+	if fp.Requests[0].Reasoning.Effort != "high" {
+		t.Fatalf("request effort = %q, want high", fp.Requests[0].Reasoning.Effort)
+	}
+}
+
+func TestREPLEffortCommandRejectsInvalidLevelForCurrentModel(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{textDelta("ok")},
+		Stop:   llm.StopEndTurn,
+	})
+	app := newTestApp(t, &out, &errw, fp)
+	app.RegistryModel = "anthropic:claude-opus-4-8"
+	app.Reasoning = llm.ReasoningConfig{Effort: "medium"}
+	app.Agent.SetReasoning(app.Reasoning)
+	app.Registry = llm.NewRegistryWithQualified(nil, map[string]llm.ModelInfo{
+		"anthropic:claude-opus-4-8": {
+			Reasoning: &llm.ReasoningInfo{
+				Supported: true,
+				Options:   []llm.ReasoningOption{{Type: "effort", Values: []string{"low", "medium", "high"}}},
+			},
+		},
+	})
+
+	in := strings.NewReader("/effort xhigh\nhello\n/exit\n")
+	if code := Run(in, app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), `does not support reasoning effort "xhigh"`) {
+		t.Fatalf("invalid effort should be reported, errw=%q", errw.String())
+	}
+	if len(fp.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(fp.Requests))
+	}
+	if fp.Requests[0].Reasoning.Effort != "medium" {
+		t.Fatalf("request effort = %q, want unchanged medium", fp.Requests[0].Reasoning.Effort)
 	}
 }
 

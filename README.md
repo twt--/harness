@@ -210,6 +210,8 @@ by a delimiter; only text written after the delimiter is sent as the next prompt
 | `/model` | choose a configured provider, then choose one of its configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
+| `/effort` | list reasoning effort levels for the current model, marking the selected one |
+| `/effort <level>` | switch reasoning effort for subsequent turns |
 | `/agent` | list agents and descriptions, marking the current one |
 | `/agent <name>` | switch the active agent |
 | `/mode`, `/mode <name>` | alias for `/agent` |

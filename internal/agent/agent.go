@@ -178,6 +178,11 @@ func (a *Agent) SetModel(model string, contextWindow int) {
 	a.contextWindow = contextWindow
 }
 
+// SetReasoning replaces the reasoning controls sent on subsequent requests.
+func (a *Agent) SetReasoning(reasoning llm.ReasoningConfig) {
+	a.reasoning = reasoning
+}
+
 // SetTranscript replaces the running transcript (used when resuming a session).
 func (a *Agent) SetTranscript(msgs []llm.Message) { a.transcript = msgs }
 

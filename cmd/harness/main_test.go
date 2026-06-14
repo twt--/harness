@@ -272,7 +272,7 @@ func TestRunREPLModelCommandPromptsConfiguredProviderAndModel(t *testing.T) {
 	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
-		"/model\nopenrouter\nopenai/gpt-5.5\nhello\n/exit\n",
+		"/model\nopenrouter\nopenai/gpt-5.5\n\nhello\n/exit\n",
 	)
 
 	if code := run(env); code != ui.ExitOK {
@@ -285,6 +285,32 @@ func TestRunREPLModelCommandPromptsConfiguredProviderAndModel(t *testing.T) {
 	if !strings.Contains(stderr, "Providers 1-3 of 3") || !strings.Contains(stderr, "Models for openrouter") ||
 		!strings.Contains(stderr, "model switched") {
 		t.Fatalf("/model should render provider/model picker and acknowledge switch, stderr=%q", stderr)
+	}
+}
+
+func TestRunREPLModelCommandPromptsReasoningEffort(t *testing.T) {
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
+		"/model\nopenrouter\nopenai/gpt-5.5\nhigh\nhello\n/exit\n",
+	)
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(proxy.requests) != 1 {
+		t.Fatalf("proxy requests = %d, want 1", len(proxy.requests))
+	}
+	req := proxy.requests[0]
+	if req.Provider != "openrouter" || req.Request.Model != "openai/gpt-5.5" {
+		t.Fatalf("request target = %s/%s, want openrouter/openai/gpt-5.5", req.Provider, req.Request.Model)
+	}
+	if req.Request.Reasoning.Effort != "high" {
+		t.Fatalf("request reasoning effort = %q, want high", req.Request.Reasoning.Effort)
+	}
+	if !strings.Contains(errw.String(), "Reasoning effort (default/low/medium/high") {
+		t.Fatalf("stderr should show effort prompt, got %q", errw.String())
 	}
 }
 
@@ -376,6 +402,28 @@ func TestRunPromptsForModelAndSavesConfigWhenModelMissing(t *testing.T) {
 	}
 	if !strings.Contains(errw.String(), "Select a provider and model") {
 		t.Fatalf("stderr should show startup picker, got %q", errw.String())
+	}
+}
+
+func TestRunStartupModelSelectionPromptsReasoningEffort(t *testing.T) {
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, nil, fp, "3\n1\nmedium\nhello\n/exit\n")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit = %d, want ok; errw=%q", code, errw.String())
+	}
+	if len(proxy.requests) != 1 {
+		t.Fatalf("proxy requests = %d, want 1", len(proxy.requests))
+	}
+	req := proxy.requests[0]
+	if req.Provider != "openrouter" || req.Request.Model != "openai/gpt-5.5" {
+		t.Fatalf("request target = %s/%s, want openrouter/openai/gpt-5.5", req.Provider, req.Request.Model)
+	}
+	if req.Request.Reasoning.Effort != "medium" {
+		t.Fatalf("request reasoning effort = %q, want medium", req.Request.Reasoning.Effort)
+	}
+	if !strings.Contains(errw.String(), "Reasoning effort (default/low/medium/high") {
+		t.Fatalf("stderr should show effort prompt, got %q", errw.String())
 	}
 }
 

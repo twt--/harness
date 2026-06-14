@@ -185,6 +185,15 @@ func run(env environment) int {
 		}
 		cfg.Provider = selection.Provider
 		cfg.Model = selection.Model
+		reasoning, err = pickStartupReasoningEffort(reader, stderr, modelRegistry, selection.RegistryModel, reasoning)
+		if err != nil {
+			if errors.Is(err, ui.ErrPickerCancelled) {
+				fmt.Fprintln(stderr, "harness: model selection cancelled")
+			} else {
+				fmt.Fprintf(stderr, "harness: model selection: %v\n", err)
+			}
+			return ui.ExitUsage
+		}
 		if err := validateReasoningEffort(modelRegistry, selection.RegistryModel, reasoning); err != nil {
 			fmt.Fprintf(stderr, "harness: %v\n", err)
 			return ui.ExitUsage
@@ -385,7 +394,7 @@ func run(env environment) int {
 
 	provider := proxyClient.Provider(cfg.Provider)
 
-	switchModel := func(input string) (ui.ModelSelection, error) {
+	switchModel := func(input string, nextReasoning llm.ReasoningConfig) (ui.ModelSelection, error) {
 		input = strings.TrimSpace(input)
 		if input == "" {
 			return ui.ModelSelection{}, fmt.Errorf("model is required")
@@ -394,7 +403,7 @@ func run(env environment) int {
 		if err != nil {
 			return ui.ModelSelection{}, err
 		}
-		if err := validateReasoningEffort(modelRegistry, next.RegistryModel, reasoning); err != nil {
+		if err := validateReasoningEffort(modelRegistry, next.RegistryModel, nextReasoning); err != nil {
 			return ui.ModelSelection{}, err
 		}
 		runtime := proxyClient.Provider(next.Provider)
@@ -403,7 +412,9 @@ func run(env environment) int {
 		snap.ProviderName = next.Provider
 		snap.Model = next.Model
 		snap.ContextWindow = cfg.ContextWindow
+		snap.Reasoning = nextReasoning
 		delegateState.Set(snap)
+		reasoning = nextReasoning
 		return ui.ModelSelection{
 			Provider:      next.Provider,
 			Model:         next.Model,
@@ -411,6 +422,7 @@ func run(env environment) int {
 			BaseURL:       proxyClient.URL(),
 			Runtime:       runtime,
 			ContextWindow: cfg.ContextWindow,
+			Reasoning:     nextReasoning,
 		}, nil
 	}
 
@@ -493,10 +505,21 @@ func run(env environment) int {
 		BaseURL:         proxyClient.URL(),
 		Registry:        modelRegistry,
 		System:          systemPrompt,
+		Reasoning:       reasoning,
 		AvailableModels: modelRegistry.Models(),
 		SwitchModel:     switchModel,
 		PickModel:       catalogModelPicker(catalog),
 		PickerPageSize:  pickerPageSize(env),
+		SetReasoning: func(model string, nextReasoning llm.ReasoningConfig) error {
+			if err := validateReasoningEffort(modelRegistry, model, nextReasoning); err != nil {
+				return err
+			}
+			reasoning = nextReasoning
+			snap := delegateState.Snapshot()
+			snap.Reasoning = nextReasoning
+			delegateState.Set(snap)
+			return nil
+		},
 		AgentName:       agentName,
 		AvailableAgents: agentSummaries(agents),
 		SwitchAgent:     switchAgent,
@@ -841,6 +864,82 @@ func pickStartupModel(reader *bufio.Reader, w io.Writer, catalog protocol.Catalo
 		return catalogSelection{}, err
 	}
 	return resolveCatalogSelection(catalog, "", input, "")
+}
+
+func pickStartupReasoningEffort(reader *bufio.Reader, w io.Writer, registry *llm.Registry, model string, reasoning llm.ReasoningConfig) (llm.ReasoningConfig, error) {
+	info, ok := reasoningInfoForModel(registry, model)
+	if !ok || !info.Supported {
+		return reasoning, nil
+	}
+	values, hasEffort := info.EffortValues()
+	if !hasEffort || len(values) == 0 {
+		return reasoning, nil
+	}
+	current := strings.TrimSpace(reasoning.Effort)
+	currentValid := current == "" || info.SupportsEffort(current)
+	for {
+		fmt.Fprintf(w, "Reasoning effort (default/%s; current: %s): ", strings.Join(values, "/"), effortPromptCurrent(current, currentValid))
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) && line != "" {
+				line = strings.TrimSpace(line)
+			} else {
+				return reasoning, err
+			}
+		} else {
+			line = strings.TrimSpace(line)
+		}
+		if line == "" {
+			if currentValid {
+				return reasoning, nil
+			}
+			reasoning.Effort = ""
+			return reasoning, nil
+		}
+		if strings.EqualFold(line, "q") {
+			return reasoning, ui.ErrPickerCancelled
+		}
+		effort, ok := normalizeEffortInput(line)
+		if !ok || (effort != "" && !info.SupportsEffort(effort)) {
+			fmt.Fprintf(w, "Invalid reasoning effort %q (supported: default, %s)\n", line, strings.Join(values, ", "))
+			continue
+		}
+		reasoning.Effort = effort
+		return reasoning, nil
+	}
+}
+
+func reasoningInfoForModel(registry *llm.Registry, model string) (*llm.ReasoningInfo, bool) {
+	if registry == nil {
+		return nil, false
+	}
+	info, ok := registry.Lookup(model)
+	if !ok || info.Reasoning == nil {
+		return nil, false
+	}
+	return info.Reasoning, true
+}
+
+func effortPromptCurrent(current string, valid bool) string {
+	if strings.TrimSpace(current) == "" {
+		return "provider default"
+	}
+	if valid {
+		return current
+	}
+	return current + " (not valid for this model; Enter uses provider default)"
+}
+
+func normalizeEffortInput(input string) (string, bool) {
+	effort := strings.ToLower(strings.TrimSpace(input))
+	switch effort {
+	case "":
+		return "", false
+	case "default", "none", "provider-default":
+		return "", true
+	default:
+		return effort, true
+	}
 }
 
 func writableConfigPath(args []string, getenv func(string) string) string {
