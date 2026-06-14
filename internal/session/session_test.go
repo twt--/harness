@@ -107,11 +107,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
-// The run mode round-trips so a resumed session can restore its restricted
+// The active agent round-trips so a resumed session can restore its restricted
 // tool set, not just its saved system prompt.
-func TestSaveLoadPreservesMode(t *testing.T) {
+func TestSaveLoadPreservesAgent(t *testing.T) {
 	s := sampleSession()
-	s.Mode = "plan"
+	s.Agent = "plan"
 	path := filepath.Join(t.TempDir(), "session")
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -120,8 +120,8 @@ func TestSaveLoadPreservesMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Mode != "plan" {
-		t.Errorf("Mode = %q, want plan", got.Mode)
+	if got.Agent != "plan" {
+		t.Errorf("Agent = %q, want plan", got.Agent)
 	}
 }
 

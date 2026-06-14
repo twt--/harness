@@ -18,12 +18,12 @@ import (
 	"time"
 
 	"harness/internal/agent"
+	"harness/internal/agentdef"
 	"harness/internal/config"
 	"harness/internal/delegate"
 	"harness/internal/llm"
 	"harness/internal/logging"
 	"harness/internal/mcptools"
-	"harness/internal/mode"
 	modelclient "harness/internal/modelproxy/client"
 	"harness/internal/modelproxy/protocol"
 	"harness/internal/session"
@@ -106,6 +106,46 @@ func run(env environment) int {
 		return ui.ExitUsage
 	}
 
+	// Load a resumed session up front: its saved agent selects the tool set and
+	// any agent-specific provider/model when no -agent flag overrides it.
+	var resumed *session.Session
+	if cfg.Resume != "" {
+		s, err := session.Load(cfg.Resume)
+		if err != nil {
+			fmt.Fprintf(stderr, "harness: resume %s: %v\n", cfg.Resume, err)
+			return ui.ExitRuntime
+		}
+		resumed = &s
+	}
+
+	fileAgents := make(map[string]agentdef.FileDefinition, len(cfg.Agents))
+	for name, fa := range cfg.Agents {
+		fileAgents[name] = agentdef.FileDefinition{
+			Description:  fa.Description,
+			AllowedTools: fa.AllowedTools,
+			Prompt:       fa.Prompt,
+			Provider:     fa.Provider,
+			Model:        fa.Model,
+		}
+	}
+	agents := agentdef.Resolve(fileAgents)
+	agentName := cfg.Agent
+	if resumed != nil && resumed.Agent != "" {
+		if cfg.Agent == "" {
+			agentName = resumed.Agent
+		} else if cfg.Agent != resumed.Agent {
+			fmt.Fprintf(stderr, "harness: session agent %q overridden by %q (flags win)\n", resumed.Agent, cfg.Agent)
+		}
+	}
+	if agentName == "" {
+		agentName = agentdef.Default
+	}
+	startupAgent, ok := agents[agentName]
+	if !ok {
+		fmt.Fprintf(stderr, "harness: unknown agent %q (available: %s)\n", agentName, strings.Join(agentdef.Names(agents), ", "))
+		return ui.ExitUsage
+	}
+
 	proxyURL := cfg.ModelProxyURL
 	if proxyURL == "" {
 		proxyURL = protocol.DefaultURL
@@ -123,9 +163,10 @@ func run(env environment) int {
 	modelRegistry := modelclient.Registry(catalog)
 	modelRegistry.SetDefaultContextWindow(cfg.DefaultContextWindow)
 	reasoning := llm.ReasoningConfig{Effort: cfg.ReasoningEffort}
-	selection, err := resolveCatalogSelection(catalog, cfg.Provider, cfg.Model, "")
+	startProvider, startModel := agentModelInputs(startupAgent, cfg.Provider, cfg.Model)
+	selection, err := resolveCatalogSelection(catalog, startProvider, startModel, cfg.Provider)
 	if err != nil {
-		if cfg.Model != "" {
+		if startModel != "" || startProvider != "" {
 			fmt.Fprintf(stderr, "harness: %v\n", err)
 			return ui.ExitUsage
 		}
@@ -159,10 +200,6 @@ func run(env environment) int {
 	if err := validateReasoningEffort(modelRegistry, registryModel, reasoning); err != nil {
 		fmt.Fprintf(stderr, "harness: %v\n", err)
 		return ui.ExitUsage
-	}
-	effectiveContextWindow := cfg.ContextWindow
-	if effectiveContextWindow <= 0 {
-		effectiveContextWindow = modelRegistry.ContextWindow(registryModel)
 	}
 
 	// System prompt composition (design §8.5). -system and -system-override may
@@ -213,17 +250,17 @@ func run(env environment) int {
 	skillsCatalog := skills.BuildCatalog(discoveredSkills)
 	instructions := skills.Instructions(len(discoveredSkills))
 
-	// buildSystem assembles the full system prompt for a given run-mode prompt,
+	// buildSystem assembles the full system prompt for a given agent prompt,
 	// reusing every other input. The skills instructions block is appended last,
-	// exactly as at startup, so a /mode switch reproduces the same composition.
-	buildSystem := func(modePrompt string) string {
+	// exactly as at startup, so an /agent switch reproduces the same composition.
+	buildSystem := func(agentPrompt string) string {
 		s := sysprompt.Build(sysprompt.Options{
 			Append:        appendText,
 			Override:      overrideText,
 			NoEnv:         cfg.NoEnv,
 			AgentsMD:      agentsMD,
 			SkillsCatalog: skillsCatalog,
-			ModePrompt:    modePrompt,
+			AgentPrompt:   agentPrompt,
 			Env:           sysprompt.EnvOptions{Dir: wd},
 		})
 		if instructions != "" {
@@ -232,10 +269,10 @@ func run(env environment) int {
 		return s
 	}
 
-	// Run modes (design: tool-gating layer). The tool catalog holds every
-	// constructible tool; each mode selects a subset, realized by Subset so the
-	// agent advertises and dispatches only the mode's tools. Built once and
-	// shared with the /mode switch (write_tmp_file holds a per-run temp dir).
+	// Agent definitions (tool-gating layer). The tool catalog holds every
+	// constructible tool; each agent selects a subset, realized by Subset so the
+	// runtime advertises and dispatches only that agent's tools. Built once and
+	// shared with /agent and the /mode alias (write_tmp_file holds a per-run temp dir).
 	toolCatalog, disabledTools := tools.CatalogWithOptions(tools.Options{
 		MaxResultBytes:       cfg.ToolResultMaxBytes,
 		MaxResultLines:       cfg.ToolResultMaxLines,
@@ -244,25 +281,25 @@ func run(env environment) int {
 	for _, disabled := range disabledTools {
 		logger.Warn(disabled.Message(), logging.Category("cli_tools"))
 	}
-	delegateTools, err := toolCatalog.Subset(delegateReadOnlyToolNames())
-	if err != nil {
-		fmt.Fprintf(stderr, "harness: delegate tools: %v\n", err)
-		return ui.ExitUsage
-	}
 	delegateState := delegate.NewState(delegate.Runtime{
+		ProviderName:  cfg.Provider,
 		Model:         cfg.Model,
 		ContextWindow: cfg.ContextWindow,
 		Registry:      modelRegistry,
 		Reasoning:     reasoning,
+		Agent:         agentName,
 	})
-	toolCatalog.Register(delegate.New(delegateState.Snapshot, delegateTools, delegate.Options{
+	resolveDelegate := func(runtime delegate.Runtime, name string) (delegate.Launch, error) {
+		return resolveDelegateLaunch(runtime, name, agents, toolCatalog, catalog, proxyClient, buildSystem)
+	}
+	toolCatalog.Register(delegate.New(delegateState.Snapshot, resolveDelegate, delegate.Options{
 		MaxTurns:                  cfg.DelegateMaxTurns,
 		CompactKeepTurns:          cfg.CompactKeepTurns,
 		CompactSummaryMaxTokens:   cfg.CompactSummaryMaxTokens,
 		CompactToolResultMaxBytes: cfg.CompactToolResultMaxBytes,
 	}))
 	// MCP (opt-in): connect to the proxy and register discovered tools into the
-	// catalog before mode resolution, so any mode's subset can pick them up. It
+	// catalog before agent validation, so any agent's subset can pick them up. It
 	// never fails startup; on any error it warns and continues with no MCP tools.
 	var mcpConn *mcptools.Conn
 	var mcpSummary mcptools.Summary
@@ -273,80 +310,75 @@ func run(env environment) int {
 			mcpConn, mcpSummary = conn, summary
 		}
 	}
-	fileModes := make(map[string]mode.FileMode, len(cfg.Modes))
-	for name, fm := range cfg.Modes {
-		fileModes[name] = mode.FileMode{AllowedTools: fm.AllowedTools, Prompt: fm.Prompt}
-	}
-	modes := mode.Resolve(fileModes)
-	// Default-inheriting modes (auto, independent, and config modes without an
+	// Default-inheriting agents (auto, independent, and config agents without an
 	// explicit allowed_tools) expose the discovered MCP tools; explicit
-	// whitelists opt out. Capture which modes inherit the default set BEFORE
+	// whitelists opt out. Capture which agents inherit the default set BEFORE
 	// augmenting them, so the refresh hook can re-derive their allowed lists.
 	// mcpSummary.Names is empty when MCP is disabled, making both a no-op.
-	mcpBases := defaultInheritingModeBases(modes)
-	augmentModesWithMCP(modes, mcpSummary.Names)
-	// Expand @file references in mode prompts once at startup: a bad reference
-	// fails fast (rather than on a later /mode switch), and the cached text means
+	mcpBases := defaultInheritingAgentBases(agents)
+	augmentAgentsWithMCP(agents, mcpSummary.Names)
+	// Expand @file references in agent prompts once at startup: a bad reference
+	// fails fast (rather than on a later /agent switch), and the cached text means
 	// switching never touches the filesystem.
-	for name, m := range modes {
-		expanded, err := resolveAtFile(m.Prompt)
+	for name, a := range agents {
+		expanded, err := resolveAtFile(a.Prompt)
 		if err != nil {
-			fmt.Fprintf(stderr, "harness: mode %q prompt: %v\n", name, err)
+			fmt.Fprintf(stderr, "harness: agent %q prompt: %v\n", name, err)
 			return ui.ExitUsage
 		}
-		m.Prompt = expanded
-		modes[name] = m
+		a.Prompt = expanded
+		agents[name] = a
 	}
 
-	// Load a resumed session up front: its saved mode selects the tool set when
-	// no -mode flag overrides it (flags win, as with provider/model below).
-	var resumed *session.Session
-	if cfg.Resume != "" {
-		s, err := session.Load(cfg.Resume)
-		if err != nil {
-			fmt.Fprintf(stderr, "harness: resume %s: %v\n", cfg.Resume, err)
-			return ui.ExitRuntime
-		}
-		resumed = &s
-	}
-
-	modeName := cfg.Mode
-	if resumed != nil && resumed.Mode != "" {
-		if cfg.Mode == "" {
-			modeName = resumed.Mode
-		} else if cfg.Mode != resumed.Mode {
-			fmt.Fprintf(stderr, "harness: session mode %q overridden by %q (flags win)\n", resumed.Mode, cfg.Mode)
-		}
-	}
-	if modeName == "" {
-		modeName = mode.Default
-	}
-	currentMode, ok := modes[modeName]
+	currentAgent, ok := agents[agentName]
 	if !ok {
-		fmt.Fprintf(stderr, "harness: unknown mode %q (available: %s)\n", modeName, strings.Join(mode.Names(modes), ", "))
+		fmt.Fprintf(stderr, "harness: unknown agent %q (available: %s)\n", agentName, strings.Join(agentdef.Names(agents), ", "))
 		return ui.ExitUsage
 	}
-	toolRegistry, err := toolCatalog.Subset(currentMode.AllowedTools)
+	toolRegistry, err := toolCatalog.Subset(currentAgent.AllowedTools)
 	if err != nil {
-		fmt.Fprintf(stderr, "harness: mode %q: %v\n", modeName, err)
+		fmt.Fprintf(stderr, "harness: agent %q: %v\n", agentName, err)
 		return ui.ExitUsage
 	}
-	systemPrompt := buildSystem(currentMode.Prompt)
+	systemPrompt := buildSystem(currentAgent.Prompt)
 
-	switchMode := func(name string) (ui.ModeSelection, error) {
-		m, ok := modes[name]
+	switchAgent := func(name string) (ui.AgentSelection, error) {
+		a, ok := agents[name]
 		if !ok {
-			return ui.ModeSelection{}, fmt.Errorf("unknown mode %q (available: %s)", name, strings.Join(mode.Names(modes), ", "))
+			return ui.AgentSelection{}, fmt.Errorf("unknown agent %q (available: %s)", name, strings.Join(agentdef.Names(agents), ", "))
 		}
-		reg, err := toolCatalog.Subset(m.AllowedTools)
+		reg, err := toolCatalog.Subset(a.AllowedTools)
 		if err != nil {
-			return ui.ModeSelection{}, err
+			return ui.AgentSelection{}, err
 		}
-		system := buildSystem(m.Prompt)
 		snap := delegateState.Snapshot()
+		next, err := resolveAgentCatalogSelection(catalog, a, snap.ProviderName, snap.Model)
+		if err != nil {
+			return ui.AgentSelection{}, err
+		}
+		if err := validateReasoningEffort(modelRegistry, next.RegistryModel, reasoning); err != nil {
+			return ui.AgentSelection{}, err
+		}
+		system := buildSystem(a.Prompt)
+		runtime := proxyClient.Provider(next.Provider)
+		snap.Provider = runtime
+		snap.ProviderName = next.Provider
+		snap.Model = next.Model
+		snap.ContextWindow = cfg.ContextWindow
 		snap.System = system
+		snap.Agent = a.Name
 		delegateState.Set(snap)
-		return ui.ModeSelection{Name: m.Name, Tools: reg, System: system}, nil
+		return ui.AgentSelection{
+			Name:          a.Name,
+			Tools:         reg,
+			System:        system,
+			Provider:      next.Provider,
+			Model:         next.Model,
+			RegistryModel: next.RegistryModel,
+			BaseURL:       proxyClient.URL(),
+			Runtime:       runtime,
+			ContextWindow: cfg.ContextWindow,
+		}, nil
 	}
 
 	provider := proxyClient.Provider(cfg.Provider)
@@ -366,6 +398,7 @@ func run(env environment) int {
 		runtime := proxyClient.Provider(next.Provider)
 		snap := delegateState.Snapshot()
 		snap.Provider = runtime
+		snap.ProviderName = next.Provider
 		snap.Model = next.Model
 		snap.ContextWindow = cfg.ContextWindow
 		delegateState.Set(snap)
@@ -395,7 +428,7 @@ func run(env environment) int {
 	var totals session.UsageTotals
 
 	// Resume restores a prior transcript; flags win over the file's
-	// provider/model with a warning (design §11). The mode was resolved above;
+	// provider/model with a warning (design §11). The agent was resolved above;
 	// the tool registry already reflects it.
 	if resumed != nil {
 		s := *resumed
@@ -418,11 +451,13 @@ func run(env environment) int {
 	ag.SetSystem(systemPrompt)
 	delegateState.Set(delegate.Runtime{
 		Provider:      provider,
+		ProviderName:  cfg.Provider,
 		Model:         cfg.Model,
 		ContextWindow: cfg.ContextWindow,
 		Registry:      modelRegistry,
 		Reasoning:     reasoning,
 		System:        systemPrompt,
+		Agent:         agentName,
 	})
 
 	sessionPath := cfg.Session
@@ -460,9 +495,9 @@ func run(env environment) int {
 		SwitchModel:     switchModel,
 		PickModel:       catalogModelPicker(catalog),
 		PickerPageSize:  pickerPageSize(env),
-		Mode:            modeName,
-		AvailableModes:  mode.Names(modes),
-		SwitchMode:      switchMode,
+		AgentName:       agentName,
+		AvailableAgents: agentSummaries(agents),
+		SwitchAgent:     switchAgent,
 		SessionPath:     sessionPath,
 		StateDir:        stateDir(getenv),
 		Created:         created,
@@ -478,7 +513,7 @@ func run(env environment) int {
 	// Wire the MCP tool-list refresh hook for the interactive REPL only: one-shot
 	// runs a single turn with the tools fixed at startup, so it needs no hook.
 	if mcpConn != nil && !cfg.PromptSet {
-		app.RefreshMCP = newMCPRefresher(mcpConn, toolCatalog, modes, mcpBases, mcpSummary, logger)
+		app.RefreshMCP = newMCPRefresher(mcpConn, toolCatalog, agents, mcpBases, mcpSummary, logger)
 	}
 	ag.SetCompactionArchiver(func(ctx context.Context, archive agent.CompactionArchive) (string, error) {
 		return session.SaveCompaction(app.SessionPath, session.Compaction{
@@ -531,18 +566,6 @@ func run(env environment) int {
 	return ui.Run(stdin, app, exitCh)
 }
 
-func delegateReadOnlyToolNames() []string {
-	names := []string{"read_file", "list_dir", "grep"}
-	if tools.RipgrepAvailable() {
-		names = append(names, "rg")
-	}
-	names = append(names, "web_fetch")
-	if tools.GitAvailable() {
-		names = append(names, "git_readonly")
-	}
-	return names
-}
-
 func runSessionCommand(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "usage: harness session replay <session-dir>")
@@ -589,6 +612,81 @@ type catalogSelection struct {
 	Provider      string
 	Model         string
 	RegistryModel string
+}
+
+func agentModelInputs(def agentdef.Definition, provider, model string) (string, string) {
+	if def.Provider != "" {
+		provider = def.Provider
+	}
+	if def.Model != "" {
+		model = def.Model
+	}
+	return provider, model
+}
+
+func resolveAgentCatalogSelection(catalog protocol.Catalog, def agentdef.Definition, provider, model string) (catalogSelection, error) {
+	nextProvider, nextModel := agentModelInputs(def, provider, model)
+	return resolveCatalogSelection(catalog, nextProvider, nextModel, provider)
+}
+
+func resolveDelegateLaunch(runtime delegate.Runtime, name string, agents map[string]agentdef.Definition, catalog *tools.Registry, modelCatalog protocol.Catalog, proxyClient *modelclient.Client, buildSystem func(string) string) (delegate.Launch, error) {
+	target := strings.TrimSpace(name)
+	if target == "" {
+		target = runtime.Agent
+	}
+	if target == "" {
+		target = agentdef.Default
+	}
+	def, ok := agents[target]
+	if !ok {
+		return delegate.Launch{}, fmt.Errorf("unknown agent %q (available: %s)", target, strings.Join(agentdef.Names(agents), ", "))
+	}
+	reg, err := catalog.Subset(def.AllowedTools)
+	if err != nil {
+		return delegate.Launch{}, err
+	}
+
+	provider := runtime.Provider
+	providerName := runtime.ProviderName
+	model := runtime.Model
+	system := runtime.System
+	if target != runtime.Agent {
+		next, err := resolveAgentCatalogSelection(modelCatalog, def, runtime.ProviderName, runtime.Model)
+		if err != nil {
+			return delegate.Launch{}, err
+		}
+		if err := validateReasoningEffort(runtime.Registry, next.RegistryModel, runtime.Reasoning); err != nil {
+			return delegate.Launch{}, err
+		}
+		providerName = next.Provider
+		model = next.Model
+		provider = proxyClient.Provider(next.Provider)
+		system = buildSystem(def.Prompt)
+	}
+	if system == "" {
+		system = buildSystem(def.Prompt)
+	}
+	if provider == nil && providerName != "" {
+		provider = proxyClient.Provider(providerName)
+	}
+	return delegate.Launch{
+		Provider:      provider,
+		Model:         model,
+		ContextWindow: runtime.ContextWindow,
+		Registry:      runtime.Registry,
+		Reasoning:     runtime.Reasoning,
+		System:        system,
+		Tools:         reg,
+	}, nil
+}
+
+func agentSummaries(agents map[string]agentdef.Definition) []ui.AgentSummary {
+	names := agentdef.Names(agents)
+	out := make([]ui.AgentSummary, 0, len(names))
+	for _, name := range names {
+		out = append(out, ui.AgentSummary{Name: name, Description: agents[name].Description})
+	}
+	return out
 }
 
 func resolveCatalogSelection(catalog protocol.Catalog, provider, model, preferredProvider string) (catalogSelection, error) {

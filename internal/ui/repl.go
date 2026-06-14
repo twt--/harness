@@ -35,13 +35,25 @@ type ModelSelection struct {
 	ContextWindow int // agent override; 0 means use the registry
 }
 
-// ModeSelection is the runtime run-mode bundle returned by App.SwitchMode: the
-// new tool registry to advertise/dispatch from and the fully reassembled system
-// prompt (with the mode's section) to send.
-type ModeSelection struct {
-	Name   string
-	Tools  *tools.Registry
-	System string
+// AgentSummary is one configured agent row for /agent listing.
+type AgentSummary struct {
+	Name        string
+	Description string
+}
+
+// AgentSelection is the runtime agent bundle returned by App.SwitchAgent: the
+// new tool registry, fully reassembled system prompt, and provider/model runtime
+// for subsequent turns.
+type AgentSelection struct {
+	Name          string
+	Tools         *tools.Registry
+	System        string
+	Provider      string
+	Model         string
+	RegistryModel string
+	BaseURL       string
+	Runtime       llm.Provider
+	ContextWindow int
 }
 
 // App bundles the dependencies the REPL and one-shot driver need. main builds it
@@ -66,16 +78,16 @@ type App struct {
 	PickModel       func(PickerIO) (string, error)
 	PickerPageSize  int
 
-	Mode           string   // current run mode name
-	AvailableModes []string // sorted mode names for /mode listing
-	SwitchMode     func(name string) (ModeSelection, error)
+	AgentName       string         // current agent definition name
+	AvailableAgents []AgentSummary // sorted agent names/descriptions for /agent listing
+	SwitchAgent     func(name string) (AgentSelection, error)
 
 	// RefreshMCP, when set, is consulted at the idle-prompt boundary (just
 	// before a typed prompt starts a turn) to pick up proxy tool-list changes.
-	// It is called with the current mode name; a non-nil registry replaces the
+	// It is called with the current agent name; a non-nil registry replaces the
 	// agent's tools and notice is rendered. A nil registry means "no change".
 	// nil disables the hook (one-shot mode and tests leave it nil).
-	RefreshMCP func(modeName string) (*tools.Registry, string)
+	RefreshMCP func(agentName string) (*tools.Registry, string)
 
 	SessionPath string    // current save path; /clear rotates it
 	StateDir    string    // for rotating to a fresh auto-save path on /clear
@@ -125,7 +137,8 @@ const helpText = `commands:
   /edit [draft]    open $VISUAL/$EDITOR (or vi) for a multi-line prompt
   /save [file]     force save (optionally elsewhere)
   /model [model]   pick a configured provider/model, or switch directly
-  /mode [name]     list run modes, or switch to mode
+  /agent [name]    list agents, or switch to agent
+  /mode [name]     alias for /agent
   /skills          list available skills
   $skillName       invoke a skill (reads SKILL.md and sends as prompt)
 Ctrl-G opens the editor from the prompt; lines starting with / are commands; // sends a literal leading slash`
@@ -708,11 +721,11 @@ func (app *App) command(line string, readCommandLine func(string) (string, error
 		} else {
 			app.switchModel(arg)
 		}
-	case "/mode":
+	case "/agent", "/mode":
 		if arg == "" {
-			fmt.Fprintln(app.Errw, app.modeSummary())
+			fmt.Fprintln(app.Errw, app.agentSummary())
 		} else {
-			app.switchMode(arg)
+			app.switchAgent(arg)
 		}
 	case "/skills":
 		fmt.Fprintln(app.Errw, app.skillsSummary())
@@ -822,52 +835,83 @@ func (app *App) switchModel(model string) {
 	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s proxy-url=%s]\n", app.Provider, app.Model, app.BaseURL)
 }
 
-// modeSummary renders the current run mode plus the modes available for
-// switching, marking the current one.
-func (app *App) modeSummary() string {
+// agentSummary renders the current agent plus available agents and descriptions,
+// marking the current one.
+func (app *App) agentSummary() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "current mode: %s\n", app.Mode)
-	b.WriteString("available modes:")
-	if len(app.AvailableModes) == 0 {
+	fmt.Fprintf(&b, "current agent: %s\n", app.AgentName)
+	b.WriteString("available agents:")
+	if len(app.AvailableAgents) == 0 {
 		b.WriteString(" none configured")
 		return b.String()
 	}
-	for _, name := range app.AvailableModes {
-		if name == app.Mode {
-			fmt.Fprintf(&b, "\n  %s (current)", name)
+	for _, a := range app.AvailableAgents {
+		current := ""
+		if a.Name == app.AgentName {
+			current = " (current)"
+		}
+		if a.Description != "" {
+			fmt.Fprintf(&b, "\n  %s%s - %s", a.Name, current, a.Description)
 		} else {
-			fmt.Fprintf(&b, "\n  %s", name)
+			fmt.Fprintf(&b, "\n  %s%s", a.Name, current)
 		}
 	}
 	return b.String()
 }
 
-func (app *App) switchMode(name string) {
-	if app.SwitchMode == nil {
-		fmt.Fprintln(app.Errw, "[mode switch unavailable]")
+func (app *App) switchAgent(name string) {
+	if app.SwitchAgent == nil {
+		fmt.Fprintln(app.Errw, "[agent switch unavailable]")
 		return
 	}
-	selection, err := app.SwitchMode(name)
+	oldProvider, oldModel := app.Provider, app.Model
+	selection, err := app.SwitchAgent(name)
 	if err != nil {
-		fmt.Fprintf(app.Errw, "[mode switch failed: %v]\n", err)
+		fmt.Fprintf(app.Errw, "[agent switch failed: %v]\n", err)
 		return
 	}
 	app.Agent.SetTools(selection.Tools)
 	app.Agent.SetSystem(selection.System)
-	app.Mode = selection.Name
-	app.System = selection.System // so saved sessions capture the mode's prompt
-	fmt.Fprintf(app.Errw, "[mode switched: %s]\n", selection.Name)
+	if selection.Runtime != nil {
+		app.Agent.SetProvider(selection.Runtime)
+	}
+	if selection.Model != "" {
+		app.Agent.SetModel(selection.Model, selection.ContextWindow)
+	}
+	app.AgentName = selection.Name
+	app.System = selection.System // so saved sessions capture the agent's prompt
+	if selection.Provider != "" {
+		app.Provider = selection.Provider
+	}
+	if selection.Model != "" {
+		app.Model = selection.Model
+	}
+	if selection.RegistryModel == "" {
+		selection.RegistryModel = app.Model
+	}
+	app.RegistryModel = selection.RegistryModel
+	if app.Renderer != nil {
+		app.Renderer.SetModel(selection.RegistryModel)
+	}
+	if selection.BaseURL != "" {
+		app.BaseURL = selection.BaseURL
+	}
+	fmt.Fprintf(app.Errw, "[agent switched: %s]\n", selection.Name)
+	fmt.Fprintf(app.Errw, "provider: %s  model: %s\n", app.Provider, app.Model)
+	if oldProvider != app.Provider || oldModel != app.Model {
+		fmt.Fprintln(app.Errw, "[warning: provider/model changed; the new model may start without prompt cache, increasing token usage or cost]")
+	}
 }
 
 // refreshMCP applies any pending proxy tool-list change at the idle-prompt
-// boundary, mirroring switchMode's Agent.SetTools swap. It is a no-op when no
+// boundary, mirroring switchAgent's Agent.SetTools swap. It is a no-op when no
 // hook is installed or the hook reports no change, so MCP-disabled runs (the
 // default) and the one-shot path pay nothing.
 func (app *App) refreshMCP() {
 	if app.RefreshMCP == nil {
 		return
 	}
-	sel, notice := app.RefreshMCP(app.Mode)
+	sel, notice := app.RefreshMCP(app.AgentName)
 	if sel == nil {
 		return
 	}
@@ -1017,7 +1061,7 @@ func (app *App) save(path string) error {
 		Created:  app.Created,
 		Updated:  app.clock()(),
 		System:   app.System,
-		Mode:     app.Mode,
+		Agent:    app.AgentName,
 		Turn:     app.Turn,
 		Messages: app.Agent.Transcript(),
 		Usage:    app.usage,

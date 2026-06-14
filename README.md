@@ -110,7 +110,7 @@ interrupted.
 -default-context-window <n>   fallback window for unknown/unconfigured models (default 256000)
 -context-window <n>   override the model's context window (tokens)
 -reasoning-effort <level>   reasoning/thinking effort when supported
--mode <name>      run mode: auto (default), plan, independent, or a config-defined mode
+-agent <name>     agent: auto (default), plan, independent, or a config-defined agent
 -v                show tool result snippets (first ~5 lines, dimmed)
 -tool-stream      show live tool-call progress (default true; use -tool-stream=false to disable)
 -q, --quiet       suppress informational diagnostics
@@ -136,8 +136,8 @@ Precedence is **flags > environment > config file > built-in defaults**.
   is an alias for `HARNESS_TIMESTAMPS=none`. Provider API-key environment variables are
   read only by `harness-model-proxy`.
 - Optional config file at `~/.config/harness/config.json` (override with
-  `-config`): `model_proxy_url`, `provider`, `model`, `mode`, `modes` (see
-  [Run modes](#run-modes)), and flag defaults. The `default_context_window`
+  `-config`): `model_proxy_url`, `provider`, `model`, `agent`, `agents` (see
+  [Agents](#agents)), and flag defaults. The `default_context_window`
   fallback is used only when proxy metadata has no configured context window;
   `context_window` forces an override. See `examples/harness/config.json`
   for a complete schema reference with the effective defaults.
@@ -145,7 +145,7 @@ Precedence is **flags > environment > config file > built-in defaults**.
   (default `8192`, warning only; `AGENTS.md` is still included in full),
   `tool_result_max_bytes`, `tool_result_max_lines`, `read_file_default_limit`,
   `compact_keep_turns`, `compact_summary_max_tokens`, and
-  `compact_tool_result_max_bytes`. The read-only delegate tool also has
+  `compact_tool_result_max_bytes`. The delegate tool also has
   `delegate_max_turns` (default `20`) as a config-file-only cap.
 - If `reasoning_effort` / `HARNESS_REASONING_EFFORT` / `-reasoning-effort` is set,
   harness sends it to the proxy only when requested. Proxy catalog metadata is
@@ -210,50 +210,59 @@ by a delimiter; only text written after the delimiter is sent as the next prompt
 | `/model` | choose a configured provider, then choose one of its configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
-| `/mode` | list run modes, marking the current one |
-| `/mode <name>` | switch the active run mode |
+| `/agent` | list agents and descriptions, marking the current one |
+| `/agent <name>` | switch the active agent |
+| `/mode`, `/mode <name>` | alias for `/agent` |
 
 Anthropic usage does not currently expose a separate reasoning-token field;
 extended thinking is counted in output tokens, so the reasoning total remains
 zero for Anthropic sessions.
 
-## Run modes
+## Agents
 
-A **run mode** bundles a set of allowed tools with extra system-prompt
-instructions, so the same harness can plan, work autonomously, or run wide open.
-Select one with `-mode <name>`, `HARNESS_MODE`, or `mode` in the config file
-(default `auto`); switch mid-session with `/mode <name>`. The active mode is
-saved with the session and restored on `-resume` (a `-mode` flag still wins).
+An **agent definition** bundles a set of allowed tools with extra system-prompt
+instructions and optional provider/model overrides, so the same harness can
+plan, work autonomously, or run specialized review passes. Select one with
+`-agent <name>`, `HARNESS_AGENT`, or `agent` in the config file (default
+`auto`); switch mid-session with `/agent <name>`. The active agent is saved with
+the session and restored on `-resume` (an `-agent` flag still wins). `/mode`
+remains a REPL alias for `/agent`.
 
-Three modes are built in:
+Three agents are built in:
 
-| mode | tools | behavior |
+| agent | tools | behavior |
 |---|---|---|
 | `auto` | all available tools, including `delegate` | the default — the model decides what to do |
 | `plan` | inspection tools (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, optional `git_readonly`), `write_tmp_file`, and `delegate` | collaborate on a plan without modifying the project |
 | `independent` | all available tools, including `delegate` | complete the task end-to-end without pausing for input; stop only on a hard blocker or the model-turn limit |
 
-Define new modes or override built-ins in the config file under `modes`. Entries
+Define new agents or override built-ins in the config file under `agents`. Entries
 **field-level merge** onto a built-in of the same name — an omitted field keeps
 the built-in value, so you can retune just a prompt or just a tool list:
 
 ```json
 {
-  "mode": "plan",
-  "modes": {
-    "plan":   { "prompt": "@~/.config/harness/plan-prompt.md" },
-    "review": {
+  "agent": "plan",
+  "agents": {
+    "plan": { "prompt": "@~/.config/harness/plan-prompt.md" },
+    "security_review": {
+      "description": "Review for concrete security issues.",
       "allowed_tools": ["read_file", "list_dir", "grep", "git_readonly"],
-      "prompt": "You are a code reviewer. Read the diff and surrounding code, then report findings. Do not modify files."
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "prompt": "Review the diff and surrounding code for security issues. Report only concrete findings."
     }
   }
 }
 ```
 
-A mode with no `allowed_tools` gets the full tool set; a mode `prompt` may be a
-`@file` reference. Unknown mode names and unknown tool names are reported at
-startup. This tool gating is the one place the harness restricts tools — the
-underlying tools still assume an external sandbox for real isolation.
+An agent with no `allowed_tools` gets the full tool set; an agent `prompt` may be
+a `@file` reference. If an agent omits `provider`/`model`, it uses the current
+session provider/model. If `/agent <name>` changes provider or model, harness
+prints a warning that the new provider/model may start without prompt cache and
+increase token usage or cost. Unknown agent names and unknown tool names are
+reported at startup. This tool gating is the one place the harness restricts
+tools — the underlying tools still assume an external sandbox for real isolation.
 
 ## Sessions
 
@@ -320,13 +329,14 @@ Turn summaries include an approximate context footprint, for example:
 
 `read_file`, `list_dir`, `grep`, optional `rg` when ripgrep is installed,
 `edit`, `write_file`, `apply_patch`, `run_command`, `exec`, optional `git`
-when git is installed, `web_fetch`, `delegate`, plus two used by restricted modes: optional
+when git is installed, `web_fetch`, `delegate`, plus two used by restricted agents: optional
 `git_readonly` (read-only git
 subcommands — `status`, `log`, `diff`, `show`, `grep`, `blame`, `bisect`) and
 `write_tmp_file` (write scratch files under a private per-run temp directory).
-`delegate` starts a child read-only agent with inspection tools only and returns
-its final report as a normal tool result; the child transcript is not persisted
-into the parent session, but child token usage is included in turn/session usage.
+`delegate` starts a child agent using the requested agent definition (or the
+current agent when omitted) and returns its final report as a normal tool result;
+the child transcript is not persisted into the parent session, but child token
+usage is included in turn/session usage.
 Missing optional CLI-backed tools are reported on stderr at startup, e.g.
 `[warn] [cli_tools] Tool "rg" is disabled. Reason: "rg" binary not found.`
 unless `-q`/`--quiet` or `--log-level error` suppresses the warning. `grep`,
@@ -334,7 +344,7 @@ unless `-q`/`--quiet` or `--log-level error` suppresses the warning. `grep`,
 [MCP servers](#mcp-servers-optional) integration is enabled, downstream MCP tools
 also appear, namespaced as `mcp__<server>__<tool>`. See
 [`docs/design.md`](docs/design.md) §9 for each tool's schema and exact
-behavior. In the REPL, `/tools` lists the active mode's enabled built-in and MCP
+behavior. In the REPL, `/tools` lists the active agent's enabled built-in and MCP
 tools with their descriptions, followed by optional built-ins that are currently
 disabled.
 
@@ -500,13 +510,13 @@ config error. Because HTTP has no notifications channel, the tool list is
 **fixed at startup**: the `[mcp: tool list updated]` notice never fires for the
 proxy.
 
-### Tools, modes, and limits
+### Tools, agents, and limits
 
 Aggregated tools are named `mcp__<server>__<tool>` (the charset/length must fit
 `[a-zA-Z0-9_-]{1,64}`; names that do not are dropped with a warning). They are
 plain harness tools, so they flow through the normal truncation, artifact, and
-session paths. Modes that inherit the default tool set (`auto`, `independent`, and
-config modes without an explicit `allowed_tools`) expose the MCP tools; a mode
+session paths. Agents that inherit the default tool set (`auto`, `independent`, and
+config agents without an explicit `allowed_tools`) expose the MCP tools; an agent
 with an explicit `allowed_tools` whitelist does **not** (it may list `mcp__` names
 manually). The HTTP proxy has no notifications channel, so the tool list is
 fixed at startup.

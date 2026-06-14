@@ -576,7 +576,7 @@ func TestUsageAccumulatedAcrossModelTurns(t *testing.T) {
 }
 
 // SetTools swaps the registry that backs both the advertised specs and
-// dispatch, so a mode switch immediately changes what the model sees and can
+// dispatch, so an agent switch immediately changes what the model sees and can
 // call.
 func TestSetToolsChangesAdvertisedAndDispatchableTools(t *testing.T) {
 	full, err := tools.Catalog().Subset([]string{"read_file", "grep"})

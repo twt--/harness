@@ -55,10 +55,10 @@ type Config struct {
 	CompactToolResultMaxBytes int // config-only; 0 = agent default, negative disables
 	DelegateMaxTurns          int // config-only; default 20, per delegate call cap
 
-	// Run mode. Empty means "not specified" so main can let a resumed
-	// session supply the mode before falling back to the default.
-	Mode  string
-	Modes map[string]FileModeConfig // raw "modes" config entries; main converts to mode.FileMode
+	// Agent definition. Empty means "not specified" so main can let a resumed
+	// session supply the agent before falling back to the default.
+	Agent  string
+	Agents map[string]FileAgentConfig // raw "agents" config entries; main converts to agentdef.FileDefinition
 
 	// One-shot mode (design §10).
 	Prompt    string // -p value
@@ -104,44 +104,47 @@ const (
 	TimestampNone           = "none"
 )
 
-// FileModeConfig is one entry of the config file's "modes" object. It mirrors
-// mode.FileMode; config deliberately does not import internal/mode (which
+// FileAgentConfig is one entry of the config file's "agents" object. It mirrors
+// agentdef.FileDefinition; config deliberately does not import internal/agentdef (which
 // would pull in the tools/llm layers), so main performs the conversion.
-type FileModeConfig struct {
+type FileAgentConfig struct {
+	Description  string   `json:"description"`
 	AllowedTools []string `json:"allowed_tools"`
 	Prompt       string   `json:"prompt"`
+	Provider     string   `json:"provider"`
+	Model        string   `json:"model"`
 }
 
 // fileConfig mirrors the subset of Config that the main config file may set.
 // Provider connection settings and secrets belong to harness-model-proxy, not
 // the harness process.
 type fileConfig struct {
-	Provider                  string                    `json:"provider"`
-	Model                     string                    `json:"model"`
-	ModelProxyURL             string                    `json:"model_proxy_url"`
-	System                    string                    `json:"system"`
-	NoEnv                     *bool                     `json:"no_env"`
-	MaxTurns                  *int                      `json:"max_turns"`
-	DefaultContextWindow      *int                      `json:"default_context_window"`
-	ContextWindow             *int                      `json:"context_window"`
-	ReasoningEffort           string                    `json:"reasoning_effort"`
-	AgentsMDWarnBytes         *int                      `json:"agents_md_warn_bytes"`
-	ToolResultMaxBytes        *int                      `json:"tool_result_max_bytes"`
-	ToolResultMaxLines        *int                      `json:"tool_result_max_lines"`
-	ReadFileDefaultLimit      *int                      `json:"read_file_default_limit"`
-	CompactKeepTurns          *int                      `json:"compact_keep_turns"`
-	CompactSummaryMaxTokens   *int                      `json:"compact_summary_max_tokens"`
-	CompactToolResultMaxBytes *int                      `json:"compact_tool_result_max_bytes"`
-	DelegateMaxTurns          *int                      `json:"delegate_max_turns"`
-	Verbose                   *bool                     `json:"verbose"`
-	ToolStream                *bool                     `json:"tool_stream"`
-	LogLevel                  string                    `json:"log_level"`
-	NoColor                   *bool                     `json:"no_color"`
-	Timestamps                string                    `json:"timestamps"`
-	NoTimestamps              *bool                     `json:"no_timestamps"`
-	Prompt                    string                    `json:"prompt"`
-	Mode                      string                    `json:"mode"`
-	Modes                     map[string]FileModeConfig `json:"modes"`
+	Provider                  string                     `json:"provider"`
+	Model                     string                     `json:"model"`
+	ModelProxyURL             string                     `json:"model_proxy_url"`
+	System                    string                     `json:"system"`
+	NoEnv                     *bool                      `json:"no_env"`
+	MaxTurns                  *int                       `json:"max_turns"`
+	DefaultContextWindow      *int                       `json:"default_context_window"`
+	ContextWindow             *int                       `json:"context_window"`
+	ReasoningEffort           string                     `json:"reasoning_effort"`
+	AgentsMDWarnBytes         *int                       `json:"agents_md_warn_bytes"`
+	ToolResultMaxBytes        *int                       `json:"tool_result_max_bytes"`
+	ToolResultMaxLines        *int                       `json:"tool_result_max_lines"`
+	ReadFileDefaultLimit      *int                       `json:"read_file_default_limit"`
+	CompactKeepTurns          *int                       `json:"compact_keep_turns"`
+	CompactSummaryMaxTokens   *int                       `json:"compact_summary_max_tokens"`
+	CompactToolResultMaxBytes *int                       `json:"compact_tool_result_max_bytes"`
+	DelegateMaxTurns          *int                       `json:"delegate_max_turns"`
+	Verbose                   *bool                      `json:"verbose"`
+	ToolStream                *bool                      `json:"tool_stream"`
+	LogLevel                  string                     `json:"log_level"`
+	NoColor                   *bool                      `json:"no_color"`
+	Timestamps                string                     `json:"timestamps"`
+	NoTimestamps              *bool                      `json:"no_timestamps"`
+	Prompt                    string                     `json:"prompt"`
+	Agent                     string                     `json:"agent"`
+	Agents                    map[string]FileAgentConfig `json:"agents"`
 
 	MCP *fileMCPConfig `json:"mcp"`
 }
@@ -242,9 +245,9 @@ func Load(args []string, getenv func(string) string, configPath string) (Config,
 	if c.DelegateMaxTurns <= 0 {
 		return Config{}, fmt.Errorf("delegate_max_turns must be positive")
 	}
-	c.Mode = strings.ToLower(strings.TrimSpace(resolveString(set["mode"], *f.mode,
-		getenv("HARNESS_MODE"), fc.Mode, "")))
-	c.Modes = fc.Modes
+	c.Agent = strings.ToLower(strings.TrimSpace(resolveString(set["agent"], *f.agent,
+		getenv("HARNESS_AGENT"), fc.Agent, "")))
+	c.Agents = fc.Agents
 
 	c.NoEnv = resolveBool(set["no-env"], *fNoEnv,
 		getenv("HARNESS_NO_ENV"), fc.NoEnv, false)
@@ -417,7 +420,7 @@ type flags struct {
 	defaultContextWindow           *int
 	contextWindow                  *int
 	reasoningEffort                *string
-	mode                           *string
+	agent                          *string
 	prompt                         *string
 	replPrompt                     *string
 	logLevel                       *string
@@ -447,7 +450,7 @@ func newFlagSet() (*flag.FlagSet, flags) {
 	f.defaultContextWindow = fs.Int("default-context-window", defaultContextWindow, "default context window for unknown/unconfigured models (tokens)")
 	f.contextWindow = fs.Int("context-window", 0, "context window override (tokens)")
 	f.reasoningEffort = fs.String("reasoning-effort", "", "reasoning/thinking effort (provider/model dependent)")
-	f.mode = fs.String("mode", "", "run mode: auto, plan, independent, or a config-defined mode (default auto)")
+	f.agent = fs.String("agent", "", "agent: auto, plan, independent, or a config-defined agent (default auto)")
 	f.verbose = fs.Bool("v", false, "show tool result snippets")
 	f.toolStream = fs.Bool("tool-stream", true, "show live tool-call progress")
 	f.quietShort = fs.Bool("q", false, "suppress informational diagnostics")

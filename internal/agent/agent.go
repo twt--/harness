@@ -156,7 +156,7 @@ func (a *Agent) ToolSpecs() []llm.ToolSchema { return a.tools.Specs() }
 
 // SetTools replaces the tool registry used for subsequent requests. Because the
 // agent advertises (Specs) and dispatches from the same registry, swapping it
-// changes both what the model sees and what it can call — the hook a run-mode
+// changes both what the model sees and what it can call — the hook an agent
 // switch uses. A nil registry is ignored.
 func (a *Agent) SetTools(registry *tools.Registry) {
 	if registry != nil {

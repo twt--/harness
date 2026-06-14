@@ -187,24 +187,24 @@ func TestBuildEmptyAgentsMDOmitted(t *testing.T) {
 	}
 }
 
-// The mode prompt is the final section: after builtin instructions, env,
-// AGENTS.md, and -system append, so a mode layers on top of everything else.
-func TestBuildModePromptAppendedLast(t *testing.T) {
+// The agent prompt is the final section: after builtin instructions, env,
+// AGENTS.md, and -system append, so an agent layers on top of everything else.
+func TestBuildAgentPromptAppendedLast(t *testing.T) {
 	out := Build(Options{
-		Append:     "project note",
-		AgentsMD:   "agents rules",
-		ModePrompt: "mode section",
-		NoEnv:      true,
+		Append:      "project note",
+		AgentsMD:    "agents rules",
+		AgentPrompt: "agent section",
+		NoEnv:       true,
 	})
-	if !strings.HasSuffix(out, "project note\n\nmode section") {
-		t.Errorf("mode prompt should be the final section after append:\n%s", out)
+	if !strings.HasSuffix(out, "project note\n\nagent section") {
+		t.Errorf("agent prompt should be the final section after append:\n%s", out)
 	}
 	if !strings.Contains(out, builtinInstructions) {
 		t.Errorf("builtin instructions must be kept")
 	}
 }
 
-func TestBuildEmptyModePromptOmitted(t *testing.T) {
+func TestBuildEmptyAgentPromptOmitted(t *testing.T) {
 	out := Build(Options{NoEnv: true})
 	if out != builtinInstructions {
 		t.Errorf("no options should yield just the builtin instructions:\n%s", out)

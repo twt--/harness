@@ -326,7 +326,7 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 	flags := []string{
 		"-p", "-provider", "-model", "-model-proxy-url", "-system", "-system-override",
 		"-no-env", "-resume", "-session", "-max-turns", "-default-context-window", "-context-window",
-		"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
+		"-reasoning-effort", "-agent", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
 	}
 	for _, arg := range []string{"-h", "--help"} {
 		fp := llmtest.New("fake")
@@ -753,9 +753,9 @@ func toolNames(req llm.Request) []string {
 	return names
 }
 
-// Default (auto) mode advertises the default tool set plus delegate and carries
-// no mode section.
-func TestRunDefaultModeTools(t *testing.T) {
+// Default (auto) agent advertises the default tool set plus delegate and carries
+// no agent-specific section.
+func TestRunDefaultAgentTools(t *testing.T) {
 	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
 
@@ -764,14 +764,14 @@ func TestRunDefaultModeTools(t *testing.T) {
 	}
 	want := expectedDefaultToolNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
-		t.Errorf("default mode tools = %v, want %v", got, want)
+		t.Errorf("default agent tools = %v, want %v", got, want)
 	}
-	if strings.Contains(fp.Requests[0].System, "plan mode") || strings.Contains(fp.Requests[0].System, "independent mode") {
-		t.Errorf("default mode should carry no mode section; system=%q", fp.Requests[0].System)
+	if strings.Contains(fp.Requests[0].System, "plan agent") || strings.Contains(fp.Requests[0].System, "independent agent") {
+		t.Errorf("default agent should carry no agent section; system=%q", fp.Requests[0].System)
 	}
 }
 
-func TestRunDelegateToolUsesReadOnlyChildAgent(t *testing.T) {
+func TestRunDelegateToolUsesCurrentAgentTools(t *testing.T) {
 	fp := llmtest.New("fake",
 		llmtest.Step{
 			Events: []llm.StreamEvent{{
@@ -809,8 +809,9 @@ func TestRunDelegateToolUsesReadOnlyChildAgent(t *testing.T) {
 		t.Fatalf("parent request did not advertise delegate: %v", toolNames(fp.Requests[0]))
 	}
 	childTools := toolNames(fp.Requests[1])
-	if slices.Contains(childTools, "delegate") || slices.Contains(childTools, "write_tmp_file") || slices.Contains(childTools, "edit") {
-		t.Fatalf("child request advertised non-read-only or recursive tools: %v", childTools)
+	wantChildTools := expectedDefaultToolNames()
+	if !slices.Equal(childTools, wantChildTools) {
+		t.Fatalf("child request tools = %v, want current agent tools %v", childTools, wantChildTools)
 	}
 	if got := fp.Requests[1].Messages[0].Content[0].Text; got != "inspect only" {
 		t.Fatalf("child task = %q", got)
@@ -823,7 +824,7 @@ func TestRunDelegateToolUsesReadOnlyChildAgent(t *testing.T) {
 	}
 }
 
-func TestRunDelegateUsesSwitchedModelAndMode(t *testing.T) {
+func TestRunDelegateUsesSwitchedModelAndAgent(t *testing.T) {
 	fp := llmtest.New("fake",
 		llmtest.Step{
 			Events: []llm.StreamEvent{{
@@ -846,7 +847,7 @@ func TestRunDelegateUsesSwitchedModelAndMode(t *testing.T) {
 	env, _, errw, _ := fakeProviderEnv(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
-		"/model gpt-5.5\n/mode plan\nhi\n/exit\n",
+		"/model gpt-5.5\n/agent plan\nhi\n/exit\n",
 	)
 
 	if code := run(env); code != ui.ExitOK {
@@ -859,8 +860,8 @@ func TestRunDelegateUsesSwitchedModelAndMode(t *testing.T) {
 	if child.Model != "gpt-5.5" {
 		t.Fatalf("delegate child model = %q, want switched model", child.Model)
 	}
-	if !strings.Contains(child.System, "plan mode") {
-		t.Fatalf("delegate child system should include switched mode prompt, system=%q", child.System)
+	if !strings.Contains(child.System, "plan agent") {
+		t.Fatalf("delegate child system should include switched agent prompt, system=%q", child.System)
 	}
 }
 
@@ -915,46 +916,46 @@ func TestRunLogLevelSuppressesUnavailableToolWarnings(t *testing.T) {
 	}
 }
 
-// Plan mode advertises only its read-only tool set and includes its prompt.
-func TestRunPlanModeRestrictsToolsAndAddsPrompt(t *testing.T) {
+// Plan agent advertises only its read-only tool set and includes its prompt.
+func TestRunPlanAgentRestrictsToolsAndAddsPrompt(t *testing.T) {
 	fp := llmtest.New("fake", okStepWithUsage(1, 1))
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-mode", "plan", "-p", "hi"}, fp, "")
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-agent", "plan", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
 	}
 	want := expectedPlanToolNames()
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
-		t.Errorf("plan mode tools = %v, want %v", got, want)
+		t.Errorf("plan agent tools = %v, want %v", got, want)
 	}
-	if !strings.Contains(fp.Requests[0].System, "plan mode") {
-		t.Errorf("plan mode system prompt should include the plan section; system=%q", fp.Requests[0].System)
+	if !strings.Contains(fp.Requests[0].System, "plan agent") {
+		t.Errorf("plan agent system prompt should include the plan section; system=%q", fp.Requests[0].System)
 	}
 }
 
-// An unknown mode is a startup usage error that lists the available modes.
-func TestRunUnknownModeIsUsageError(t *testing.T) {
+// An unknown agent is a startup usage error that lists the available agents.
+func TestRunUnknownAgentIsUsageError(t *testing.T) {
 	fp := llmtest.New("fake")
-	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-mode", "bogus", "-p", "hi"}, fp, "")
+	env, _, errw, _ := fakeProviderEnv(t, []string{"-model", "claude-opus-4-8", "-agent", "bogus", "-p", "hi"}, fp, "")
 
 	if code := run(env); code != ui.ExitUsage {
 		t.Fatalf("exit code = %d, want ExitUsage; errw=%q", code, errw.String())
 	}
 	got := errw.String()
 	if !strings.Contains(got, "bogus") || !strings.Contains(got, "auto") || !strings.Contains(got, "plan") {
-		t.Errorf("error should name the bad mode and list valid ones, errw=%q", got)
+		t.Errorf("error should name the bad agent and list valid ones, errw=%q", got)
 	}
 	if len(fp.Requests) != 0 {
-		t.Errorf("no turn should run for an unknown mode, got %d requests", len(fp.Requests))
+		t.Errorf("no turn should run for an unknown agent, got %d requests", len(fp.Requests))
 	}
 }
 
-// A config mode entry overriding only the prompt keeps the built-in tool list.
-func TestRunConfigModePromptOverrideKeepsTools(t *testing.T) {
+// A config agent entry overriding only the prompt keeps the built-in tool list.
+func TestRunConfigAgentPromptOverrideKeepsTools(t *testing.T) {
 	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"mode":"plan","modes":{"plan":{"prompt":"CUSTOM PLAN GUIDANCE"}}}`), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(`{"agent":"plan","agents":{"plan":{"prompt":"CUSTOM PLAN GUIDANCE"}}}`), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	env, _, errw, _ := fakeProviderEnv(t, []string{"-config", cfgPath, "-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
@@ -971,8 +972,99 @@ func TestRunConfigModePromptOverrideKeepsTools(t *testing.T) {
 	}
 }
 
-// /mode in the REPL switches the advertised tool set on the next turn.
-func TestRunREPLModeCommandSwitchesTools(t *testing.T) {
+func TestRunConfigAgentCanSetProviderAndModel(t *testing.T) {
+	fp := llmtest.New("fake", okStepWithUsage(1, 1))
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := `{
+		"agent":"style",
+		"agents":{
+			"style":{
+				"description":"Style review",
+				"provider":"openai",
+				"model":"gpt-5.5",
+				"allowed_tools":["read_file"],
+				"prompt":"STYLE REVIEW PROMPT"
+			}
+		}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, []string{"-config", cfgPath, "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(proxy.requests) != 1 || proxy.requests[0].Provider != "openai" || proxy.requests[0].Request.Model != "gpt-5.5" {
+		t.Fatalf("proxy requests = %+v, want openai/gpt-5.5", proxy.requests)
+	}
+	if got := toolNames(proxy.requests[0].Request); !slices.Equal(got, []string{"read_file"}) {
+		t.Fatalf("agent tools = %v, want [read_file]", got)
+	}
+	if !strings.Contains(proxy.requests[0].Request.System, "STYLE REVIEW PROMPT") {
+		t.Fatalf("agent prompt missing from system: %q", proxy.requests[0].Request.System)
+	}
+}
+
+func TestRunDelegateNamedAgentUsesDefinition(t *testing.T) {
+	fp := llmtest.New("fake",
+		llmtest.Step{
+			Events: []llm.StreamEvent{{
+				Kind:      llm.EventToolCallDone,
+				ToolID:    "call_delegate",
+				ToolName:  "delegate",
+				ToolInput: json.RawMessage(`{"task":"check style","agent":"style"}`),
+			}},
+			Stop: llm.StopToolUse,
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "style report"}},
+			Stop:   llm.StopEndTurn,
+		},
+		llmtest.Step{
+			Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "parent done"}},
+			Stop:   llm.StopEndTurn,
+		},
+	)
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := `{
+		"agents":{
+			"style":{
+				"provider":"openai",
+				"model":"gpt-5.5",
+				"allowed_tools":["read_file"],
+				"prompt":"STYLE AGENT PROMPT"
+			}
+		}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	env, out, errw, _, proxy := fakeProviderEnvWithProxy(t, []string{"-config", cfgPath, "-model", "claude-opus-4-8", "-p", "hi"}, fp, "")
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if !strings.Contains(out.String(), "parent done") {
+		t.Fatalf("parent final text missing from stdout: %q", out.String())
+	}
+	if len(proxy.requests) != 3 {
+		t.Fatalf("proxy requests = %d, want parent/tool, child, parent/final", len(proxy.requests))
+	}
+	child := proxy.requests[1]
+	if child.Provider != "openai" || child.Request.Model != "gpt-5.5" {
+		t.Fatalf("delegate child provider/model = %q/%q, want openai/gpt-5.5", child.Provider, child.Request.Model)
+	}
+	if got := toolNames(child.Request); !slices.Equal(got, []string{"read_file"}) {
+		t.Fatalf("delegate child tools = %v, want [read_file]", got)
+	}
+	if !strings.Contains(child.Request.System, "STYLE AGENT PROMPT") {
+		t.Fatalf("delegate child system missing style prompt: %q", child.Request.System)
+	}
+}
+
+// /mode remains an alias for /agent and switches the advertised tool set on the next turn.
+func TestRunREPLModeAliasSwitchesTools(t *testing.T) {
 	fp := llmtest.New("fake", okStepWithUsage(1, 1))
 	env, _, errw, _ := fakeProviderEnv(t,
 		[]string{"-model", "claude-opus-4-8"},
@@ -989,14 +1081,14 @@ func TestRunREPLModeCommandSwitchesTools(t *testing.T) {
 	if got := toolNames(fp.Requests[0]); !slices.Equal(got, want) {
 		t.Errorf("post-/mode tools = %v, want plan set %v", got, want)
 	}
-	if !strings.Contains(errw.String(), "mode switched: plan") {
+	if !strings.Contains(errw.String(), "agent switched: plan") {
 		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
 	}
 }
 
-// A resumed session restores its run mode (and thus its restricted tool set)
-// when no -mode flag overrides it.
-func TestRunResumeRestoresMode(t *testing.T) {
+// A resumed session restores its active agent (and thus its restricted tool set)
+// when no -agent flag overrides it.
+func TestRunResumeRestoresAgent(t *testing.T) {
 	dir := t.TempDir()
 	sessPath := filepath.Join(dir, "prior")
 	prior := session.Session{
@@ -1004,7 +1096,7 @@ func TestRunResumeRestoresMode(t *testing.T) {
 		Provider: "anthropic",
 		Model:    "claude-opus-4-8",
 		System:   "you are a test",
-		Mode:     "plan",
+		Agent:    "plan",
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hi"}}},
 			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Kind: llm.BlockText, Text: "hello"}}},
@@ -1052,7 +1144,7 @@ func TestRunREPLToolsCommandListsTools(t *testing.T) {
 			t.Errorf("/tools output missing built-in tool %q, got:\n%s", name, out)
 		}
 	}
-	if !strings.Contains(out, "  delegate     - Run a read-only delegate sub-agent") {
+	if !strings.Contains(out, "  delegate     - Run a configured delegate agent") {
 		t.Errorf("/tools output missing delegate, got:\n%s", out)
 	}
 	if !tools.RipgrepAvailable() {

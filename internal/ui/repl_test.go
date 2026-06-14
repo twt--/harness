@@ -39,6 +39,7 @@ func newTestApp(t *testing.T, out, errw *bytes.Buffer, fp *llmtest.FakeProvider)
 		Model:       "claude-opus-4-8",
 		BaseURL:     "https://api.anthropic.com/v1",
 		System:      "you are a test",
+		AgentName:   "auto",
 		SessionPath: filepath.Join(stateDir, "session"),
 		StateDir:    stateDir,
 	}
@@ -492,29 +493,36 @@ func TestREPLModelCommandSwitchesNextTurn(t *testing.T) {
 	}
 }
 
-func TestREPLModeCommandLists(t *testing.T) {
+func TestREPLAgentCommandLists(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake")
 	app := newTestApp(t, &out, &errw, fp)
-	app.Mode = "plan"
-	app.AvailableModes = []string{"auto", "independent", "plan"}
+	app.AgentName = "plan"
+	app.AvailableAgents = []AgentSummary{
+		{Name: "auto", Description: "Default agent"},
+		{Name: "independent", Description: "Work independently"},
+		{Name: "plan", Description: "Plan changes"},
+	}
 
-	in := strings.NewReader("/mode\n/exit\n")
+	in := strings.NewReader("/agent\n/exit\n")
 	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	got := errw.String()
 	for _, name := range []string{"auto", "independent", "plan"} {
 		if !strings.Contains(got, name) {
-			t.Errorf("/mode should list %q, errw=%q", name, got)
+			t.Errorf("/agent should list %q, errw=%q", name, got)
 		}
 	}
 	if !strings.Contains(got, "plan (current)") {
-		t.Errorf("/mode should mark the current mode, errw=%q", got)
+		t.Errorf("/agent should mark the current agent, errw=%q", got)
+	}
+	if !strings.Contains(got, "Plan changes") {
+		t.Errorf("/agent should include descriptions, errw=%q", got)
 	}
 }
 
-func TestREPLModeCommandSwitchesNextTurn(t *testing.T) {
+func TestREPLAgentCommandSwitchesNextTurn(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake", llmtest.Step{
 		Events: []llm.StreamEvent{textDelta("ok")},
@@ -525,24 +533,33 @@ func TestREPLModeCommandSwitchesNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subset: %v", err)
 	}
-	app.SwitchMode = func(name string) (ModeSelection, error) {
+	app.SwitchAgent = func(name string) (AgentSelection, error) {
 		if name != "plan" {
-			t.Fatalf("switch mode = %q, want plan", name)
+			t.Fatalf("switch agent = %q, want plan", name)
 		}
-		return ModeSelection{Name: "plan", Tools: planTools, System: "PLAN MODE PROMPT"}, nil
+		return AgentSelection{
+			Name:          "plan",
+			Tools:         planTools,
+			System:        "PLAN AGENT PROMPT",
+			Provider:      "anthropic",
+			Model:         "claude-opus-4-8",
+			RegistryModel: "anthropic:claude-opus-4-8",
+			Runtime:       fp,
+			BaseURL:       "proxy",
+		}, nil
 	}
 
-	in := strings.NewReader("/mode plan\nhello\n/exit\n")
+	in := strings.NewReader("/agent plan\nhello\n/exit\n")
 	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if app.Mode != "plan" {
-		t.Errorf("app.Mode = %q, want plan", app.Mode)
+	if app.AgentName != "plan" {
+		t.Errorf("app.AgentName = %q, want plan", app.AgentName)
 	}
-	if app.System != "PLAN MODE PROMPT" {
+	if app.System != "PLAN AGENT PROMPT" {
 		t.Errorf("app.System should update so saves capture it, got %q", app.System)
 	}
-	if !strings.Contains(errw.String(), "mode switched: plan") {
+	if !strings.Contains(errw.String(), "agent switched: plan") || !strings.Contains(errw.String(), "provider: anthropic  model: claude-opus-4-8") {
 		t.Errorf("switch should be acknowledged, errw=%q", errw.String())
 	}
 	// The post-switch turn must advertise only the plan tool set.
@@ -558,24 +575,56 @@ func TestREPLModeCommandSwitchesNextTurn(t *testing.T) {
 	}
 }
 
-func TestREPLModeCommandUnknownReportsError(t *testing.T) {
+func TestREPLModeAliasSwitchesAgent(t *testing.T) {
 	var out, errw bytes.Buffer
 	fp := llmtest.New("fake")
 	app := newTestApp(t, &out, &errw, fp)
-	app.Mode = "auto"
-	app.SwitchMode = func(name string) (ModeSelection, error) {
-		return ModeSelection{}, errors.New(`unknown mode "bogus" (available: auto, plan)`)
+	app.SwitchAgent = func(name string) (AgentSelection, error) {
+		return AgentSelection{Name: name, Tools: tools.Default(), System: "sys", Provider: "anthropic", Model: "claude-opus-4-8", Runtime: fp}, nil
 	}
 
-	in := strings.NewReader("/mode bogus\n/exit\n")
+	if code := Run(strings.NewReader("/mode plan\n/exit\n"), app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if app.AgentName != "plan" {
+		t.Fatalf("/mode alias did not switch agent, got %q", app.AgentName)
+	}
+}
+
+func TestREPLAgentCommandWarnsWhenProviderOrModelChanges(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.SwitchAgent = func(name string) (AgentSelection, error) {
+		return AgentSelection{Name: name, Tools: tools.Default(), System: "sys", Provider: "openai", Model: "gpt-5.5", Runtime: fp}, nil
+	}
+
+	if code := Run(strings.NewReader("/agent review\n/exit\n"), app, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(errw.String(), "may start without prompt cache") {
+		t.Fatalf("expected cache warning, errw=%q", errw.String())
+	}
+}
+
+func TestREPLAgentCommandUnknownReportsError(t *testing.T) {
+	var out, errw bytes.Buffer
+	fp := llmtest.New("fake")
+	app := newTestApp(t, &out, &errw, fp)
+	app.AgentName = "auto"
+	app.SwitchAgent = func(name string) (AgentSelection, error) {
+		return AgentSelection{}, errors.New(`unknown agent "bogus" (available: auto, plan)`)
+	}
+
+	in := strings.NewReader("/agent bogus\n/exit\n")
 	if code := Run(in, app, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if !strings.Contains(errw.String(), "mode switch failed") {
-		t.Errorf("unknown mode should report failure, errw=%q", errw.String())
+	if !strings.Contains(errw.String(), "agent switch failed") {
+		t.Errorf("unknown agent should report failure, errw=%q", errw.String())
 	}
-	if app.Mode != "auto" {
-		t.Errorf("failed switch should not change the mode, got %q", app.Mode)
+	if app.AgentName != "auto" {
+		t.Errorf("failed switch should not change the agent, got %q", app.AgentName)
 	}
 }
 
@@ -1025,16 +1074,16 @@ func TestREPLRefreshMCPAppliedBeforeTurn(t *testing.T) {
 		Stop:   llm.StopEndTurn,
 	})
 	app := newTestApp(t, &out, &errw, fp)
-	app.Mode = "auto"
+	app.AgentName = "auto"
 
 	refreshed := &tools.Registry{}
 	refreshed.Register(mcpRefreshTool{name: "mcp__test__fresh"})
 
-	var gotMode string
+	var gotAgent string
 	calls := 0
-	app.RefreshMCP = func(mode string) (*tools.Registry, string) {
+	app.RefreshMCP = func(agent string) (*tools.Registry, string) {
 		calls++
-		gotMode = mode
+		gotAgent = agent
 		return refreshed, "[mcp: tool list updated; 1 tools]"
 	}
 
@@ -1044,8 +1093,8 @@ func TestREPLRefreshMCPAppliedBeforeTurn(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("RefreshMCP called %d times, want 1", calls)
 	}
-	if gotMode != "auto" {
-		t.Errorf("RefreshMCP mode = %q, want auto", gotMode)
+	if gotAgent != "auto" {
+		t.Errorf("RefreshMCP agent = %q, want auto", gotAgent)
 	}
 	if len(fp.Requests) != 1 {
 		t.Fatalf("want 1 request, got %d", len(fp.Requests))

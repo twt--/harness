@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"harness/internal/agentdef"
 	"harness/internal/config"
 	"harness/internal/llm"
 	"harness/internal/llm/llmtest"
@@ -25,7 +26,6 @@ import (
 	"harness/internal/mcp"
 	"harness/internal/mcpproxy"
 	"harness/internal/mcptools"
-	"harness/internal/mode"
 	"harness/internal/tools"
 	"harness/internal/ui"
 )
@@ -458,13 +458,13 @@ func TestMCPRefresherAddsAndRemovesTools(t *testing.T) {
 		t.Fatalf("initial tools missing: %v", catalog.Names())
 	}
 
-	// A default-inheriting mode "auto": base is a built-in, so the refresher
+	// A default-inheriting agent "auto": base is a built-in, so the refresher
 	// re-unions the live MCP names (alpha + gamma after the swap).
-	modes := map[string]mode.Mode{
+	agents := map[string]agentdef.Definition{
 		"auto": {Name: "auto", AllowedTools: []string{"read_file", "mcp__test__alpha", "mcp__test__beta"}},
 	}
-	bases := mcpModeBases{"auto": {"read_file"}}
-	refresh := newMCPRefresher(conn, catalog, modes, bases, initial, slog.New(slog.DiscardHandler))
+	bases := mcpAgentBases{"auto": {"read_file"}}
+	refresh := newMCPRefresher(conn, catalog, agents, bases, initial, slog.New(slog.DiscardHandler))
 
 	// No change yet: not dirty.
 	if sel, notice := refresh("auto"); sel != nil || notice != "" {
@@ -492,21 +492,21 @@ func TestMCPRefresherAddsAndRemovesTools(t *testing.T) {
 	if !strings.Contains(notice, "tool list updated") {
 		t.Errorf("notice = %q, want refresh notice", notice)
 	}
-	// The mode's allowed list was re-derived so a later /mode Subset stays valid:
+	// The agent's allowed list was re-derived so a later /agent Subset stays valid:
 	// beta gone, gamma present.
-	if slices.Contains(modes["auto"].AllowedTools, "mcp__test__beta") {
-		t.Errorf("mode allowed list still references removed beta: %v", modes["auto"].AllowedTools)
+	if slices.Contains(agents["auto"].AllowedTools, "mcp__test__beta") {
+		t.Errorf("agent allowed list still references removed beta: %v", agents["auto"].AllowedTools)
 	}
-	if !slices.Contains(modes["auto"].AllowedTools, "mcp__test__gamma") {
-		t.Errorf("mode allowed list missing added gamma: %v", modes["auto"].AllowedTools)
+	if !slices.Contains(agents["auto"].AllowedTools, "mcp__test__gamma") {
+		t.Errorf("agent allowed list missing added gamma: %v", agents["auto"].AllowedTools)
 	}
 }
 
-// TestMCPRefresherSkipsUnaffectedWhitelistMode confirms that when the current
-// mode is an explicit whitelist that exposes no MCP tools, a list_changed does
+// TestMCPRefresherSkipsUnaffectedWhitelistAgent confirms that when the current
+// agent is an explicit whitelist that exposes no MCP tools, a list_changed does
 // not produce a (misleading) swap or notice — yet the catalog and MCP-exposing
-// modes are still re-derived so a later /mode switch stays valid.
-func TestMCPRefresherSkipsUnaffectedWhitelistMode(t *testing.T) {
+// agents are still re-derived so a later /agent switch stays valid.
+func TestMCPRefresherSkipsUnaffectedWhitelistAgent(t *testing.T) {
 	provider := &echoProvider{tools: []mcp.Tool{mcpTool("mcp__test__alpha"), mcpTool("mcp__test__beta")}}
 	g := startFakeProxy(t, provider)
 
@@ -518,36 +518,36 @@ func TestMCPRefresherSkipsUnaffectedWhitelistMode(t *testing.T) {
 		t.Fatalf("initial register: %v", err)
 	}
 
-	// "locked" is the current mode: an explicit whitelist of built-ins only, not
-	// in bases. "auto" is a default-inheriting mode in bases.
-	modes := map[string]mode.Mode{
+	// "locked" is the current agent: an explicit whitelist of built-ins only, not
+	// in bases. "auto" is a default-inheriting agent in bases.
+	agents := map[string]agentdef.Definition{
 		"locked": {Name: "locked", AllowedTools: []string{"read_file", "grep"}},
 		"auto":   {Name: "auto", AllowedTools: []string{"read_file", "mcp__test__alpha", "mcp__test__beta"}},
 	}
-	bases := mcpModeBases{"auto": {"read_file"}}
-	refresh := newMCPRefresher(conn, catalog, modes, bases, initial, slog.New(slog.DiscardHandler))
+	bases := mcpAgentBases{"auto": {"read_file"}}
+	refresh := newMCPRefresher(conn, catalog, agents, bases, initial, slog.New(slog.DiscardHandler))
 
 	// Swap beta for gamma and fire list_changed.
 	provider.setTools([]mcp.Tool{mcpTool("mcp__test__alpha"), mcpTool("mcp__test__gamma")})
 	g.notifyListChanged(t, conn)
 
-	// Current mode is the unaffected whitelist: no swap, no notice.
+	// Current agent is the unaffected whitelist: no swap, no notice.
 	if sel, notice := refresh("locked"); sel != nil || notice != "" {
-		t.Fatalf("whitelist mode refresh should be a silent no-op, got sel=%v notice=%q", sel != nil, notice)
+		t.Fatalf("whitelist agent refresh should be a silent no-op, got sel=%v notice=%q", sel != nil, notice)
 	}
 	// Side effects must still have happened: catalog dropped beta, auto re-derived.
 	if slices.Contains(catalog.Names(), "mcp__test__beta") {
 		t.Errorf("removed tool beta still in catalog: %v", catalog.Names())
 	}
-	if !slices.Contains(modes["auto"].AllowedTools, "mcp__test__gamma") || slices.Contains(modes["auto"].AllowedTools, "mcp__test__beta") {
-		t.Errorf("auto mode not re-derived: %v", modes["auto"].AllowedTools)
+	if !slices.Contains(agents["auto"].AllowedTools, "mcp__test__gamma") || slices.Contains(agents["auto"].AllowedTools, "mcp__test__beta") {
+		t.Errorf("auto agent not re-derived: %v", agents["auto"].AllowedTools)
 	}
 }
 
-// TestMCPRefresherSwapsWhitelistModeLosingTool confirms that a whitelist mode
+// TestMCPRefresherSwapsWhitelistAgentLosingTool confirms that a whitelist agent
 // that explicitly named a now-removed MCP tool DOES get a swap + notice (its
 // effective tool set shrank).
-func TestMCPRefresherSwapsWhitelistModeLosingTool(t *testing.T) {
+func TestMCPRefresherSwapsWhitelistAgentLosingTool(t *testing.T) {
 	provider := &echoProvider{tools: []mcp.Tool{mcpTool("mcp__test__alpha"), mcpTool("mcp__test__beta")}}
 	g := startFakeProxy(t, provider)
 
@@ -560,23 +560,23 @@ func TestMCPRefresherSwapsWhitelistModeLosingTool(t *testing.T) {
 	}
 
 	// "locked" explicitly whitelists mcp__test__beta, which is about to vanish.
-	modes := map[string]mode.Mode{
+	agents := map[string]agentdef.Definition{
 		"locked": {Name: "locked", AllowedTools: []string{"read_file", "mcp__test__beta"}},
 	}
-	refresh := newMCPRefresher(conn, catalog, modes, mcpModeBases{}, initial, slog.New(slog.DiscardHandler))
+	refresh := newMCPRefresher(conn, catalog, agents, mcpAgentBases{}, initial, slog.New(slog.DiscardHandler))
 
 	provider.setTools([]mcp.Tool{mcpTool("mcp__test__alpha")}) // beta removed
 	g.notifyListChanged(t, conn)
 
 	sel, notice := refresh("locked")
 	if sel == nil {
-		t.Fatalf("whitelist mode losing a tool should swap, got nil registry")
+		t.Fatalf("whitelist agent losing a tool should swap, got nil registry")
 	}
 	if slices.Contains(sel.Names(), "mcp__test__beta") {
 		t.Errorf("removed beta still in subset: %v", sel.Names())
 	}
-	if slices.Contains(modes["locked"].AllowedTools, "mcp__test__beta") {
-		t.Errorf("removed beta still persisted in whitelist mode: %v", modes["locked"].AllowedTools)
+	if slices.Contains(agents["locked"].AllowedTools, "mcp__test__beta") {
+		t.Errorf("removed beta still persisted in whitelist agent: %v", agents["locked"].AllowedTools)
 	}
 	if !strings.Contains(notice, "tool list updated") {
 		t.Errorf("notice = %q, want refresh notice", notice)
@@ -595,11 +595,11 @@ func TestMCPRefresherFailedRefreshKeepsDirtyForRetry(t *testing.T) {
 		t.Fatalf("initial register: %v", err)
 	}
 
-	modes := map[string]mode.Mode{
+	agents := map[string]agentdef.Definition{
 		"auto": {Name: "auto", AllowedTools: []string{"read_file", "mcp__test__alpha"}},
 	}
-	bases := mcpModeBases{"auto": {"read_file"}}
-	refresh := newMCPRefresher(conn, catalog, modes, bases, initial, slog.New(slog.DiscardHandler))
+	bases := mcpAgentBases{"auto": {"read_file"}}
+	refresh := newMCPRefresher(conn, catalog, agents, bases, initial, slog.New(slog.DiscardHandler))
 
 	provider.setTools([]mcp.Tool{mcpTool("mcp__test__beta")})
 	provider.failOnce()
@@ -638,34 +638,34 @@ func TestMCPRefresherNotDirtyFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	modes := map[string]mode.Mode{"auto": {Name: "auto", AllowedTools: catalog.Names()}}
-	refresh := newMCPRefresher(conn, catalog, modes, mcpModeBases{}, sum, slog.New(slog.DiscardHandler))
+	agents := map[string]agentdef.Definition{"auto": {Name: "auto", AllowedTools: catalog.Names()}}
+	refresh := newMCPRefresher(conn, catalog, agents, mcpAgentBases{}, sum, slog.New(slog.DiscardHandler))
 	if sel, notice := refresh("auto"); sel != nil || notice != "" {
 		t.Fatalf("clean conn should yield no change, got sel=%v notice=%q", sel != nil, notice)
 	}
 }
 
-// TestAugmentModesWithMCP confirms default-inheriting modes gain the MCP tool
-// names while explicit-whitelist modes are left untouched.
-func TestAugmentModesWithMCP(t *testing.T) {
-	def := mode.DefaultTools()
-	modes := map[string]mode.Mode{
+// TestAugmentAgentsWithMCP confirms default-inheriting agents gain the MCP tool
+// names while explicit-whitelist agents are left untouched.
+func TestAugmentAgentsWithMCP(t *testing.T) {
+	def := agentdef.DefaultTools()
+	agents := map[string]agentdef.Definition{
 		"auto":   {Name: "auto", AllowedTools: slices.Clone(def)},
 		"locked": {Name: "locked", AllowedTools: []string{"read_file", "grep"}},
 	}
-	augmentModesWithMCP(modes, []string{"mcp__test__echo"})
+	augmentAgentsWithMCP(agents, []string{"mcp__test__echo"})
 
-	if !slices.Contains(modes["auto"].AllowedTools, "mcp__test__echo") {
-		t.Errorf("auto mode should gain mcp tool, got %v", modes["auto"].AllowedTools)
+	if !slices.Contains(agents["auto"].AllowedTools, "mcp__test__echo") {
+		t.Errorf("auto agent should gain mcp tool, got %v", agents["auto"].AllowedTools)
 	}
-	if slices.Contains(modes["locked"].AllowedTools, "mcp__test__echo") {
-		t.Errorf("whitelist mode should NOT gain mcp tool, got %v", modes["locked"].AllowedTools)
+	if slices.Contains(agents["locked"].AllowedTools, "mcp__test__echo") {
+		t.Errorf("whitelist agent should NOT gain mcp tool, got %v", agents["locked"].AllowedTools)
 	}
 
 	// No MCP names is a no-op (the MCP-disabled default).
-	before := slices.Clone(modes["auto"].AllowedTools)
-	augmentModesWithMCP(modes, nil)
-	if !slices.Equal(modes["auto"].AllowedTools, before) {
+	before := slices.Clone(agents["auto"].AllowedTools)
+	augmentAgentsWithMCP(agents, nil)
+	if !slices.Equal(agents["auto"].AllowedTools, before) {
 		t.Errorf("nil names should be a no-op")
 	}
 }

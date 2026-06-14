@@ -74,7 +74,7 @@ internal/sse             generic SSE frame reader
 internal/retry           backoff + jitter + Retry-After parsing
 internal/agent           turn loop, interrupt state machine, compaction
 internal/tools           Tool interface, registry, dispatch (recover + central truncation), built-in tools
-internal/delegate        read-only sub-agent tool; starts child agents without an import cycle
+internal/delegate        configured child-agent tool; starts child agents without an import cycle
 internal/session         session state, replay log, compaction archives, tool artifacts
 internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for proxy setup/pricing metadata
@@ -444,11 +444,12 @@ Precedence: **flags > environment > config file > built-in defaults.**
   `none`. Provider API keys and provider base URLs are resolved only by
   `harness-model-proxy`.
 - Config file (optional): `~/.config/harness/config.json` — provider, model,
-  model_proxy_url, run modes, flag defaults, and config-only context-efficiency knobs:
+  model_proxy_url, agent definitions, flag defaults, and config-only
+  context-efficiency knobs:
   `agents_md_warn_bytes`, `tool_result_max_bytes`, `tool_result_max_lines`,
   `read_file_default_limit`, `compact_keep_turns`, `compact_summary_max_tokens`, and
   `compact_tool_result_max_bytes`, plus `delegate_max_turns` (default `20`) for the
-  read-only delegate tool.
+  delegate tool.
 - `harness-model-proxy --setup` creates a proxy config in the default proxy directory,
   appends a new provider config to an existing proxy config, or updates an existing
   configured provider. It fetches models.dev provider metadata, falls back to a
@@ -834,7 +835,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 |---|---|---|
 | `args` | array of strings, required | argv after `git`, starting with the subcommand |
 
-- A read-only sibling of `git` (§9.9) used by restricted run modes (§14). It is
+- A read-only sibling of `git` (§9.9) used by restricted agents (§14). It is
   registered only when git is installed and reuses the same `--no-pager` /
   `GIT_TERMINAL_PROMPT=0` plumbing.
 - The advertised shape is `{"args":[...]}`. The decoder also accepts a bare
@@ -858,7 +859,7 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 | `name` | string, required | relative file name (subdirectories allowed) |
 | `content` | string, required | full file content (empty allowed) |
 
-- Gives read-only run modes (§14, `plan`) a place to draft notes without project
+- Gives read-only agents (§14, `plan`) a place to draft notes without project
   write access. Files are written under one `os.MkdirTemp` directory created lazily on
   first use and shared across calls; they are kept after exit.
 - `name` must be relative and stay inside the temp directory: absolute paths and any
@@ -866,23 +867,22 @@ func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall) llm.ToolResu
 
 ### 9.13 `delegate`
 
-> Run a read-only delegate sub-agent on a self-contained research or inspection task and return its final report.
+> Run a configured delegate agent on a self-contained task and return its final report.
 
 | param | type | notes |
 |---|---|---|
 | `task` | string, required | complete task for the child agent |
+| `agent` | string | optional configured agent name; omitted uses the current active agent |
 | `max_turns` | int | optional per-call model-turn cap; capped at `delegate_max_turns` |
 
 - Implemented in `internal/delegate`, not `internal/tools`, to avoid an import cycle:
   the delegate tool starts a child `agent.Agent`, while `internal/agent` already
   depends on `internal/tools` for dispatch.
-- Child agents start with an empty transcript, inherit the current provider, model,
-  reasoning settings, context-window override, and fully composed system prompt, then
-  receive an extra read-only delegate instruction.
-- Child tools are intentionally narrower than the parent mode: `read_file`, `list_dir`,
-  `grep`, optional `rg`, `web_fetch`, and optional `git_readonly`. `delegate`,
-  `write_tmp_file`, and all project-writing tools are excluded, so v1 cannot recurse or
-  mutate the workspace through child agents.
+- Child agents start with an empty transcript and use exactly the requested agent
+  definition's prompt, allowed tools, and optional provider/model. If no `agent` is
+  provided, the child uses the current active agent/runtime.
+- There is no delegate-specific read-only filtering or recursion filtering. If the
+  chosen agent exposes mutating tools or `delegate`, the child receives them.
 - The parent transcript records only the normal `delegate` tool call and compact result.
   Child transcripts are not persisted into the parent session. Child token usage is
   reported through `MeteredTool` and folded into the parent turn/session usage totals.
@@ -1005,6 +1005,9 @@ Lines starting with `/` are commands; `//` escapes a literal slash.
 | `/model` | choose a configured provider, then choose one of its configured models |
 | `/model <id>` | switch subsequent turns to model `<id>` |
 | `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
+| `/agent` | list agents and descriptions, marking the current one |
+| `/agent <name>` | switch the active agent |
+| `/mode`, `/mode <name>` | alias for `/agent` |
 
 Anthropic usage does not currently expose a separate reasoning-token field;
 extended thinking is counted in output tokens, so the reasoning total remains
@@ -1026,6 +1029,7 @@ zero for Anthropic sessions.
 -default-context-window <n>
 -context-window <n>
 -reasoning-effort <level>
+-agent <name>
 -v                show tool result snippets
 -tool-stream      show live tool-call progress (default true)
 -q, --quiet       suppress informational diagnostics
@@ -1050,13 +1054,13 @@ zero for Anthropic sessions.
 
 ```go
 type Session struct {
-    Version  int           `json:"version"` // 2
+    Version  int           `json:"version"` // 3
     Provider string        `json:"provider"`
     Model    string        `json:"model"`
     Created  time.Time     `json:"created"`
     Updated  time.Time     `json:"updated"`
     System   string        `json:"system"`
-    Mode     string        `json:"mode,omitempty"`
+    Agent    string        `json:"agent,omitempty"`
     Turn     int           `json:"turn,omitempty"`
     Messages []llm.Message `json:"messages"`
     Usage    UsageTotals   `json:"usage"`
@@ -1132,34 +1136,44 @@ injectable), the retry clock, and `ValidateTranscript`.
 Cross-cutting: `ValidateTranscript` is asserted after every transcript mutation in every
 test that touches one.
 
-## 14. Run modes (`internal/mode`)
+## 14. Agent definitions (`internal/agentdef`)
 
-A **run mode** is a named bundle of an allowed-tool set and extra system-prompt
-instructions. It lets one harness behave as a collaborative planner, an autonomous
-worker, or the wide-open default without separate binaries.
+An **agent definition** is a named bundle of an allowed-tool set, optional
+provider/model, description, and extra system-prompt instructions. It lets one
+harness behave as a collaborative planner, autonomous worker, specialized
+reviewer, or the wide-open default without separate binaries.
 
-- **Selection** follows the standard precedence (§7): `-mode` flag > `HARNESS_MODE`
-  > `mode` in the config file > the built-in default `auto`. An empty value means
-  "unspecified", so a resumed session's saved mode (§11) can supply it before the
-  `auto` fallback. `/mode <name>` switches at runtime; `/mode` lists.
+- **Selection** follows the standard precedence (§7): `-agent` flag >
+  `HARNESS_AGENT` > `agent` in the config file > the built-in default `auto`. An
+  empty value means "unspecified", so a resumed session's saved agent (§11) can
+  supply it before the `auto` fallback. `/agent <name>` switches at runtime;
+  `/agent` lists. `/mode` is a REPL alias only.
 - **Built-ins:** `auto` (all available tools including `delegate`, no extra prompt),
   `plan` (inspection tools including optional `rg` when installed, optional
   `git_readonly` when git is installed, `write_tmp_file`, and `delegate`, plus a
   planning prompt), and `independent` (all available tools including `delegate`, a
   complete-without-asking prompt).
-- **Config `modes`** entries **field-level merge** onto a built-in of the same name:
-  a non-empty `allowed_tools` or `prompt` replaces, an omitted field inherits. A new
-  name defines a new mode (no `allowed_tools` ⇒ the full default set). Mode prompts
-  accept `@file` and are expanded once at startup (fail-fast).
+- **Config `agents`** entries **field-level merge** onto a built-in of the same name:
+  a non-empty `description`, `allowed_tools`, `prompt`, `provider`, or `model`
+  replaces, and an omitted field inherits. A new name defines a new agent (no
+  `allowed_tools` ⇒ the full default set). Agent prompts accept `@file` and are
+  expanded once at startup (fail-fast).
+- **Provider/model:** an agent without provider/model uses the current session
+  provider/model. An agent with `model` only resolves using the current provider as
+  preference. An agent with `provider` and `model` requires that exact catalog pair.
+  `/agent <name>` prints the provider/model line and warns when the switch changes
+  provider or model because prompt cache may start cold and increase token usage or
+  cost.
 - **Tool gating** is the harness's one departure from the no-sandbox stance (§2): the
-  mode's tool set is realized by `tools.Registry.Subset`, building a registry that
+  agent's tool set is realized by `tools.Registry.Subset`, building a registry that
   holds only the allowed tools. Because the agent advertises (`Specs`) and dispatches
   from the same registry, an excluded tool is neither offered nor callable. The
   underlying tools still assume an external sandbox for real isolation; gating only
-  shapes what each mode exposes. `Agent.SetTools` swaps the registry for `/mode`.
-- The mode prompt is appended to the system prompt as the final section, so it layers
-  on top of the builtin instructions, env block, AGENTS.md, and `-system` text. The
-  active mode is saved with the session and restored on `-resume` (flags win).
+  shapes what each agent exposes. `Agent.SetTools` swaps the registry for `/agent`.
+- The agent prompt is appended to the system prompt as the final section, so it
+  layers on top of the builtin instructions, env block, AGENTS.md, and `-system`
+  text. The active agent is saved with the session and restored on `-resume`
+  (flags win).
 
 ## 15. MCP proxy (optional)
 

@@ -163,7 +163,7 @@ func buildRequest(req llm.Request, contextWindow int) wireRequest {
 
 	// Third breakpoint (of the 4 allowed): the tool-schema array is the static
 	// prefix; caching it separately survives system-prompt changes such as a
-	// run-mode switch (spec §7).
+	// agent switch (spec §7).
 	if n := len(w.Tools); n > 0 {
 		w.Tools[n-1].CacheControl = ephemeral
 	}

@@ -20,7 +20,7 @@ const writeTmpFileSchema = `{
 }`
 
 // writeTmpFile writes scratch files under one per-process temp directory,
-// giving restricted modes (e.g. plan) a place to draft notes without write
+// giving restricted agents (e.g. plan) a place to draft notes without write
 // access to the project. It is the only stateful tool: the directory is
 // created lazily on first use and shared across calls, so a single instance
 // must be registered per process (Catalog does this).

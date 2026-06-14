@@ -22,11 +22,14 @@
   "no_color": false,
   "timestamps": "short",
   "prompt": "> ",
-  "mode": "auto",
-  "modes": {
-    "example_review": {
+  "agent": "auto",
+  "agents": {
+    "security_review": {
+      "description": "Review the current changes for concrete security issues.",
       "allowed_tools": ["read_file", "list_dir", "grep", "git_readonly"],
-      "prompt": "Review the current changes and report only concrete findings with file and line references."
+      "provider": "",
+      "model": "",
+      "prompt": "Review the current changes for security issues and report only concrete findings with file and line references."
     }
   },
   "mcp": {

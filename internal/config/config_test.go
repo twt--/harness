@@ -494,7 +494,7 @@ func TestBadMaxTurnsValueIsUsageError(t *testing.T) {
 var helpFlags = []string{
 	"-p", "-provider", "-model", "-model-proxy-url", "-system", "-system-override",
 	"-no-env", "-resume", "-session", "-max-turns", "-default-context-window", "-context-window",
-	"-reasoning-effort", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
+	"-reasoning-effort", "-agent", "-v", "-tool-stream", "-q", "-quiet", "-log-level", "-no-color", "-config", "-prompt",
 }
 
 // -h and --help are help requests, not usage errors: Load reports ErrHelp so the
@@ -543,7 +543,7 @@ func TestSaveSelectedModelCreatesConfig(t *testing.T) {
 }
 
 func TestSaveSelectedModelPreservesOtherConfigKeys(t *testing.T) {
-	path := writeConfig(t, `{"mode":"plan","max_turns":7,"provider":"old","model":"old-model"}`)
+	path := writeConfig(t, `{"agent":"plan","max_turns":7,"provider":"old","model":"old-model"}`)
 	if err := SaveSelectedModel(path, "anthropic", "claude-opus-4-8"); err != nil {
 		t.Fatalf("SaveSelectedModel: %v", err)
 	}
@@ -554,8 +554,8 @@ func TestSaveSelectedModelPreservesOtherConfigKeys(t *testing.T) {
 	if c.Provider != "anthropic" || c.Model != "claude-opus-4-8" {
 		t.Fatalf("provider/model = %q/%q, want anthropic/claude-opus-4-8", c.Provider, c.Model)
 	}
-	if c.Mode != "plan" || c.MaxTurns != 7 {
-		t.Fatalf("preserved mode/max_turns = %q/%d, want plan/7", c.Mode, c.MaxTurns)
+	if c.Agent != "plan" || c.MaxTurns != 7 {
+		t.Fatalf("preserved agent/max_turns = %q/%d, want plan/7", c.Agent, c.MaxTurns)
 	}
 }
 
@@ -597,35 +597,35 @@ func TestMissingExplicitConfigFileIsError(t *testing.T) {
 	}
 }
 
-func TestModePrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
+func TestAgentPrecedenceFlagBeatsEnvBeatsFile(t *testing.T) {
 	checkPrecedence(t, precedenceCase[string]{
-		file:     `{"mode":"plan"}`,
-		env:      map[string]string{"HARNESS_MODE": "independent"},
+		file:     `{"agent":"plan"}`,
+		env:      map[string]string{"HARNESS_AGENT": "independent"},
 		baseArgs: []string{"-model", "gpt-5.5"},
-		flagArgs: []string{"-mode", "AUTO"},
-		got:      func(c Config) string { return c.Mode },
+		flagArgs: []string{"-agent", "AUTO"},
+		got:      func(c Config) string { return c.Agent },
 		wantFlag: "auto",
 		wantEnv:  "independent",
 		wantFile: "plan",
 	})
 }
 
-// An unspecified mode stays empty so main can distinguish "not specified"
-// (session resume may supply the mode) from an explicit choice.
-func TestModeUnspecifiedIsEmpty(t *testing.T) {
+// An unspecified agent stays empty so main can distinguish "not specified"
+// (session resume may supply the agent) from an explicit choice.
+func TestAgentUnspecifiedIsEmpty(t *testing.T) {
 	c, err := Load([]string{"-model", "gpt-5.5"}, noEnv, "")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.Mode != "" {
-		t.Fatalf("mode %q, want empty when unspecified", c.Mode)
+	if c.Agent != "" {
+		t.Fatalf("agent %q, want empty when unspecified", c.Agent)
 	}
 }
 
-func TestModesObjectDecodes(t *testing.T) {
+func TestAgentsObjectDecodes(t *testing.T) {
 	cfgPath := writeConfig(t, `{
-		"modes": {
-			"review": {"allowed_tools": ["read_file", "grep"], "prompt": "review the diff"},
+		"agents": {
+			"review": {"description":"Review changes", "allowed_tools": ["read_file", "grep"], "prompt": "review the diff", "provider":"openai", "model":"gpt-5.5"},
 			"plan": {"prompt": "custom plan prompt"}
 		}
 	}`)
@@ -633,9 +633,12 @@ func TestModesObjectDecodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	review, ok := c.Modes["review"]
+	review, ok := c.Agents["review"]
 	if !ok {
-		t.Fatal("modes.review not decoded")
+		t.Fatal("agents.review not decoded")
+	}
+	if review.Description != "Review changes" {
+		t.Errorf("review.Description = %q", review.Description)
 	}
 	if len(review.AllowedTools) != 2 || review.AllowedTools[0] != "read_file" || review.AllowedTools[1] != "grep" {
 		t.Errorf("review.AllowedTools = %v", review.AllowedTools)
@@ -643,11 +646,14 @@ func TestModesObjectDecodes(t *testing.T) {
 	if review.Prompt != "review the diff" {
 		t.Errorf("review.Prompt = %q", review.Prompt)
 	}
-	if c.Modes["plan"].Prompt != "custom plan prompt" {
-		t.Errorf("plan.Prompt = %q", c.Modes["plan"].Prompt)
+	if review.Provider != "openai" || review.Model != "gpt-5.5" {
+		t.Errorf("review provider/model = %q/%q", review.Provider, review.Model)
 	}
-	if len(c.Modes["plan"].AllowedTools) != 0 {
-		t.Errorf("plan.AllowedTools should be empty (inherit), got %v", c.Modes["plan"].AllowedTools)
+	if c.Agents["plan"].Prompt != "custom plan prompt" {
+		t.Errorf("plan.Prompt = %q", c.Agents["plan"].Prompt)
+	}
+	if len(c.Agents["plan"].AllowedTools) != 0 {
+		t.Errorf("plan.AllowedTools should be empty (inherit), got %v", c.Agents["plan"].AllowedTools)
 	}
 }
 

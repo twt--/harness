@@ -38,7 +38,20 @@ func TestDelegateRunsChildAgentAndReturnsFinalReport(t *testing.T) {
 		Registry: llm.NewRegistry(nil),
 		System:   "parent system",
 	})
-	tool := New(state.Snapshot, childTools, Options{MaxTurns: 3})
+	tool := New(state.Snapshot, func(runtime Runtime, name string) (Launch, error) {
+		if name != "" {
+			t.Fatalf("delegate agent name = %q, want empty", name)
+		}
+		return Launch{
+			Provider:      runtime.Provider,
+			Model:         runtime.Model,
+			ContextWindow: runtime.ContextWindow,
+			Registry:      runtime.Registry,
+			Reasoning:     runtime.Reasoning,
+			System:        runtime.System,
+			Tools:         childTools,
+		}, nil
+	}, Options{MaxTurns: 3})
 
 	result, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"inspect the repo"}`))
 	if err != nil {
@@ -57,8 +70,8 @@ func TestDelegateRunsChildAgentAndReturnsFinalReport(t *testing.T) {
 	if req.Model != "claude-opus-4-8" {
 		t.Fatalf("request model = %q", req.Model)
 	}
-	if !strings.Contains(req.System, "parent system") || !strings.Contains(req.System, "read-only delegate sub-agent") {
-		t.Fatalf("child system missing parent or delegate instructions: %q", req.System)
+	if req.System != "parent system" {
+		t.Fatalf("child system = %q, want exact parent system", req.System)
 	}
 	if len(req.Messages) != 1 || req.Messages[0].Content[0].Text != "inspect the repo" {
 		t.Fatalf("child transcript = %+v", req.Messages)
@@ -68,13 +81,20 @@ func TestDelegateRunsChildAgentAndReturnsFinalReport(t *testing.T) {
 	}
 }
 
-func TestDelegateRejectsRecursiveChildToolSet(t *testing.T) {
+func TestDelegateCapsMaxTurns(t *testing.T) {
 	childTools := &tools.Registry{}
 	childTools.Register(fakeChildTool{name: "read_file", out: "ok"})
 	fp := llmtest.New("fake", llmtest.Step{Stop: llm.StopEndTurn})
 	tool := New(func() Runtime {
 		return Runtime{Provider: fp, Model: "m", Registry: llm.NewRegistry(nil)}
-	}, childTools, Options{})
+	}, func(runtime Runtime, name string) (Launch, error) {
+		return Launch{
+			Provider: runtime.Provider,
+			Model:    runtime.Model,
+			Registry: runtime.Registry,
+			Tools:    childTools,
+		}, nil
+	}, Options{})
 
 	if _, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"go","max_turns":0}`)); err == nil {
 		t.Fatalf("explicit max_turns=0 should be rejected")
@@ -87,9 +107,40 @@ func TestDelegateRejectsRecursiveChildToolSet(t *testing.T) {
 	if !strings.Contains(result.Text, "[delegate: 1 model turn") {
 		t.Fatalf("delegate output = %q", result.Text)
 	}
-	for _, spec := range fp.Requests[0].Tools {
-		if spec.Name == "delegate" {
-			t.Fatalf("delegate should not be advertised to child agents: %+v", fp.Requests[0].Tools)
-		}
+}
+
+func TestDelegatePassesRequestedAgentToResolver(t *testing.T) {
+	childTools := &tools.Registry{}
+	childTools.Register(fakeChildTool{name: "write_file", out: "ok"})
+	fp := llmtest.New("fake", llmtest.Step{
+		Events: []llm.StreamEvent{{Kind: llm.EventTextDelta, Text: "style report"}},
+		Stop:   llm.StopEndTurn,
+	})
+	state := NewState(Runtime{Provider: fp, Model: "parent-model", Registry: llm.NewRegistry(nil)})
+	var gotName string
+	tool := New(state.Snapshot, func(runtime Runtime, name string) (Launch, error) {
+		gotName = name
+		return Launch{
+			Provider: runtime.Provider,
+			Model:    "style-model",
+			Registry: runtime.Registry,
+			System:   "style system",
+			Tools:    childTools,
+		}, nil
+	}, Options{})
+
+	_, err := tool.RunMetered(context.Background(), json.RawMessage(`{"task":"check style","agent":"style_review"}`))
+	if err != nil {
+		t.Fatalf("RunMetered: %v", err)
+	}
+	if gotName != "style_review" {
+		t.Fatalf("resolver agent = %q, want style_review", gotName)
+	}
+	req := fp.Requests[0]
+	if req.Model != "style-model" || req.System != "style system" {
+		t.Fatalf("request model/system = %q/%q", req.Model, req.System)
+	}
+	if len(req.Tools) != 1 || req.Tools[0].Name != "write_file" {
+		t.Fatalf("child tools = %+v, want configured write_file", req.Tools)
 	}
 }

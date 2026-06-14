@@ -1,4 +1,4 @@
-package mode
+package agentdef
 
 import (
 	"slices"
@@ -14,11 +14,14 @@ func TestDefaultIsAuto(t *testing.T) {
 func TestBuiltins(t *testing.T) {
 	m := Builtins()
 	if len(m) != 3 {
-		t.Fatalf("want 3 builtin modes, got %d: %v", len(m), Names(m))
+		t.Fatalf("want 3 builtin agents, got %d: %v", len(m), Names(m))
 	}
-	for name, mm := range m {
-		if mm.Name != name {
-			t.Errorf("mode %q has Name %q", name, mm.Name)
+	for name, a := range m {
+		if a.Name != name {
+			t.Errorf("agent %q has Name %q", name, a.Name)
+		}
+		if a.Description == "" {
+			t.Errorf("agent %q has empty description", name)
 		}
 	}
 
@@ -55,18 +58,18 @@ func TestResolveNilKeepsBuiltins(t *testing.T) {
 	}
 }
 
-func TestPlanModeOmitsGitReadonlyWhenGitMissing(t *testing.T) {
+func TestPlanAgentOmitsGitReadonlyWhenGitMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	plan := Builtins()["plan"]
 	if slices.Contains(plan.AllowedTools, "git_readonly") {
-		t.Fatalf("plan mode includes unavailable git_readonly: %v", plan.AllowedTools)
+		t.Fatalf("plan agent includes unavailable git_readonly: %v", plan.AllowedTools)
 	}
 }
 
 // Field-level merge: overriding only the prompt keeps the built-in tool list.
 func TestResolvePromptOnlyOverrideKeepsTools(t *testing.T) {
-	m := Resolve(map[string]FileMode{"plan": {Prompt: "custom plan prompt"}})
+	m := Resolve(map[string]FileDefinition{"plan": {Prompt: "custom plan prompt"}})
 	plan := m["plan"]
 	if plan.Prompt != "custom plan prompt" {
 		t.Errorf("Prompt = %q", plan.Prompt)
@@ -78,7 +81,7 @@ func TestResolvePromptOnlyOverrideKeepsTools(t *testing.T) {
 
 // Field-level merge: overriding only the tools keeps the built-in prompt.
 func TestResolveToolsOnlyOverrideKeepsPrompt(t *testing.T) {
-	m := Resolve(map[string]FileMode{"plan": {AllowedTools: []string{"read_file"}}})
+	m := Resolve(map[string]FileDefinition{"plan": {AllowedTools: []string{"read_file"}}})
 	plan := m["plan"]
 	if !slices.Equal(plan.AllowedTools, []string{"read_file"}) {
 		t.Errorf("tools = %v", plan.AllowedTools)
@@ -88,12 +91,30 @@ func TestResolveToolsOnlyOverrideKeepsPrompt(t *testing.T) {
 	}
 }
 
-// A new mode with no allowed_tools inherits the default tool set.
-func TestResolveNewModeInheritsDefaultTools(t *testing.T) {
-	m := Resolve(map[string]FileMode{"review": {Prompt: "review the diff"}})
+func TestResolveMetadataOverrideKeepsOtherFields(t *testing.T) {
+	m := Resolve(map[string]FileDefinition{"plan": {
+		Description: "custom desc",
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+	}})
+	plan := m["plan"]
+	if plan.Description != "custom desc" || plan.Provider != "openai" || plan.Model != "gpt-5.5" {
+		t.Fatalf("metadata = description %q provider %q model %q", plan.Description, plan.Provider, plan.Model)
+	}
+	if plan.Prompt != Builtins()["plan"].Prompt {
+		t.Errorf("prompt not preserved: %q", plan.Prompt)
+	}
+	if !slices.Equal(plan.AllowedTools, Builtins()["plan"].AllowedTools) {
+		t.Errorf("tool list not preserved: %v", plan.AllowedTools)
+	}
+}
+
+// A new agent with no allowed_tools inherits the default tool set.
+func TestResolveNewAgentInheritsDefaultTools(t *testing.T) {
+	m := Resolve(map[string]FileDefinition{"review": {Prompt: "review the diff"}})
 	rev, ok := m["review"]
 	if !ok {
-		t.Fatal("new mode not resolved")
+		t.Fatal("new agent not resolved")
 	}
 	if rev.Name != "review" || rev.Prompt != "review the diff" {
 		t.Errorf("rev = %+v", rev)
@@ -103,8 +124,8 @@ func TestResolveNewModeInheritsDefaultTools(t *testing.T) {
 	}
 }
 
-func TestResolveNewModeWithExplicitTools(t *testing.T) {
-	m := Resolve(map[string]FileMode{"ro": {AllowedTools: []string{"read_file", "grep"}}})
+func TestResolveNewAgentWithExplicitTools(t *testing.T) {
+	m := Resolve(map[string]FileDefinition{"ro": {AllowedTools: []string{"read_file", "grep"}}})
 	ro := m["ro"]
 	if !slices.Equal(ro.AllowedTools, []string{"read_file", "grep"}) {
 		t.Errorf("tools = %v", ro.AllowedTools)
@@ -115,7 +136,7 @@ func TestResolveNewModeWithExplicitTools(t *testing.T) {
 }
 
 func TestNamesSorted(t *testing.T) {
-	m := Resolve(map[string]FileMode{"zz": {}, "aa": {}})
+	m := Resolve(map[string]FileDefinition{"zz": {}, "aa": {}})
 	if got := Names(m); !slices.Equal(got, []string{"aa", "auto", "independent", "plan", "zz"}) {
 		t.Errorf("Names = %v", got)
 	}

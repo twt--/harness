@@ -154,11 +154,11 @@ func DefaultWithOptions(opts Options) (*Registry, []DisabledTool) {
 }
 
 // DefaultNames returns the names of the Default tool set in registration
-// order. Run-mode definitions use it as the baseline allowed-tool list.
+// order. Agent definitions use it as the baseline allowed-tool list.
 func DefaultNames() []string { return Default().Names() }
 
 // Catalog returns a Registry with every constructible tool: the Default set
-// plus the mode-oriented tools (git_readonly, write_tmp_file), which run modes
+// plus the agent-oriented tools (git_readonly, write_tmp_file), which agent definitions
 // select from by name. Build it once per process — write_tmp_file holds the
 // per-run temp directory.
 func Catalog() *Registry {

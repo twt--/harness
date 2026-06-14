@@ -30,7 +30,7 @@ first, and provider-neutral.
 - `internal/llm/factory`: selects dialects; keep separate to avoid import cycles.
 - `internal/agent`: turn loop, tool orchestration, interrupts, compaction.
 - `internal/tools`: `Tool` interface, registry/subsets, dispatch recovery/truncation, built-ins. Inputs are `json.RawMessage`.
-- `internal/config`, `internal/mode`, `internal/modelsdev`: config precedence, run modes, models.dev setup/catalog metadata.
+- `internal/config`, `internal/agentdef`, `internal/modelsdev`: config precedence, agent definitions, models.dev setup/catalog metadata.
 - `internal/session`: transcripts, replay logs, compaction archives, tool artifacts. New persistence should write temp-file then rename.
 - `internal/ui`, `internal/term`, `internal/logging`: REPL/one-shot rendering, terminal behavior, plaintext slog. ANSI belongs here only.
 - `internal/sysprompt`, `internal/skills`: built-in prompt/env context and skill discovery/disclosure.
@@ -62,7 +62,7 @@ first, and provider-neutral.
 - Public flags/usage: `README.md` and `cmd/harness/main.go` usage text.
 - Tool behavior/schemas: `docs/design.md` section 9.
 - System prompt behavior: `internal/sysprompt` tests/docs; consider compaction impact.
-- Run modes: `README.md` and `docs/design.md` section 14.
+- Agent definitions: `README.md` and `docs/design.md` section 14.
 - MCP proxy: `README.md` ("MCP servers"), `docs/design.md` sections 9.14 and 15.
 - Smoke workflow changes: `docs/smoke.md`.
 

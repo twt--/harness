@@ -23,7 +23,7 @@ import (
 )
 
 // Version is the on-disk schema version.
-const Version = 2
+const Version = 3
 
 const (
 	stateFile = "state.json"
@@ -38,7 +38,7 @@ type Session struct {
 	Created  time.Time     `json:"created"`
 	Updated  time.Time     `json:"updated"`
 	System   string        `json:"system"`
-	Mode     string        `json:"mode,omitempty"`
+	Agent    string        `json:"agent,omitempty"`
 	Turn     int           `json:"turn,omitempty"`
 	Messages []llm.Message `json:"messages"`
 	Usage    UsageTotals   `json:"usage"`

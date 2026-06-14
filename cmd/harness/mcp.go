@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"harness/internal/agentdef"
 	"harness/internal/config"
 	"harness/internal/logging"
 	"harness/internal/mcp"
 	"harness/internal/mcpproxy"
 	"harness/internal/mcptools"
-	"harness/internal/mode"
 	"harness/internal/tools"
 )
 
@@ -63,27 +63,27 @@ func setupMCP(ctx context.Context, mcpCfg config.MCPConfig, catalog *tools.Regis
 	return c, sum, func() { _ = c.Close() }, true
 }
 
-// augmentModesWithMCP appends the discovered MCP tool names to every mode whose
+// augmentAgentsWithMCP appends the discovered MCP tool names to every agent whose
 // allowed-tool set is the inherited default (auto, independent, and any config
-// mode without an explicit allowed_tools whitelist). Modes with an explicit
+// agent without an explicit allowed_tools whitelist). Agents with an explicit
 // whitelist are left untouched, so they opt out of MCP tools by construction —
-// matching the design's mode/allowed_tools contract. It is a no-op when there
+// matching the agent/allowed_tools contract. It is a no-op when there
 // are no MCP names.
 //
-// Classification is slices.Equal against mode.DefaultTools(): a config mode that
+// Classification is slices.Equal against agentdef.DefaultTools(): a config agent that
 // explicitly lists exactly the default tools in default order is indistinguishable
 // from an inheriting one and is treated as default-inheriting, so it gains MCP
-// tools. This edge is benign and accepted (such a mode wanted the full default
+// tools. This edge is benign and accepted (such an agent wanted the full default
 // set anyway).
-func augmentModesWithMCP(modes map[string]mode.Mode, mcpNames []string) {
+func augmentAgentsWithMCP(agents map[string]agentdef.Definition, mcpNames []string) {
 	if len(mcpNames) == 0 {
 		return
 	}
-	def := mode.DefaultTools()
-	for name, m := range modes {
-		if slices.Equal(m.AllowedTools, def) {
-			m.AllowedTools = append(slices.Clone(m.AllowedTools), mcpNames...)
-			modes[name] = m
+	def := agentdef.DefaultTools()
+	for name, a := range agents {
+		if slices.Equal(a.AllowedTools, def) {
+			a.AllowedTools = append(slices.Clone(a.AllowedTools), mcpNames...)
+			agents[name] = a
 		}
 	}
 }
@@ -104,21 +104,21 @@ func isHTTPProxy(proxy string) bool {
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
-// mcpModeBases is the per-mode base allowed-tool list for every default-
-// inheriting mode (the modes that expose MCP tools). A mode absent from the map
+// mcpAgentBases is the per-agent base allowed-tool list for every default-
+// inheriting agent (the agents that expose MCP tools). An agent absent from the map
 // is an explicit whitelist that opts out of MCP tools. Built once at startup
-// from the resolved modes, it lets a refresh re-derive each such mode's full
+// from the resolved agents, it lets a refresh re-derive each such agent's full
 // allowed list (base ∪ live MCP names) without re-classifying.
-type mcpModeBases map[string][]string
+type mcpAgentBases map[string][]string
 
-// defaultInheritingModeBases returns, for each mode whose allowed-tool set is
+// defaultInheritingAgentBases returns, for each agent whose allowed-tool set is
 // the inherited default, its base list (a clone of the default set). It must be
-// called on the modes BEFORE augmentModesWithMCP mutates them.
-func defaultInheritingModeBases(modes map[string]mode.Mode) mcpModeBases {
-	def := mode.DefaultTools()
-	bases := make(mcpModeBases)
-	for name, m := range modes {
-		if slices.Equal(m.AllowedTools, def) {
+// called on the agents BEFORE augmentAgentsWithMCP mutates them.
+func defaultInheritingAgentBases(agents map[string]agentdef.Definition) mcpAgentBases {
+	def := agentdef.DefaultTools()
+	bases := make(mcpAgentBases)
+	for name, a := range agents {
+		if slices.Equal(a.AllowedTools, def) {
 			bases[name] = slices.Clone(def)
 		}
 	}
@@ -126,22 +126,22 @@ func defaultInheritingModeBases(modes map[string]mode.Mode) mcpModeBases {
 }
 
 // newMCPRefresher returns the prompt-boundary refresh hook for ui.App. It owns
-// the conn, the tool catalog, the resolved modes, and the previous
+// the conn, the tool catalog, the resolved agents, and the previous
 // registration's tool names so it can compute which tools vanished. On a
 // list_changed it re-lists, removes departed tools from the catalog, re-derives
-// every MCP-exposing mode's allowed list (so a later /mode switch stays valid),
-// and returns the current mode's subset. It returns a nil registry ("no
+// every MCP-exposing agent's allowed list (so a later /agent switch stays valid),
+// and returns the current agent's subset. It returns a nil registry ("no
 // change") fast when nothing changed, and on a re-discovery error keeps the
 // current tools. Not safe for concurrent use: the REPL calls it only at the
 // idle prompt boundary, between turns.
-func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, modes map[string]mode.Mode, bases mcpModeBases, prev mcptools.Summary, logger *slog.Logger) func(modeName string) (*tools.Registry, string) {
+func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, agents map[string]agentdef.Definition, bases mcpAgentBases, prev mcptools.Summary, logger *slog.Logger) func(agentName string) (*tools.Registry, string) {
 	prevNames := prev.Names
-	return func(modeName string) (*tools.Registry, string) {
+	return func(agentName string) (*tools.Registry, string) {
 		if !conn.Dirty() {
 			return nil, ""
 		}
 
-		if _, ok := modes[modeName]; !ok {
+		if _, ok := agents[agentName]; !ok {
 			return nil, ""
 		}
 
@@ -168,32 +168,32 @@ func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, modes map[str
 		}
 		prevNames = sum.Names
 
-		// Re-derive every MCP-exposing mode's allowed list against the live tool
-		// set, so /mode switches after a tool vanishes never reference a name the
+		// Re-derive every MCP-exposing agent's allowed list against the live tool
+		// set, so /agent switches after a tool vanishes never reference a name the
 		// catalog no longer has.
 		for name, base := range bases {
-			m := modes[name]
-			m.AllowedTools = append(slices.Clone(base), sum.Names...)
-			modes[name] = m
+			a := agents[name]
+			a.AllowedTools = append(slices.Clone(base), sum.Names...)
+			agents[name] = a
 		}
 
-		// An explicit-whitelist mode (one not in bases) exposes no MCP tools, so a
+		// An explicit-whitelist agent (one not in bases) exposes no MCP tools, so a
 		// refresh leaves its subset unchanged — unless it explicitly whitelisted a
 		// tool that was just removed. In the unchanged case, skip the swap and the
-		// "tool list updated" notice, which would otherwise mislead (the mode's
-		// tools did not change). The catalog/mode re-derivation above still ran so
-		// a later /mode switch to an MCP-exposing mode is correct.
-		allowed := modes[modeName].AllowedTools
-		if _, exposesMCP := bases[modeName]; !exposesMCP {
-			if !anyRemovedInMode(allowed, removed) {
+		// "tool list updated" notice, which would otherwise mislead (the agent's
+		// tools did not change). The catalog/agent re-derivation above still ran so
+		// a later /agent switch to an MCP-exposing agent is correct.
+		allowed := agents[agentName].AllowedTools
+		if _, exposesMCP := bases[agentName]; !exposesMCP {
+			if !anyRemovedInAgent(allowed, removed) {
 				return nil, ""
 			}
 			// The whitelist named a removed tool: drop the gone names so Subset
 			// does not error on a name the catalog no longer has.
 			allowed = withoutNames(allowed, removed)
-			m := modes[modeName]
-			m.AllowedTools = allowed
-			modes[modeName] = m
+			a := agents[agentName]
+			a.AllowedTools = allowed
+			agents[agentName] = a
 		}
 
 		sel, err := catalog.Subset(allowed)
@@ -205,9 +205,9 @@ func newMCPRefresher(conn *mcptools.Conn, catalog *tools.Registry, modes map[str
 	}
 }
 
-// anyRemovedInMode reports whether allowed references any of the removed tool
-// names, i.e. whether the refresh shrank a mode's effective tool set.
-func anyRemovedInMode(allowed, removed []string) bool {
+// anyRemovedInAgent reports whether allowed references any of the removed tool
+// names, i.e. whether the refresh shrank an agent's effective tool set.
+func anyRemovedInAgent(allowed, removed []string) bool {
 	for _, name := range removed {
 		if slices.Contains(allowed, name) {
 			return true
@@ -217,7 +217,7 @@ func anyRemovedInMode(allowed, removed []string) bool {
 }
 
 // withoutNames returns allowed with every entry in drop removed, preserving
-// order. It is used to drop just-removed MCP tool names from a whitelist mode's
+// order. It is used to drop just-removed MCP tool names from a whitelist agent's
 // allowed list so Subset does not error on a name the catalog no longer has.
 func withoutNames(allowed, drop []string) []string {
 	out := make([]string, 0, len(allowed))
