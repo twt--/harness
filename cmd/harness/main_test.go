@@ -237,7 +237,7 @@ func TestRunREPLModelCommandSwitchesProvider(t *testing.T) {
 	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
-		"/model gpt-5.5\nhello\n/exit\n",
+		"/model gpt-5.5\nn\nhello\n/exit\n",
 	)
 
 	if code := run(env); code != ui.ExitOK {
@@ -251,12 +251,67 @@ func TestRunREPLModelCommandSwitchesProvider(t *testing.T) {
 	}
 }
 
+func TestRunREPLModelCommandSavesDefaultWhenConfirmed(t *testing.T) {
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, getenv, _ := fakeProviderEnvWithProxy(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
+		"/model gpt-5.5\ny\n/exit\n",
+	)
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	configPath := filepath.Join(getenv("HOME"), ".config", "harness", "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var got struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode config: %v\n%s", err, data)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-5.5" {
+		t.Fatalf("saved provider/model = %q/%q, want openai/gpt-5.5\n%s", got.Provider, got.Model, data)
+	}
+	if !strings.Contains(errw.String(), "[default model saved]") {
+		t.Fatalf("stderr should acknowledge default save, got %q", errw.String())
+	}
+}
+
+func TestRunREPLModelCommandDoesNotPromptOrSaveWhenStdinPiped(t *testing.T) {
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, getenv, proxy := fakeProviderEnvWithProxy(t,
+		[]string{"-model", "claude-opus-4-8"},
+		fp,
+		"/model gpt-5.5\nhello\n/exit\n",
+	)
+	env.stdinPiped = true
+
+	if code := run(env); code != ui.ExitOK {
+		t.Fatalf("exit code = %d, want 0; errw=%q", code, errw.String())
+	}
+	if len(proxy.requests) != 1 || proxy.requests[0].Provider != "openai" || proxy.requests[0].Request.Model != "gpt-5.5" {
+		t.Fatalf("proxy requests = %+v, want one openai/gpt-5.5 request", proxy.requests)
+	}
+	configPath := filepath.Join(getenv("HOME"), ".config", "harness", "config.json")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config path stat err = %v, want not exist", err)
+	}
+	if strings.Contains(errw.String(), "as the default model") {
+		t.Fatalf("non-interactive /model should not prompt to save default, stderr=%q", errw.String())
+	}
+}
+
 func TestRunREPLModelCommandAcceptsProviderQualifiedModel(t *testing.T) {
 	fp := llmtest.New("fake", okStep())
 	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
-		"/model openrouter:openai/gpt-5.5\nhello\n/exit\n",
+		"/model openrouter:openai/gpt-5.5\nn\nhello\n/exit\n",
 	)
 
 	if code := run(env); code != ui.ExitOK {
@@ -272,7 +327,7 @@ func TestRunREPLModelCommandPromptsConfiguredProviderAndModel(t *testing.T) {
 	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
-		"/model\nopenrouter\nopenai/gpt-5.5\n\nhello\n/exit\n",
+		"/model\nopenrouter\nopenai/gpt-5.5\n\nn\nhello\n/exit\n",
 	)
 
 	if code := run(env); code != ui.ExitOK {
@@ -293,7 +348,7 @@ func TestRunREPLModelCommandPromptsReasoningEffort(t *testing.T) {
 	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
-		"/model\nopenrouter\nopenai/gpt-5.5\nhigh\nhello\n/exit\n",
+		"/model\nopenrouter\nopenai/gpt-5.5\nhigh\nn\nhello\n/exit\n",
 	)
 
 	if code := run(env); code != ui.ExitOK {
@@ -376,7 +431,7 @@ func TestRunHelpFlagExitsZeroWithUsage(t *testing.T) {
 
 func TestRunPromptsForModelAndSavesConfigWhenModelMissing(t *testing.T) {
 	fp := llmtest.New("fake", okStep())
-	env, _, errw, getenv := fakeProviderEnv(t, nil, fp, "2\n1\n/exit\n")
+	env, _, errw, getenv := fakeProviderEnv(t, nil, fp, "2\n1\ny\n/exit\n")
 
 	code := run(env)
 	if code != ui.ExitOK {
@@ -405,9 +460,26 @@ func TestRunPromptsForModelAndSavesConfigWhenModelMissing(t *testing.T) {
 	}
 }
 
+func TestRunPromptsForModelAndSkipsConfigSaveWhenDeclined(t *testing.T) {
+	fp := llmtest.New("fake", okStep())
+	env, _, errw, getenv := fakeProviderEnv(t, nil, fp, "2\n1\nn\n/exit\n")
+
+	code := run(env)
+	if code != ui.ExitOK {
+		t.Fatalf("exit = %d, want ok; errw=%q", code, errw.String())
+	}
+	configPath := filepath.Join(getenv("HOME"), ".config", "harness", "config.json")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config path stat err = %v, want not exist", err)
+	}
+	if !strings.Contains(errw.String(), "Save openai:gpt-5.5 as the default model?") {
+		t.Fatalf("stderr should show default save prompt, got %q", errw.String())
+	}
+}
+
 func TestRunStartupModelSelectionPromptsReasoningEffort(t *testing.T) {
 	fp := llmtest.New("fake", okStep())
-	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, nil, fp, "3\n1\nmedium\nhello\n/exit\n")
+	env, _, errw, _, proxy := fakeProviderEnvWithProxy(t, nil, fp, "3\n1\nmedium\nn\nhello\n/exit\n")
 
 	if code := run(env); code != ui.ExitOK {
 		t.Fatalf("exit = %d, want ok; errw=%q", code, errw.String())
@@ -895,7 +967,7 @@ func TestRunDelegateUsesSwitchedModelAndAgent(t *testing.T) {
 	env, _, errw, _ := fakeProviderEnv(t,
 		[]string{"-model", "claude-opus-4-8"},
 		fp,
-		"/model gpt-5.5\n/agent plan\nhi\n/exit\n",
+		"/model gpt-5.5\nn\n/agent plan\nhi\n/exit\n",
 	)
 
 	if code := run(env); code != ui.ExitOK {

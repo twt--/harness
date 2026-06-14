@@ -174,7 +174,20 @@ func run(env environment) int {
 		}
 		reader := bufio.NewReader(stdin)
 		stdin = reader
-		selection, err = pickStartupModel(reader, stderr, catalog, pickerPageSize(env))
+		readStartupLine := func(prompt string) (string, error) {
+			if _, err := fmt.Fprint(stderr, prompt); err != nil {
+				return "", err
+			}
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if errors.Is(err, io.EOF) && line != "" {
+					return strings.TrimSpace(line), nil
+				}
+				return "", err
+			}
+			return strings.TrimSpace(line), nil
+		}
+		selection, err = pickStartupModel(readStartupLine, stderr, catalog, pickerPageSize(env))
 		if err != nil {
 			if errors.Is(err, ui.ErrPickerCancelled) {
 				fmt.Fprintln(stderr, "harness: model selection cancelled")
@@ -185,7 +198,7 @@ func run(env environment) int {
 		}
 		cfg.Provider = selection.Provider
 		cfg.Model = selection.Model
-		reasoning, err = pickStartupReasoningEffort(reader, stderr, modelRegistry, selection.RegistryModel, reasoning)
+		reasoning, err = pickStartupReasoningEffort(readStartupLine, stderr, modelRegistry, selection.RegistryModel, reasoning)
 		if err != nil {
 			if errors.Is(err, ui.ErrPickerCancelled) {
 				fmt.Fprintln(stderr, "harness: model selection cancelled")
@@ -198,12 +211,26 @@ func run(env environment) int {
 			fmt.Fprintf(stderr, "harness: %v\n", err)
 			return ui.ExitUsage
 		}
-		configPath := writableConfigPath(args, getenv)
-		if err := config.SaveSelectedModel(configPath, selection.Provider, selection.Model); err != nil {
-			fmt.Fprintf(stderr, "harness: save selected model: %v\n", err)
-			return ui.ExitRuntime
+		saveDefault := false
+		if !env.stdinPiped {
+			saveDefault, err = ui.PromptSaveDefaultModel(readStartupLine, stderr, selection.Provider, selection.Model)
+			if err != nil {
+				if errors.Is(err, ui.ErrPickerCancelled) {
+					fmt.Fprintln(stderr, "harness: default model save cancelled")
+				} else {
+					fmt.Fprintf(stderr, "harness: default model save: %v\n", err)
+				}
+				return ui.ExitUsage
+			}
 		}
-		fmt.Fprintf(stderr, "harness: saved selected model to %s\n", configPath)
+		if saveDefault {
+			configPath := writableConfigPath(args, getenv)
+			if err := config.SaveSelectedModel(configPath, selection.Provider, selection.Model); err != nil {
+				fmt.Fprintf(stderr, "harness: save selected model: %v\n", err)
+				return ui.ExitRuntime
+			}
+			fmt.Fprintf(stderr, "harness: saved selected model to %s\n", configPath)
+		}
 	}
 	cfg.Provider = selection.Provider
 	cfg.Model = selection.Model
@@ -495,21 +522,22 @@ func run(env environment) int {
 	})
 
 	app := &ui.App{
-		Agent:           ag,
-		Renderer:        renderer,
-		Out:             stdout,
-		Errw:            stderr,
-		Provider:        cfg.Provider,
-		Model:           cfg.Model,
-		RegistryModel:   registryModel,
-		BaseURL:         proxyClient.URL(),
-		Registry:        modelRegistry,
-		System:          systemPrompt,
-		Reasoning:       reasoning,
-		AvailableModels: modelRegistry.Models(),
-		SwitchModel:     switchModel,
-		PickModel:       catalogModelPicker(catalog),
-		PickerPageSize:  pickerPageSize(env),
+		Agent:                  ag,
+		Renderer:               renderer,
+		Out:                    stdout,
+		Errw:                   stderr,
+		Provider:               cfg.Provider,
+		Model:                  cfg.Model,
+		RegistryModel:          registryModel,
+		BaseURL:                proxyClient.URL(),
+		Registry:               modelRegistry,
+		System:                 systemPrompt,
+		Reasoning:              reasoning,
+		AvailableModels:        modelRegistry.Models(),
+		SwitchModel:            switchModel,
+		PickModel:              catalogModelPicker(catalog),
+		PickerPageSize:         pickerPageSize(env),
+		PromptDefaultModelSave: !env.stdinPiped,
 		SetReasoning: func(model string, nextReasoning llm.ReasoningConfig) error {
 			if err := validateReasoningEffort(modelRegistry, model, nextReasoning); err != nil {
 				return err
@@ -519,6 +547,9 @@ func run(env environment) int {
 			snap.Reasoning = nextReasoning
 			delegateState.Set(snap)
 			return nil
+		},
+		SaveDefaultModel: func(provider, model string) error {
+			return config.SaveSelectedModel(writableConfigPath(args, getenv), provider, model)
 		},
 		AgentName:       agentName,
 		AvailableAgents: agentSummaries(agents),
@@ -837,26 +868,14 @@ func catalogModelPicker(catalog protocol.Catalog) func(ui.PickerIO) (string, err
 	}
 }
 
-func pickStartupModel(reader *bufio.Reader, w io.Writer, catalog protocol.Catalog, pageSize int) (catalogSelection, error) {
+func pickStartupModel(readLine func(string) (string, error), w io.Writer, catalog protocol.Catalog, pageSize int) (catalogSelection, error) {
 	picker := catalogModelPicker(catalog)
 	if picker == nil {
 		return catalogSelection{}, fmt.Errorf("model proxy catalog has no selectable models")
 	}
 	fmt.Fprintln(w, "Select a provider and model to use with harness.")
 	input, err := picker(ui.PickerIO{
-		ReadLine: func(prompt string) (string, error) {
-			if _, err := fmt.Fprint(w, prompt); err != nil {
-				return "", err
-			}
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				if errors.Is(err, io.EOF) && line != "" {
-					return strings.TrimSpace(line), nil
-				}
-				return "", err
-			}
-			return strings.TrimSpace(line), nil
-		},
+		ReadLine: readLine,
 		Writer:   w,
 		PageSize: pageSize,
 	})
@@ -866,7 +885,7 @@ func pickStartupModel(reader *bufio.Reader, w io.Writer, catalog protocol.Catalo
 	return resolveCatalogSelection(catalog, "", input, "")
 }
 
-func pickStartupReasoningEffort(reader *bufio.Reader, w io.Writer, registry *llm.Registry, model string, reasoning llm.ReasoningConfig) (llm.ReasoningConfig, error) {
+func pickStartupReasoningEffort(readLine func(string) (string, error), w io.Writer, registry *llm.Registry, model string, reasoning llm.ReasoningConfig) (llm.ReasoningConfig, error) {
 	info, ok := reasoningInfoForModel(registry, model)
 	if !ok || !info.Supported {
 		return reasoning, nil
@@ -878,16 +897,9 @@ func pickStartupReasoningEffort(reader *bufio.Reader, w io.Writer, registry *llm
 	current := strings.TrimSpace(reasoning.Effort)
 	currentValid := current == "" || info.SupportsEffort(current)
 	for {
-		fmt.Fprintf(w, "Reasoning effort (default/%s; current: %s): ", strings.Join(values, "/"), effortPromptCurrent(current, currentValid))
-		line, err := reader.ReadString('\n')
+		line, err := readLine(fmt.Sprintf("Reasoning effort (default/%s; current: %s): ", strings.Join(values, "/"), effortPromptCurrent(current, currentValid)))
 		if err != nil {
-			if errors.Is(err, io.EOF) && line != "" {
-				line = strings.TrimSpace(line)
-			} else {
-				return reasoning, err
-			}
-		} else {
-			line = strings.TrimSpace(line)
+			return reasoning, err
 		}
 		if line == "" {
 			if currentValid {

@@ -77,11 +77,13 @@ type App struct {
 	System        string
 	Reasoning     llm.ReasoningConfig
 
-	AvailableModels []string
-	SwitchModel     func(model string, reasoning llm.ReasoningConfig) (ModelSelection, error)
-	PickModel       func(PickerIO) (string, error)
-	PickerPageSize  int
-	SetReasoning    func(model string, reasoning llm.ReasoningConfig) error
+	AvailableModels        []string
+	SwitchModel            func(model string, reasoning llm.ReasoningConfig) (ModelSelection, error)
+	PickModel              func(PickerIO) (string, error)
+	PickerPageSize         int
+	SetReasoning           func(model string, reasoning llm.ReasoningConfig) error
+	SaveDefaultModel       func(provider, model string) error
+	PromptDefaultModelSave bool
 
 	AgentName       string         // current agent definition name
 	AvailableAgents []AgentSummary // sorted agent names/descriptions for /agent listing
@@ -729,7 +731,7 @@ func (app *App) command(line string, readCommandLine func(string) (string, error
 		if arg == "" {
 			app.pickModel(readCommandLine)
 		} else {
-			app.switchModel(arg, app.Reasoning)
+			app.switchModelAndPromptDefault(arg, app.Reasoning, readCommandLine)
 		}
 	case "/effort":
 		app.effort(arg)
@@ -777,7 +779,7 @@ func (app *App) pickModel(readLine func(string) (string, error)) {
 		fmt.Fprintf(app.Errw, "[model selection failed: %v]\n", err)
 		return
 	}
-	app.switchModel(model, reasoning)
+	app.switchModelAndPromptDefault(model, reasoning, readLine)
 }
 
 // modelSummary renders the current model plus the configured models available
@@ -823,19 +825,19 @@ func uniqueModels(models []string, current string) []string {
 	return out
 }
 
-func (app *App) switchModel(model string, reasoning llm.ReasoningConfig) {
+func (app *App) switchModel(model string, reasoning llm.ReasoningConfig) bool {
 	if app.SwitchModel == nil {
 		fmt.Fprintln(app.Errw, "[model switch unavailable]")
-		return
+		return false
 	}
 	selection, err := app.SwitchModel(model, reasoning)
 	if err != nil {
 		fmt.Fprintf(app.Errw, "[model switch failed: %v]\n", err)
-		return
+		return false
 	}
 	if selection.Runtime == nil {
 		fmt.Fprintln(app.Errw, "[model switch failed: no provider was created]")
-		return
+		return false
 	}
 	if selection.Model == "" {
 		selection.Model = model
@@ -859,6 +861,37 @@ func (app *App) switchModel(model string, reasoning llm.ReasoningConfig) {
 	app.BaseURL = selection.BaseURL
 	app.Reasoning = selection.Reasoning
 	fmt.Fprintf(app.Errw, "[model switched: provider=%s model=%s proxy-url=%s effort=%s]\n", app.Provider, app.Model, app.BaseURL, app.reasoningEffortLabel())
+	return true
+}
+
+func (app *App) switchModelAndPromptDefault(model string, reasoning llm.ReasoningConfig, readLine func(string) (string, error)) {
+	if !app.switchModel(model, reasoning) {
+		return
+	}
+	app.promptSaveDefaultModel(readLine)
+}
+
+func (app *App) promptSaveDefaultModel(readLine func(string) (string, error)) {
+	if app.SaveDefaultModel == nil || !app.PromptDefaultModelSave {
+		return
+	}
+	save, err := PromptSaveDefaultModel(readLine, app.Errw, app.Provider, app.Model)
+	if err != nil {
+		if errors.Is(err, ErrPickerCancelled) {
+			fmt.Fprintln(app.Errw, "[default model save cancelled]")
+			return
+		}
+		fmt.Fprintf(app.Errw, "[default model save failed: %v]\n", err)
+		return
+	}
+	if !save {
+		return
+	}
+	if err := app.SaveDefaultModel(app.Provider, app.Model); err != nil {
+		fmt.Fprintf(app.Errw, "[default model save failed: %v]\n", err)
+		return
+	}
+	fmt.Fprintln(app.Errw, "[default model saved]")
 }
 
 func (app *App) effort(arg string) {
@@ -974,6 +1007,25 @@ func (app *App) promptReasoningEffort(model string, reasoning llm.ReasoningConfi
 		}
 		reasoning.Effort = effort
 		return reasoning, nil
+	}
+}
+
+func PromptSaveDefaultModel(readLine func(string) (string, error), w io.Writer, provider, model string) (bool, error) {
+	for {
+		input, err := readLine(fmt.Sprintf("Save %s:%s as the default model? (y/N): ", provider, model))
+		if err != nil {
+			return false, err
+		}
+		switch strings.ToLower(strings.TrimSpace(input)) {
+		case "", "n", "no":
+			return false, nil
+		case "y", "yes":
+			return true, nil
+		case "q":
+			return false, ErrPickerCancelled
+		default:
+			fmt.Fprintln(w, `Please answer "yes" or "no".`)
+		}
 	}
 }
 

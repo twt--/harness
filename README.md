@@ -207,9 +207,9 @@ by a delimiter; only text written after the delimiter is sent as the next prompt
 | `/tools` | list enabled built-in and MCP tools with descriptions, plus disabled optional tools |
 | `/edit [draft]` | open an external editor for the next prompt |
 | `/save [file]` | force save (optionally elsewhere) |
-| `/model` | choose a configured provider, then choose one of its configured models |
-| `/model <id>` | switch subsequent turns to model `<id>` |
-| `/model <provider>:<id>` | switch to `<id>` on a specific configured provider |
+| `/model` | choose a configured provider/model; interactive runs can optionally save it as the default |
+| `/model <id>` | switch subsequent turns to model `<id>`; interactive runs can optionally save it as the default |
+| `/model <provider>:<id>` | switch to `<id>` on a specific configured provider; interactive runs can optionally save it as the default |
 | `/effort` | list reasoning effort levels for the current model, marking the selected one |
 | `/effort <level>` | switch reasoning effort for subsequent turns |
 | `/agent` | list agents and descriptions, marking the current one |
