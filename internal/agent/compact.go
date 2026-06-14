@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"harness/internal/llm"
+	"harness/prompts"
 )
 
 // defaultKeepTurns is how many whole turns compaction preserves verbatim; everything
@@ -49,14 +50,6 @@ type CompactionArchive struct {
 // CompactionArchiver preserves raw compacted messages and returns a reference
 // suitable for inclusion in the active summary.
 type CompactionArchiver func(context.Context, CompactionArchive) (string, error)
-
-// summaryInstruction is the system prompt for the summarization call. It asks
-// the model to preserve everything the loop needs to continue and to invent
-// nothing (design §12).
-const summaryInstruction = `You are compacting an agentic coding session to save context. ` +
-	`Summarize the conversation so far so the assistant can continue seamlessly. Preserve: ` +
-	`the task or goal; decisions made and their rationale; files created or modified and their current state; ` +
-	`key facts learned; and open TODOs. Be specific and concise. Do not invent details that are not present.`
 
 // summaryHeader prefixes the replacement message so the model recognizes the
 // collapsed history (design §12).
@@ -157,7 +150,7 @@ func (a *Agent) summarize(ctx context.Context, older []llm.Message) (string, llm
 func (a *Agent) summarizeOne(ctx context.Context, older []llm.Message) (string, llm.Usage, error) {
 	req := llm.Request{
 		Model:     a.model,
-		System:    summaryInstruction,
+		System:    prompts.CompactionSummary(),
 		Messages:  older,
 		MaxTokens: a.summaryMaxTokens(),
 		Reasoning: a.reasoning,

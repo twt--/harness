@@ -10,6 +10,7 @@ import (
 	"harness/internal/llm"
 	"harness/internal/llm/llmtest"
 	"harness/internal/tools"
+	"harness/prompts"
 )
 
 // userText is a genuine user turn-start message (text, not tool results).
@@ -103,6 +104,9 @@ func TestCompactKeepsLastFourTurns(t *testing.T) {
 	// as a message (it lives on Request.System).
 	if len(fp.Requests) != 1 {
 		t.Fatalf("summary call count = %d, want 1", len(fp.Requests))
+	}
+	if fp.Requests[0].System != prompts.CompactionSummary() {
+		t.Fatalf("summary call system prompt = %q, want embedded compaction prompt", fp.Requests[0].System)
 	}
 }
 

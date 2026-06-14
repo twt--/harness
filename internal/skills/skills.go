@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"harness/prompts"
 )
 
 // skillFile is the canonical filename inside each skill subdirectory.
@@ -270,11 +272,7 @@ func Instructions(count int) string {
 	if count == 0 {
 		return ""
 	}
-	return `The following skills provide specialized instructions for specific tasks.
-When a task matches a skill's description, use your file-read tool to load
-the SKILL.md at the listed location before proceeding.
-When a skill references relative paths, resolve them against the skill's
-directory (the parent of SKILL.md) and use absolute paths in tool calls.`
+	return prompts.SkillsInstructions()
 }
 
 // parseFrontmatter extracts key/value pairs from the YAML frontmatter block

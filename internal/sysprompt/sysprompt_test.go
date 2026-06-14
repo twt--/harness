@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"harness/prompts"
 )
 
 func writeFileForTest(path, content string) error {
@@ -108,7 +110,7 @@ func TestBuildAppendsByDefault(t *testing.T) {
 		Append: "project note",
 		Env:    EnvOptions{Dir: dir, Now: func() time.Time { return fixedDate }},
 	})
-	if !strings.Contains(out, builtinInstructions) {
+	if !strings.Contains(out, prompts.System()) {
 		t.Errorf("append mode should keep builtin instructions")
 	}
 	if !strings.Contains(out, "project note") {
@@ -118,7 +120,7 @@ func TestBuildAppendsByDefault(t *testing.T) {
 		t.Errorf("env block should be present by default")
 	}
 	// builtin then env then append, with the env block intact.
-	if !strings.Contains(out, builtinInstructions+"\n\n<env>") {
+	if !strings.Contains(out, prompts.System()+"\n\n<env>") {
 		t.Errorf("builtin should be followed by the env block:\n%s", out)
 	}
 }
@@ -129,7 +131,7 @@ func TestBuildOverrideReplacesBuiltin(t *testing.T) {
 		Override: "ONLY THESE RULES",
 		Env:      EnvOptions{Dir: dir, Now: func() time.Time { return fixedDate }},
 	})
-	if strings.Contains(out, builtinInstructions) {
+	if strings.Contains(out, prompts.System()) {
 		t.Errorf("override should drop builtin instructions:\n%s", out)
 	}
 	if !strings.Contains(out, "ONLY THESE RULES") {
@@ -199,14 +201,14 @@ func TestBuildAgentPromptAppendedLast(t *testing.T) {
 	if !strings.HasSuffix(out, "project note\n\nagent section") {
 		t.Errorf("agent prompt should be the final section after append:\n%s", out)
 	}
-	if !strings.Contains(out, builtinInstructions) {
+	if !strings.Contains(out, prompts.System()) {
 		t.Errorf("builtin instructions must be kept")
 	}
 }
 
 func TestBuildEmptyAgentPromptOmitted(t *testing.T) {
 	out := Build(Options{NoEnv: true})
-	if out != builtinInstructions {
+	if out != prompts.System() {
 		t.Errorf("no options should yield just the builtin instructions:\n%s", out)
 	}
 }
@@ -220,7 +222,7 @@ func TestBuildNoEnvDropsEnvBlock(t *testing.T) {
 	if strings.Contains(out, "<env>") {
 		t.Errorf("-no-env should drop the env block:\n%s", out)
 	}
-	if !strings.Contains(out, builtinInstructions) {
+	if !strings.Contains(out, prompts.System()) {
 		t.Errorf("builtin should remain with -no-env")
 	}
 	if strings.HasSuffix(out, "\n\n") {

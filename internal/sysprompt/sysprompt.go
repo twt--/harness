@@ -11,19 +11,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"harness/prompts"
 )
-
-// builtinInstructions is the default agentic-coding guidance (design §8.5).
-const builtinInstructions = `You are a coding agent operating in a real working directory through a set of tools.
-
-Work directly with the tools rather than guessing at file contents or command output:
-- Read a file with read_file before editing it; never assume what it contains.
-- Prefer edit with enough surrounding context to make old_string unique; use write_file only to create new files or fully replace one.
-- Use rg when available, otherwise grep and list_dir, to locate code instead of speculating about paths; grep/rg take native CLI arguments as arrays.
-- Run builds, tests, and linters with run_command, and use git for version-control operations when available; read the actual output before deciding what to do next. Prefer exec (argv array, no shell) when command arguments contain quotes, spaces, or newlines.
-- Make the smallest change that satisfies the request, then verify it.
-
-Stop and report once the task is done. Do not keep calling tools after the work is complete.`
 
 // Options controls system-prompt composition (design §8.5 flags). Append and
 // Override are mutually relevant: Override replaces the builtin instructions,
@@ -48,7 +38,7 @@ type Options struct {
 // Build composes the full system prompt per design §8.5: instructions, then a
 // blank-line separator and the env block (unless NoEnv), then any appended text.
 func Build(opts Options) string {
-	instructions := builtinInstructions
+	instructions := prompts.System()
 	if opts.Override != "" {
 		instructions = opts.Override
 	}

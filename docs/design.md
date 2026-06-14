@@ -79,7 +79,7 @@ internal/session         session state, replay log, compaction archives, tool ar
 internal/config          flags > env > config-file resolution
 internal/modelsdev       optional models.dev catalog reduction for proxy setup/pricing metadata
 internal/ui              REPL, streaming renderer, tool summaries, usage line
-internal/sysprompt       builtin instructions + environment context (cwd/os/date/git summary)
+internal/sysprompt       embedded prompt files + environment context (cwd/os/date/git summary)
 cmd/harness-mcp-proxy  optional MCP proxy daemon + debug client (serve / tools / version)
 internal/mcp             tools-only MCP slice: schema, client, server, stdio + streamable-HTTP transports
 internal/mcp/jsonrpc     JSON-RPC 2.0 framing and bidirectional request/response correlation
@@ -558,9 +558,9 @@ A single SIGINT handler plus a per-turn `context.CancelFunc`:
 
 ### 8.5 System prompt (`internal/sysprompt`)
 
-`system = builtinInstructions + "\n\n" + envContext`
+`system = prompts/system.txt + "\n\n" + envContext`
 
-- **Builtin instructions** (a constant): concise agentic-coding guidance — read before
+- **Builtin instructions** (`prompts/system.txt`): concise agentic-coding guidance — read before
   editing, prefer `edit` with unique context, use tools rather than guessing file
   contents, use `rg` when available or `grep`/`list_dir` for search, run builds/tests
   via `run_command`, stop when done.
@@ -1094,11 +1094,11 @@ type UsageTotals struct {
   call plus the next turn). Also manual `/compact`.
 - **Mechanism:** keep the system prompt and the configured number of recent turns
   verbatim (`compact_keep_turns`, default 4; a turn = a user message through the
-  following end-turn). Send everything older to the model with a summarization
-  instruction: preserve the task/goal, decisions made, files created/modified and their
-  current state, key facts learned, open TODOs; do not invent. Summary output is capped
-  by `compact_summary_max_tokens` (default 2048). Replace the old messages with a
-  single user message:
+  following end-turn). Send everything older to the model with the summarization
+  instruction in `prompts/compaction-summary.txt`: preserve the task/goal, decisions
+  made, files created/modified and their current state, key facts learned, open TODOs;
+  do not invent. Summary output is capped by `compact_summary_max_tokens` (default
+  2048). Replace the old messages with a single user message:
   `=== Summary of earlier conversation ===\n<summary>`.
 - Before summarization, large old tool results are reduced to previews
   (`compact_tool_result_max_bytes`, default 4096). If older history is too large for
@@ -1149,11 +1149,12 @@ reviewer, or the wide-open default without separate binaries.
   empty value means "unspecified", so a resumed session's saved agent (§11) can
   supply it before the `auto` fallback. `/agent <name>` switches at runtime;
   `/agent` lists. `/mode` is a REPL alias only.
-- **Built-ins:** `auto` (all available tools including `delegate`, no extra prompt),
-  `plan` (inspection tools including optional `rg` when installed, optional
-  `git_readonly` when git is installed, `write_tmp_file`, and `delegate`, plus a
-  planning prompt), and `independent` (all available tools including `delegate`, a
-  complete-without-asking prompt).
+- **Built-ins:** `auto` (all available tools including `delegate`, empty prompt file at
+  `prompts/agents/auto.txt`), `plan` (inspection tools including optional `rg` when
+  installed, optional `git_readonly` when git is installed, `write_tmp_file`, and
+  `delegate`, plus a planning prompt from `prompts/agents/plan.txt`), and
+  `independent` (all available tools including `delegate`, a complete-without-asking
+  prompt from `prompts/agents/independent.txt`).
 - **Config `agents`** entries **field-level merge** onto a built-in of the same name:
   a non-empty `description`, `allowed_tools`, `prompt`, `provider`, or `model`
   replaces, and an omitted field inherits. A new name defines a new agent (no

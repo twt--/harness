@@ -238,6 +238,10 @@ Three agents are built in:
 | `plan` | inspection tools (`read_file`, `list_dir`, `grep`, optional `rg`, `web_fetch`, optional `git_readonly`), `write_tmp_file`, and `delegate` | collaborate on a plan without modifying the project |
 | `independent` | all available tools, including `delegate` | complete the task end-to-end without pausing for input; stop only on a hard blocker or the model-turn limit |
 
+Built-in prompt text lives in plaintext files under `prompts/` for discoverability:
+`system.txt`, `compaction-summary.txt`, `skills-instructions.txt`, and
+`agents/{auto,plan,independent}.txt`.
+
 Define new agents or override built-ins in the config file under `agents`. Entries
 **field-level merge** onto a built-in of the same name — an omitted field keeps
 the built-in value, so you can retune just a prompt or just a tool list:
@@ -294,10 +298,10 @@ When a turn's reported input tokens reach **78%** of the model's context window
 trigger uses an approximate full-request footprint (system prompt, tools, and
 messages). It keeps the system prompt and the configured number of recent turns
 (`compact_keep_turns`, default `4`) verbatim, sends everything older to the model
-with a summarization instruction, and replaces the old messages with a single
-summary message. Summary output is capped by `compact_summary_max_tokens`
-(default `2048`). The summary call's tokens and cost are folded into the session
-totals and reported:
+with the summarization instruction from `prompts/compaction-summary.txt`, and
+replaces the old messages with a single summary message. Summary output is capped
+by `compact_summary_max_tokens` (default `2048`). The summary call's tokens and
+cost are folded into the session totals and reported:
 
 ```
 [compacted: 38 messages → summary · 9.1k in / 0.4k out · $0.05]
